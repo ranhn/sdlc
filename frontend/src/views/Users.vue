@@ -104,6 +104,21 @@
         <el-button type="primary" @click="syncDialog = false; load()">知道了</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showPwd" title="修改密码" width="400px">
+      <el-form :model="pwdForm" label-width="80px">
+        <el-form-item label="用户">
+          <span>{{ pwdForm.username }}</span>
+        </el-form-item>
+        <el-form-item label="新密码" required>
+          <el-input v-model="pwdForm.new_password" type="password" show-password placeholder="至少8位，含大小写字母和数字" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showPwd = false">取消</el-button>
+        <el-button type="primary" @click="submitPassword">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -128,6 +143,8 @@ const feishuEnabled = ref(false)
 const syncing = ref(false)
 const syncDialog = ref(false)
 const syncResult = ref(null)
+const showPwd = ref(false)
+const pwdForm = reactive({ id: null, username: '', new_password: '' })
 
 const form = reactive({ username: '', full_name: '', password: '', email: '', role_id: null, department_id: null })
 const rules = {

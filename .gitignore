@@ -29,6 +29,7 @@ backend/static_new/
 .env.monitor
 backend/security_platform.db
 backend/security_platform.db-*
+backend/security_platform.db.bak*
 backend/threat/data/llm_cache.sqlite
 backend/threat/data/llm_cache.sqlite-*
 backend/threat/data/results/
