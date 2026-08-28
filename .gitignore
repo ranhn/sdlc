@@ -1,0 +1,64 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---- Node / 前端 ----
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/dev-server.log
+frontend/*.yaml.tmp
+# 测试输出的 accessibility tree 记录（不是源码）
+/frontend/main.yaml
+/frontend/after-login.yaml
+
+# ---- 后端构建产物（前端构建输出由 FastAPI 托管）----
+backend/static_new/
+
+# ---- 运行时数据（绝不能提交）----
+.env
+.env.local
+.env.*.local
+.env.monitor
+backend/security_platform.db
+backend/security_platform.db-*
+backend/threat/data/llm_cache.sqlite
+backend/threat/data/llm_cache.sqlite-*
+backend/threat/data/results/
+backend/threat/data/attachments/
+backend/uploads/
+
+# 临时输出 / 启动日志 / 验证产物
+backend/_out.txt
+backend/_server_out.log
+backend/_server_err.log
+backend/_verify_result.txt
+backend/_verify_*.py
+
+# ---- 备份与日志 ----
+backups/
+logs/
+server.log
+server.log.*
+server_err.log
+server_err.log.*
+
+# ---- IDE / 系统 ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- 测试 / 临时 ----
+.coverage
+htmlcov/
+*.tmp
+*.bak

@@ -1,0 +1,31 @@
+{
+  "name": "sdlc-platform-frontend",
+  "version": "2.0.0",
+  "private": true,
+  "description": "VeSync SDLC 安全平台 - 统一前端",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && npm run sync:static",
+    "preview": "vite preview",
+    "sync:static": "node -e \"const fs=require('fs'),path=require('path');const src='dist',dst='../backend/static_new';fs.rmSync(dst,{recursive:true,force:true});fs.cpSync(src,dst,{recursive:true});console.log('Synced dist to backend/static_new')\""
+  },
+  "dependencies": {
+    "@antv/x6": "^2.18.1",
+    "@antv/x6-plugin-snapline": "^2.1.7",
+    "axios": "^1.7.9",
+    "echarts": "^5.5.1",
+    "element-plus": "^2.9.1",
+    "highlight.js": "^11.11.1",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

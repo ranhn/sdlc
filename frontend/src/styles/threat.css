@@ -1,0 +1,248 @@
+/* ============================================================
+   AI Threat Dragon — 威胁建模组件样式（SDLC 平台适配版）
+   默认浅色主题，所有样式限制在 .threat-page 内，避免污染全局
+   ============================================================ */
+
+/* 浅色主题变量（默认），限定在 .threat-page 作用域内，避免污染全局 */
+.threat-page {
+  --bg: #f4f6fb;
+  --bg-app: #f4f6fb;
+  --bg-panel: #ffffff;
+  --bg-panel-solid: #ffffff;
+  --bg-panel-2: #f8fafc;
+  --bg-elevated: #ffffff;
+  --bg-overlay: rgba(15, 23, 42, 0.40);
+  --bg-hover: rgba(15, 23, 42, 0.04);
+  --bg-active: rgba(37, 99, 235, 0.08);
+
+  --border: #e3e8f0;
+  --border-light: #cbd5e1;
+  --border-strong: #94a3b8;
+
+  --text: #0f172a;
+  --text-dim: #475569;
+  --text-faint: #64748b;
+  --text-on-primary: #ffffff;
+
+  --primary: #2563eb;
+  --primary-dim: #1e40af;
+  --primary-soft: rgba(37, 99, 235, 0.08);
+  --primary-border: rgba(37, 99, 235, 0.28);
+  --primary-gradient: linear-gradient(135deg, #2563eb 0%, #0891b2 100%);
+  --primary-gradient-soft: linear-gradient(135deg, rgba(37, 99, 235, 0.10) 0%, rgba(8, 145, 178, 0.10) 100%);
+  --accent-cyan: #0891b2;
+  --accent-violet: #7c3aed;
+
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.10);
+  --success-border: rgba(5, 150, 105, 0.30);
+  --warning: #d97706;
+  --warning-soft: rgba(217, 119, 6, 0.10);
+  --warning-border: rgba(217, 119, 6, 0.30);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.08);
+  --danger-border: rgba(220, 38, 38, 0.30);
+  --danger-bg: #fee2e2;
+  --danger-text: #991b1b;
+  --info: #0891b2;
+  --info-soft: rgba(8, 145, 178, 0.10);
+  --info-border: rgba(8, 145, 178, 0.30);
+
+  --critical: #b91c1c;
+  --critical-soft: rgba(185, 28, 28, 0.10);
+  --critical-border: rgba(185, 28, 28, 0.30);
+  --high: #ea580c;
+  --high-soft: rgba(234, 88, 12, 0.12);
+  --high-border: rgba(234, 88, 12, 0.30);
+  --medium: #ca8a04;
+  --medium-soft: rgba(202, 138, 4, 0.12);
+  --medium-border: rgba(202, 138, 4, 0.30);
+  --low: #2563eb;
+  --low-soft: rgba(37, 99, 235, 0.10);
+  --low-border: rgba(37, 99, 235, 0.30);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.10);
+  --shadow-glow: 0 0 24px rgba(37, 99, 235, 0.20);
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+
+  --scrollbar-track: rgba(15, 23, 42, 0.04);
+  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
+}
+
+
+
+/* ============================================================
+   以下样式限制在 .threat-page 内，避免污染 SDLC 平台其他页面
+   ============================================================ */
+
+.threat-page button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  outline: none;
+  background: none;
+  color: inherit;
+}
+.threat-page button:focus-visible {
+  box-shadow: 0 0 0 2px var(--primary-soft);
+  border-radius: 4px;
+}
+
+.threat-page textarea:not(.el-textarea__inner),
+.threat-page input:not(.el-input__inner) {
+  font-family: inherit;
+  outline: none;
+  border: 1px solid var(--border);
+  background: var(--bg-panel-2);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  font-size: 13px;
+}
+.threat-page textarea:not(.el-textarea__inner):focus,
+.threat-page input:not(.el-input__inner):focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  background: var(--bg-panel-solid);
+}
+.threat-page ::placeholder {
+  color: var(--text-faint);
+}
+
+/* 通用按钮 */
+.threat-page .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  background: var(--bg-panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  position: relative;
+}
+.threat-page .btn:hover:not(:disabled) {
+  border-color: var(--primary-border);
+  color: var(--primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+.threat-page .btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+.threat-page .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.threat-page .btn-primary {
+  background: var(--primary-gradient);
+  color: var(--text-on-primary);
+  border: none;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
+.threat-page .btn-primary:hover:not(:disabled) {
+  color: var(--text-on-primary);
+  filter: brightness(1.10);
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+}
+.threat-page .btn-primary:disabled {
+  filter: grayscale(0.4);
+  box-shadow: none;
+}
+
+.threat-page .btn-success {
+  background: linear-gradient(135deg, var(--success), #059669);
+  color: var(--text-on-primary);
+  border: none;
+  box-shadow: 0 4px 12px rgba(5, 150, 105, 0.25);
+}
+.threat-page .btn-success:hover:not(:disabled) {
+  color: var(--text-on-primary);
+  filter: brightness(1.10);
+}
+
+.threat-page .btn-ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+}
+.threat-page .btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
+}
+
+.threat-page .btn-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+.threat-page .btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--text-on-primary);
+  border-color: var(--danger);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.30);
+}
+
+.threat-page .btn-sm { padding: 6px 12px; font-size: 12px; }
+.threat-page .btn-lg { padding: 12px 24px; font-size: 14px; }
+
+/* 通用面板 */
+.threat-page .panel {
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* 通用动效 */
+.threat-page .fade-enter-active,
+.threat-page .fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+.threat-page .fade-enter-from,
+.threat-page .fade-leave-to {
+  opacity: 0;
+}
+
+.threat-page .pop-enter-active,
+.threat-page .pop-leave-active {
+  transition: opacity 0.3s, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.threat-page .pop-enter-from,
+.threat-page .pop-leave-to {
+  opacity: 0;
+  transform: scale(0.95);
+}
+
+.threat-page .slide-enter-active,
+.threat-page .slide-leave-active {
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s;
+}
+.threat-page .slide-enter-from {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.threat-page .slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}

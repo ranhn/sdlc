@@ -1,0 +1,76 @@
+# ============================================
+# VeSync SDLC 安全平台 - 一键部署
+# 双服务：Nginx（前端 + HTTPS 终结） + FastAPI（后端 API）
+# 访问：http://<服务器IP> 或 https://<域名>
+# 默认账号：admin / admin123
+# ============================================
+
+version: "3.8"
+
+services:
+  # ---- 后端 API ----
+  sdlc:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sdlc-api
+    env_file:
+      - .env
+    environment:
+      # 如果 .env 中未设置，使用以下默认值
+      - DATABASE_URL=sqlite:///./security_platform.db
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:8000
+    volumes:
+      # 持久化数据库与附件
+      - sdlc_data:/app/backend
+      # 开发时挂载代码热更新（生产可注释）
+      # - ./backend:/app/backend
+    restart: unless-stopped
+    # 不暴露端口到宿主机，仅 Nginx 能访问
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sdlc-net
+
+  # ---- 前端 + 反向代理 ----
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    container_name: sdlc-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # 前端构建产物（需先 npm run build）
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      # SSL 证书（生产环境挂载真实证书）
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      # Let's Encrypt 验证目录
+      - ./nginx/certbot:/var/www/certbot
+      # Nginx 日志
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      sdlc:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - sdlc-net
+
+volumes:
+  sdlc_data:
+
+networks:
+  sdlc-net:
+    driver: bridge

@@ -1,0 +1,30 @@
+/* VeSync SDLC 统一前端全局样式 */
+:root {
+  --primary: #3b82f6;
+  --primary-dark: #2563eb;
+  --sidebar-bg: #0f172a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+/* 侧边栏深色菜单适配 Element Plus */
+.app-aside .el-menu {
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: #cbd5e1;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.06);
+  --el-menu-active-color: #fff;
+}
+
+/* 卡片统一 */
+.el-card { border-radius: 10px; border: 1px solid #e2e8f0; }
+
+/* 页面标题 */
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.page-title { font-size: 18px; font-weight: 600; color: #0f172a; }
+
+/* Element Plus 输入框保持默认浅色主题 */
