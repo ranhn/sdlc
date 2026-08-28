@@ -84,11 +84,37 @@ async function save() {
 async function remove(row) {
   try {
     await ElMessageBox.confirm(`确认删除系统「${row.name}」？`, '删除确认', { type: 'warning' })
-    await systemApi.del(row.id)
-    ElMessage.success('已删除'); load()
+    await doDelete(row, false)
   } catch (e) {
     if (e === 'cancel') return
     ElMessage.error(e.response?.data?.detail || '删除失败')
+  }
+}
+
+async function doDelete(row, force) {
+  try {
+    await systemApi.del(row.id, force)
+    ElMessage.success(force ? '已强制级联删除' : '已删除')
+    load()
+  } catch (e) {
+    const status = e?.response?.status
+    const detail = e?.response?.data?.detail
+    if (status === 409 && detail && !force) {
+      // 有关联数据，询问是否强制级联删除
+      try {
+        await ElMessageBox.confirm(
+          `${detail}\n\n是否同时删除该系统下的所有关联数据（漏洞/组件/扫描/基线）？此操作不可恢复！`,
+          '存在关联数据',
+          { type: 'error', confirmButtonText: '强制级联删除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' }
+        )
+        await doDelete(row, true)
+      } catch (e2) {
+        if (e2 === 'cancel') return
+        ElMessage.error(e2?.response?.data?.detail || '删除失败')
+      }
+    } else {
+      ElMessage.error(detail || '删除失败')
+    }
   }
 }
 

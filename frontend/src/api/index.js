@@ -65,6 +65,7 @@ export const systemApi = {
   list: () => http.get('/systems'),
   create: (data) => http.post('/systems', data),
   update: (id, data) => http.put(`/systems/${id}`, data),
+  del: (id, force = false) => http.delete(`/systems/${id}`, { params: force ? { force: true } : {} }),
 }
 
 // ---------- 漏洞管理 ----------
