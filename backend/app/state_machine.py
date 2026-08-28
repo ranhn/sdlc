@@ -36,7 +36,7 @@ class VulnState:
 
 
 # 每个动作允许的角色（使用角色 code）
-# admin=超管, secops=安全专家, dev=研发, tester=测试, user=普通员工
+# admin=超管, secops=安全专家, dev=研发人员, tester=测试人员, user=普通员工
 ACTION_RULES = {
     "submit":        {"from": [VulnState.DRAFT], "roles": ["admin", "secops", "dev", "tester", "user"]},
     "confirm":       {"from": [VulnState.PENDING], "roles": ["admin", "secops"]},

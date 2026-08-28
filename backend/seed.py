@@ -14,8 +14,8 @@ from app.security import hash_password
 ROLES = [
     ("超级管理员", "admin", "平台全部权限"),
     ("安全运营", "secops", "漏洞审核/流转/复测、资产维护"),
-    ("研发", "dev", "提交漏洞、认领修复、学习培训"),
-    ("测试", "tester", "提交漏洞、复测验证"),
+    ("研发人员", "dev", "提交漏洞、认领修复、学习培训"),
+    ("测试人员", "tester", "提交漏洞、复测验证"),
     ("培训讲师", "trainer", "课程/题库/考试管理"),
     ("普通员工", "user", "个人工作台、学习、提交漏洞"),
 ]
@@ -27,16 +27,17 @@ def init():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
 
-    # 角色
+    # 角色（已存在则更新名称/描述，保证幂等）
     role_map = {}
     for name, code, desc in ROLES:
         role = db.query(Role).filter(Role.code == code).first()
         if not role:
             role = Role(name=name, code=code, description=desc)
             db.add(role)
-            role_map[code] = role
         else:
-            role_map[code] = role
+            role.name = name
+            role.description = desc
+        role_map[code] = role
     db.commit()
 
     # 部门
@@ -275,7 +276,7 @@ def init():
     print("✅ 种子数据初始化完成")
     print("   管理员: admin / （请通过平台修改初始密码）")
     print("   安全运营: secops / （请通过平台修改初始密码）")
-    print("   研发: dev / （请通过平台修改初始密码）")
+    print("   研发人员: dev / （请通过平台修改初始密码）")
     print("   培训讲师: trainer / （请通过平台修改初始密码）")
     db.close()
 
