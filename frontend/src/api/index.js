@@ -52,6 +52,8 @@ export const adminApi = {
   users: (params) => http.get('/users', { params }),
   createUser: (data) => http.post('/users', data),
   toggleUser: (id) => http.post(`/users/${id}/toggle`),
+  deleteUser: (id) => http.delete(`/users/${id}`),
+  changePassword: (id, data) => http.post(`/users/${id}/change-password`, data),
 }
 
 // ---------- 飞书同步 ----------
