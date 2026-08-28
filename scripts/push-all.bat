@@ -29,7 +29,8 @@ cd /d "%~dp0\.."
 
 echo === [1/2] 推送到 GitHub (https://github.com/ranhn/sdlc) ===
 set GIT_TERMINAL_PROMPT=0
-git push https://ranhn:%GITHUB_TOKEN%@github.com/ranhn/sdlc.git %RANGE%
+set "GH_URL=https://ranhn:!GITHUB_TOKEN!@github.com/ranhn/sdlc.git"
+git push "%GH_URL%" %RANGE%
 if errorlevel 1 (
     echo [失败] GitHub 推送失败
     exit /b 1
