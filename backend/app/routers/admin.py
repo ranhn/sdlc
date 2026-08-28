@@ -17,6 +17,7 @@ from ..schemas import (
     RoleOut,
     UserCreate,
     UserOut,
+    ChangePasswordIn,
 )
 from ..security import get_current_user, hash_password, write_operation_log
 
@@ -71,7 +72,7 @@ def list_users(
     current: User = Depends(get_current_user),
 ):
     require_admin(current)
-    query = db.query(User)
+    query = db.query(User).filter(User.is_deleted == False)
     if q:
         like = f"%{q.strip()}%"
         query = query.filter(
@@ -101,6 +102,37 @@ def toggle_user(user_id: int, db: Session = Depends(get_db), current: User = Dep
     db.refresh(user)
     write_operation_log(db, current, "toggle_user", "admin", f"{'禁用' if not user.is_active else '启用'} {user.username}")
     return user
+
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    require_admin(current)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user.id == current.id:
+        raise HTTPException(status_code=400, detail="不能删除当前登录用户")
+    if user.role and user.role.code == "admin":
+        admin_count = db.query(User).join(Role).filter(Role.code == "admin", User.id != user_id).count()
+        if admin_count == 0:
+            raise HTTPException(status_code=400, detail="不能删除最后一个管理员")
+    user.is_active = False
+    user.is_deleted = True
+    db.commit()
+    write_operation_log(db, current, "delete_user", "admin", f"删除用户 {user.username}")
+    return {"message": "删除成功"}
+
+
+@router.post("/users/{user_id}/change-password")
+def change_user_password(user_id: int, data: ChangePasswordIn, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    require_admin(current)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    user.password_hash = hash_password(data.new_password)
+    db.commit()
+    write_operation_log(db, current, "change_password", "admin", f"重置用户 {user.username} 密码")
+    return {"message": "密码重置成功"}
 
 
 # ============ 系统资产 ============

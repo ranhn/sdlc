@@ -53,6 +53,7 @@ class User(Base):
     role_id = Column(Integer, ForeignKey("sys_role.id"), nullable=False)
     department_id = Column(Integer, ForeignKey("sys_department.id"), nullable=True)
     is_active = Column(Boolean, default=True)
+    is_deleted = Column(Boolean, default=False)  # 软删除标记
     feishu_open_id = Column(String(100), nullable=True, index=True)  # 飞书 open_id，用于同步去重
     last_synced_at = Column(DateTime, nullable=True)                 # 最近一次飞书同步时间
     must_change_password = Column(Boolean, default=False)            # 强制改密标记（飞书同步用户首次登录）

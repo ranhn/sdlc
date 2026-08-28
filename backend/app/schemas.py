@@ -27,7 +27,7 @@ class UserCreate(BaseModel):
 
 
 class ChangePasswordIn(BaseModel):
-    old_password: str
+    old_password: Optional[str] = None
     new_password: str = Field(min_length=8, max_length=64)
 
 
@@ -40,6 +40,7 @@ class UserOut(BaseModel):
     role_name: Optional[str] = None
     department_id: Optional[int] = None
     is_active: bool
+    is_deleted: bool = False
 
     class Config:
         from_attributes = True

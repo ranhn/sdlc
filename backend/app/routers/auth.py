@@ -23,6 +23,8 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         )
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已禁用")
+    if getattr(user, "is_deleted", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已删除")
 
     access_token = create_access_token(
         data={"sub": str(user.id)},

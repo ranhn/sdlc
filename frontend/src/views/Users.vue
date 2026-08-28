@@ -54,11 +54,13 @@
         <el-table-column label="最近同步" width="160">
           <template #default="{ row }"><span class="muted">{{ formatSyncTime(row.last_synced_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="100">
+        <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button link :type="row.is_active ? 'danger' : 'success'" size="small" @click="toggle(row)">
               {{ row.is_active ? '禁用' : '启用' }}
             </el-button>
+            <el-button link type="warning" size="small" @click="openChangePassword(row)">改密</el-button>
+            <el-button link type="danger" size="small" @click="del(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -107,7 +109,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi, feishuApi } from '../api'
 import { useUserStore } from '../store/user'
 
@@ -155,6 +157,44 @@ async function toggle(row) {
   await adminApi.toggleUser(row.id)
   ElMessage.success(row.is_active ? '已禁用' : '已启用')
   load()
+}
+
+function openChangePassword(row) {
+  pwdForm.id = row.id
+  pwdForm.username = row.username
+  pwdForm.new_password = ''
+  showPwd.value = true
+}
+
+async function submitPassword() {
+  if (!pwdForm.new_password || pwdForm.new_password.length < 8) {
+    ElMessage.warning('密码至少8位')
+    return
+  }
+  try {
+    await adminApi.changePassword(pwdForm.id, { new_password: pwdForm.new_password })
+    ElMessage.success('密码重置成功')
+    showPwd.value = false
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '重置失败')
+  }
+}
+
+async function del(row) {
+  try {
+    await ElMessageBox.confirm(`确定删除用户「${row.full_name || row.username}」吗？此操作不可恢复。`, '删除确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await adminApi.deleteUser(row.id)
+    ElMessage.success('删除成功')
+    load()
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error(e.response?.data?.detail || '删除失败')
+    }
+  }
 }
 
 async function save() {

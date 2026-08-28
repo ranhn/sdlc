@@ -41,6 +41,12 @@ backend/_server_out.log
 backend/_server_err.log
 backend/_verify_result.txt
 backend/_verify_*.py
+backend/_verify.py
+backend/_tmp_*.py
+backend/_reset_*.py
+backend/backend.log
+backend/backend_err.log
+frontend/frontend.log
 
 # ---- 备份与日志 ----
 backups/
