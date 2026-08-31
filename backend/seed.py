@@ -52,7 +52,7 @@ def init():
             dept_map[name] = dept
     db.commit()
 
-    # 管理员与演示账号（密码均为 admin123 / sec123 / dev123 ...）
+    # 管理员账号（只有 admin 一个种子账号，其他用户由管理员在'人员管理'页面手动添加）
     admin_user = db.query(User).filter(User.username == "admin").first()
     if not admin_user:
         admin_user = User(
@@ -61,22 +61,14 @@ def init():
             department_id=dept_map["安全部"].id,
         )
         db.add(admin_user)
-    sec_user = db.query(User).filter(User.username == "secops").first()
-    if not sec_user:
-        sec_user = User(
-            username="secops", password_hash=hash_password("sec123"),
-            full_name="安全运营小李", role_id=role_map["secops"].id,
-            department_id=dept_map["安全部"].id,
-        )
-        db.add(sec_user)
-    dev_user = db.query(User).filter(User.username == "dev").first()
-    if not dev_user:
-        dev_user = User(
-            username="dev", password_hash=hash_password("dev123"),
-            full_name="研发小王", role_id=role_map["dev"].id,
-            department_id=dept_map["研发部"].id,
-        )
-        db.add(dev_user)
+    db.commit()
+
+    # 取一个现有非 admin 用户当示例漏洞的 reporter / assignee（避免外键 NULL）
+    _other_user = db.query(User).filter(User.username != "admin").order_by(User.id).first()
+    if not _other_user:
+        # 极端兜底：数据库里一个非 admin 用户都没有，示例漏洞的 reporter/assignee 用 admin
+        _other_user = admin_user
+
     # 兼容旧库：清理"培训讲师"角色与账号
     # 旧版 seed 会在 ROLES 中创建 trainer 角色并生成 trainer 账号
     # 本版已移除培训讲师角色，升级时主动清掉，避免前端下拉还显示"培训讲师"
@@ -116,7 +108,7 @@ def init():
     sys_map = {}
     for name in ["官网门户", "订单系统", "用户中心", "管理后台"]:
         if not db.query(AssetSystem).filter(AssetSystem.name == name).first():
-            s = AssetSystem(name=name, description=f"{name}（示例）", owner_id=dev_user.id)
+            s = AssetSystem(name=name, description=f"{name}（示例）", owner_id=_other_user.id)
             db.add(s)
             sys_map[name] = s
     db.commit()
@@ -126,19 +118,20 @@ def init():
     # 示例漏洞（仅当漏洞表为空时）
     if db.query(Vuln).count() == 0:
         now = datetime.utcnow()
+        # 示例漏洞的 reporter 全部用 admin，assignee 全部用 _other_user（首个非 admin 现有用户）
         samples = [
             ("官网门户SQL注入漏洞", "登录接口存在SQL注入，可绕过认证", "官网门户",
-             "critical", "SQL注入", "9.8", "confirmed", dev_user, sec_user),
+             "critical", "SQL注入", "9.8", "confirmed", admin_user, _other_user),
             ("订单系统越权访问", "订单详情接口未做鉴权，可越权查看他人订单", "订单系统",
-             "high", "越权", "8.1", "fixing", dev_user, sec_user),
+             "high", "越权", "8.1", "fixing", admin_user, _other_user),
             ("用户中心XSS漏洞", "个人资料昵称字段未过滤导致存储型XSS", "用户中心",
-             "medium", "XSS", "6.3", "pending", sec_user, sec_user),
+             "medium", "XSS", "6.3", "pending", admin_user, _other_user),
             ("管理后台弱口令", "后台存在弱口令账号且无锁定策略", "管理后台",
-             "high", "弱口令", "7.5", "retest", dev_user, dev_user),
+             "high", "弱口令", "7.5", "retest", admin_user, _other_user),
             ("官网门户信息泄露", "错误页面泄露数据库类型与路径信息", "官网门户",
-             "low", "信息泄露", "3.7", "fixed", dev_user, sec_user),
+             "low", "信息泄露", "3.7", "fixed", admin_user, _other_user),
             ("订单系统组件漏洞", "log4j 组件版本存在已知 CVE（示例）", "订单系统",
-             "critical", "组件漏洞", "10.0", "pending", sec_user, sec_user),
+             "critical", "组件漏洞", "10.0", "pending", admin_user, _other_user),
         ]
         for title, desc, sysname, sev, vtype, cvss, status, reporter, assignee in samples:
             v = Vuln(
@@ -285,14 +278,14 @@ def init():
             ))
         db.commit()
 
-    # 学习进度示例（研发小王学完开发安全规范并得分）
+    # 学习进度示例（首个非 admin 用户学完开发安全规范并得分）
     course_dev = db.query(TrainingCourse).filter(
         TrainingCourse.title == "应用安全开发规范").first()
     if course_dev and not db.query(CourseProgress).filter(
             CourseProgress.course_id == course_dev.id,
-            CourseProgress.user_id == dev_user.id).first():
+            CourseProgress.user_id == _other_user.id).first():
         db.add(CourseProgress(
-            course_id=course_dev.id, user_id=dev_user.id,
+            course_id=course_dev.id, user_id=_other_user.id,
             started_at=now - timedelta(days=2),
             completed_at=now - timedelta(days=1), score=90,
         ))
@@ -300,9 +293,8 @@ def init():
 
     print("✅ 种子数据初始化完成")
     print("   管理员: admin / （请通过平台修改初始密码）")
-    print("   安全专家: secops / （请通过平台修改初始密码）")
-    print("   研发人员: dev / （请通过平台修改初始密码）")
-    print("   （已移除培训讲师角色）")
+    print("   其他账号请在'人员管理'页面手动添加")
+    print("   （已移除培训讲师角色；不再自动创建 secops / dev 演示账号）")
     db.close()
 
 
