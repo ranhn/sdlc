@@ -19,4 +19,6 @@ REM 数据库：使用相对路径，便于跨机器
 set DATABASE_URL=sqlite:///./security_platform.db
 
 REM 启动
-uvicorn app.app_entry:app --host 127.0.0.1 --port 8001 --reload --no-use-colors
+REM 使用统一入口 main.py（同时挂载 SDLC 业务子应用 + /threat AI 威胁建模 + Vue3 前端 SPA）
+REM 单独的 app.app_entry:app 不会挂载威胁建模，会导致 /threat/api/* 全部 404
+uvicorn main:app --host 127.0.0.1 --port 8001 --reload --no-use-colors

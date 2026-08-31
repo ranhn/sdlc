@@ -38,6 +38,9 @@ backend/threat/data/llm_cache.sqlite-*
 backend/threat/data/results/
 backend/threat/data/attachments/
 backend/uploads/
+# 运行时的 data 目录（SQLite 数据库），但保留 .gitkeep 占位
+backend/data/*
+!backend/data/.gitkeep
 
 # 临时输出 / 启动日志 / 验证产物
 backend/_out.txt

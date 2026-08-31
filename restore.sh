@@ -1,66 +1,56 @@
-#!/usr/bin/env bash
-# SDLC 安全平台 - 恢复脚本
-# 用法：
-#   ./restore.sh                                    # 列出所有可用备份
-#   ./restore.sh sdlc_backup_20260828_020000.tar.gz # 恢复指定备份
-#   ./restore.sh latest                             # 恢复最新备份
-set -euo pipefail
+#!/bin/bash
+# ============================================
+# VeSync SDLC 安全平台 - 数据恢复
+# 用法：./restore.sh /backup/sdlc/sdlc-20260831-120000.tar.gz
+# ============================================
+set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKUP_DIR="${BACKUP_DIR:-${SCRIPT_DIR}/backups}"
-DB_PATH="${DB_PATH:-${SCRIPT_DIR}/backend/security_platform.db}"
-UPLOADS_PATH="${UPLOADS_PATH:-${SCRIPT_DIR}/backend/uploads}"
-PARENT_DIR="$(dirname "${DB_PATH}")"
+cd "$(dirname "$0")"
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+warn() { echo -e "${YELLOW}$*${NC}"; }
+log() { echo -e "${GREEN}$*${NC}"; }
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-log()  { echo -e "${GREEN}[$(date +%H:%M:%S)]${NC} $*"; }
-warn() { echo -e "${YELLOW}[$(date +%H:%M:%S)]${NC} $*"; }
-err()  { echo -e "${RED}[$(date +%H:%M:%S)]${NC} $*" >&2; }
+BACKUP_FILE="${1:?用法: $0 <backup.tar.gz>}"
+[ -f "$BACKUP_FILE" ] || { echo "❌ 文件不存在: $BACKUP_FILE"; exit 1; }
 
-# 列出备份
-list_backups() {
-    echo "可用备份："
-    ls -lh "${BACKUP_DIR}"/sdlc_backup_*.tar.gz 2>/dev/null || { err "无备份文件"; exit 1; }
-}
+warn "⚠️  即将从 $BACKUP_FILE 恢复数据"
+warn "    现有数据会被覆盖！"
+read -p "确认恢复？(输入 yes 继续) " ans
+[ "$ans" = "yes" ] || { echo "已取消"; exit 0; }
 
-# 选择备份
-SELECTED="${1:-}"
-if [[ -z "${SELECTED}" ]]; then
-    list_backups
-    echo
-    read -rp "请输入备份文件名（或 Ctrl+C 退出）: " SELECTED
-fi
+# 停后端（保留 nginx）
+log "停止后端服务"
+docker compose stop sdlc
 
-if [[ "${SELECTED}" == "latest" ]]; then
-    SELECTED="$(ls -t "${BACKUP_DIR}"/sdlc_backup_*.tar.gz 2>/dev/null | head -1)"
-    [[ -z "${SELECTED}" ]] && { err "无备份文件"; exit 1; }
-    log "选择最新备份：$(basename "${SELECTED}")"
-fi
+# 清空数据卷
+log "清空现有数据卷"
+docker run --rm \
+  -v sdlc-platform_sdlc_db:/data \
+  -v sdlc-platform_sdlc_uploads:/uploads \
+  alpine:latest sh -c "rm -rf /data/* /uploads/*"
 
-if [[ ! -f "${SELECTED}" ]]; then
-    SELECTED="${BACKUP_DIR}/${SELECTED}"
-fi
+# 解压备份
+log "解压备份到数据卷"
+docker run --rm \
+  -v sdlc-platform_sdlc_db:/data \
+  -v sdlc-platform_sdlc_uploads:/uploads \
+  -v "$(dirname "$BACKUP_FILE")":/backup \
+  alpine:latest sh -c "tar xzf /backup/$(basename "$BACKUP_FILE")"
 
-if [[ ! -f "${SELECTED}" ]]; then
-    err "备份文件不存在：${SELECTED}"
-    exit 1
-fi
+# 重启
+log "重启服务"
+docker compose up -d
 
-# 确认
-warn "即将从 $(basename "${SELECTED}") 恢复数据"
-warn "  数据库：${DB_PATH}"
-warn "  附件：${UPLOADS_PATH}"
-read -rp "确认恢复？现有数据将被覆盖！(yes/no): " CONFIRM
-[[ "${CONFIRM}" == "yes" ]] || { log "已取消"; exit 0; }
-
-# 备份当前数据（防止恢复失败）
-if [[ -f "${DB_PATH}" ]]; then
-    cp "${DB_PATH}" "${DB_PATH}.pre-restore.$(date +%Y%m%d_%H%M%S)"
-    warn "已备份当前数据库到 ${DB_PATH}.pre-restore.*"
-fi
-
-# 解压
-log "解压备份..."
-tar -xzf "${SELECTED}" -C "${PARENT_DIR}"
-log "恢复完成 ✓"
-log "请重启服务：docker compose restart sdlc"
+# 健康检查
+log "等待健康检查..."
+for i in {1..20}; do
+  sleep 2
+  if curl -sf http://localhost/api/health >/dev/null 2>&1; then
+    log "✅ 恢复完成"
+    exit 0
+  fi
+done
+warn "❌ 健康检查未通过，请 docker compose logs --tail=200"
+exit 1
