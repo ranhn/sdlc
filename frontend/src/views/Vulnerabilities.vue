@@ -46,6 +46,12 @@
             <el-option v-for="s in systems" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="来源">
+          <el-select v-model="filters.is_external" clearable placeholder="全部来源" style="width: 130px" @change="load">
+            <el-option label="内部提交" :value="false" />
+            <el-option label="外部报告" :value="true" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-checkbox v-model="filters.mine" @change="load">只看我的</el-checkbox>
         </el-form-item>
@@ -67,6 +73,12 @@
         </template>
       </el-table-column>
       <el-table-column prop="vuln_type" label="类型" min-width="90" align="center" />
+      <el-table-column label="来源" width="80" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.is_external" type="danger" size="small">外部</el-tag>
+          <el-tag v-else type="info" size="small">内部</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80" align="center">
         <template #default="{ row }">
           <el-tag :type="statusType[row.status]" size="small">{{ statusNames[row.status] }}</el-tag>
@@ -117,6 +129,15 @@
             <el-option v-for="t in vulnTypes" :key="t" :label="t" :value="t" />
           </el-select>
         </el-form-item>
+        <el-form-item label="漏洞来源">
+          <el-radio-group v-model="createForm.is_external" @change="onSourceChange">
+            <el-radio-button :value="false">内部提交</el-radio-button>
+            <el-radio-button :value="true">外部报告</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="createForm.is_external" label="外部来源">
+          <el-input v-model="createForm.external_source" placeholder="如：CNVD-2024-001、渗透测试报告、SRC平台" maxlength="100" show-word-limit />
+        </el-form-item>
         <el-form-item label="漏洞描述">
           <el-input v-model="createForm.description" type="textarea" :rows="3" placeholder="描述漏洞位置与现象" />
         </el-form-item>
@@ -162,6 +183,11 @@
           </el-descriptions-item>
           <el-descriptions-item label="所属系统">{{ current.system_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="类型">{{ current.vuln_type || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="来源">
+            <el-tag v-if="current.is_external" type="danger" size="small">外部</el-tag>
+            <el-tag v-else type="info" size="small">内部</el-tag>
+            <span v-if="current.is_external && current.external_source" class="ext-src"> · {{ current.external_source }}</span>
+          </el-descriptions-item>
           <el-descriptions-item label="提交人">{{ current.reporter_name }}</el-descriptions-item>
           <el-descriptions-item label="负责人">{{ current.assignee_name || '未指派' }}</el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ fmt(current.created_at) }}</el-descriptions-item>
@@ -259,7 +285,7 @@ const list = ref([])
 const systems = ref([])
 const users = ref([])
 const loading = ref(false)
-const filters = reactive({ status: '', severity: '', system_id: null, mine: false })
+const filters = reactive({ status: '', severity: '', system_id: null, is_external: '', mine: false })
 
 const statusNames = {
   draft: '草稿', pending: '待确认', confirmed: '已确认', fixing: '修复中', retest: '待复测',
@@ -302,6 +328,7 @@ const createRef = ref()
 const createForm = reactive({
   title: '', system_id: null, severity: 'medium', vuln_type: '',
   description: '', impact: '', assignee_id: null,
+  is_external: false, external_source: '',
   steps: [{ id: 's1', desc: '', img: null }],
 })
 const createRules = {
@@ -335,6 +362,7 @@ function openCreate() {
   Object.assign(createForm, {
     title: '', system_id: null, severity: 'medium', vuln_type: '',
     description: '', impact: '', assignee_id: null,
+    is_external: false, external_source: '',
   })
   createForm.steps = [newStep()]
   createVisible.value = true
@@ -385,6 +413,8 @@ async function submitCreate() {
       reproduce_steps,
       screenshots,
       step_screenshots,
+      is_external: createForm.is_external,
+      external_source: createForm.is_external ? (createForm.external_source || null) : null,
     })
     ElMessage.success('漏洞提交成功')
     createVisible.value = false
@@ -502,6 +532,9 @@ async function load() {
     if (filters.status) params.status = filters.status
     if (filters.severity) params.severity = filters.severity
     if (filters.system_id) params.system_id = filters.system_id
+    if (filters.is_external !== null && filters.is_external !== undefined && filters.is_external !== '') {
+      params.is_external = filters.is_external
+    }
     if (filters.mine) params.mine = true
     const res = await vulnApi.list(params)
     list.value = res.data

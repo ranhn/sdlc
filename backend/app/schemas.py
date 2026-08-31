@@ -76,6 +76,9 @@ class VulnCreate(BaseModel):
     vuln_type: Optional[str] = None
     cvss: Optional[str] = None
     assignee_id: Optional[int] = None
+    # 漏洞来源：False=内部提交（默认），True=外部报告
+    is_external: bool = False
+    external_source: Optional[str] = None
 
 
 class VulnAssign(BaseModel):
@@ -111,6 +114,8 @@ class VulnOut(BaseModel):
     cvss: Optional[str] = None
     vuln_type: Optional[str] = None
     source: str
+    is_external: bool = False
+    external_source: Optional[str] = None
     rejection_reason: Optional[str] = None
     sla_deadline: Optional[datetime] = None
     created_at: datetime

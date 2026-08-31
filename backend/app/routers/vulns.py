@@ -78,6 +78,7 @@ def list_vulns(
     system_id: int | None = Query(default=None),
     mine: bool = Query(default=False),
     assigned_to_me: bool = Query(default=False),
+    is_external: bool | None = Query(default=None, description="漏洞来源过滤：None=全部, True=外部, False=内部"),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
@@ -88,6 +89,8 @@ def list_vulns(
         query = query.filter(Vuln.severity == severity)
     if system_id:
         query = query.filter(Vuln.system_id == system_id)
+    if is_external is not None:
+        query = query.filter(Vuln.is_external == is_external)
     if mine:
         query = query.filter((Vuln.reporter_id == current.id) | (Vuln.assignee_id == current.id))
     if assigned_to_me:
@@ -229,6 +232,8 @@ def create_vuln(data: VulnCreate, db: Session = Depends(get_db), current: User =
         assignee_id=data.assignee_id,
         status="pending",
         source="manual",
+        is_external=data.is_external,
+        external_source=data.external_source,
     )
     db.add(v)
     db.commit()

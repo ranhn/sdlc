@@ -29,6 +29,12 @@
             <el-option v-for="s in systems" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="来源">
+          <el-select v-model="filters.is_external" clearable placeholder="全部来源" style="width: 130px" @change="load">
+            <el-option label="内部提交" :value="false" />
+            <el-option label="外部报告" :value="true" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <div class="tip">仅展示指派给您（修复人）的漏洞</div>
     </el-card>
@@ -48,6 +54,12 @@
         </template>
       </el-table-column>
       <el-table-column prop="vuln_type" label="类型" min-width="90" align="center" />
+      <el-table-column label="来源" width="80" align="center">
+        <template #default="{ row }">
+          <el-tag v-if="row.is_external" type="danger" size="small">外部</el-tag>
+          <el-tag v-else type="info" size="small">内部</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80" align="center">
         <template #default="{ row }">
           <el-tag :type="statusType[row.status]" size="small">{{ statusNames[row.status] }}</el-tag>
@@ -78,6 +90,11 @@
           </el-descriptions-item>
           <el-descriptions-item label="所属系统">{{ current.system_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="类型">{{ current.vuln_type || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="来源">
+            <el-tag v-if="current.is_external" type="danger" size="small">外部</el-tag>
+            <el-tag v-else type="info" size="small">内部</el-tag>
+            <span v-if="current.is_external && current.external_source" class="ext-src"> · {{ current.external_source }}</span>
+          </el-descriptions-item>
           <el-descriptions-item label="提交人">{{ current.reporter_name }}</el-descriptions-item>
           <el-descriptions-item label="负责人">{{ current.assignee_name || '未指派' }}</el-descriptions-item>
           <el-descriptions-item label="CVSS">{{ current.cvss || '—' }}</el-descriptions-item>
@@ -137,7 +154,7 @@ const store = useUserStore()
 const list = ref([])
 const systems = ref([])
 const loading = ref(false)
-const filters = reactive({ status: '', severity: '', system_id: null })
+const filters = reactive({ status: '', severity: '', system_id: null, is_external: '' })
 
 const statusNames = {
   draft: '草稿', pending: '待确认', confirmed: '已确认', fixing: '修复中', retest: '待复测',
@@ -216,6 +233,9 @@ async function load() {
     if (filters.status) params.status = filters.status
     if (filters.severity) params.severity = filters.severity
     if (filters.system_id) params.system_id = filters.system_id
+    if (filters.is_external !== null && filters.is_external !== undefined && filters.is_external !== '') {
+      params.is_external = filters.is_external
+    }
     const res = await vulnApi.list(params)
     list.value = res.data
   } finally { loading.value = false }

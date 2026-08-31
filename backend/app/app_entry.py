@@ -41,6 +41,8 @@ def _run_lightweight_migrations():
         ("sys_user", "feishu_open_id", "VARCHAR(100)"),
         ("sys_user", "last_synced_at", "DATETIME"),
         ("sys_user", "must_change_password", "BOOLEAN DEFAULT 0"),
+        ("vuln", "is_external", "BOOLEAN DEFAULT 0 NOT NULL"),
+        ("vuln", "external_source", "VARCHAR(100)"),
     ]
     with engine.begin() as conn:
         for table, column, col_type in migrations:
