@@ -1,3 +1,7 @@
+# ============================================
+# SDLC 主后端 + 威胁建模子应用 统一依赖
+# 同步自 threat/requirements.txt，请保持版本一致
+# ============================================
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
@@ -8,4 +12,14 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.20
 python-docx==1.2.0
+
+# ---- 飞书 API（feishu router） ----
 httpx==0.28.1
+
+# ---- 威胁建模子应用（threat/app）----
+# openai 用 LLM 客户端（llm_client.py）
+openai==1.59.6
+# threat 自己 requirements 的其他依赖
+python-dotenv==1.0.1
+aiosqlite==0.20.0
+tenacity==9.0.0
