@@ -13,10 +13,10 @@ from app.security import hash_password
 
 ROLES = [
     ("超级管理员", "admin", "平台全部权限"),
-    ("安全运营", "secops", "漏洞审核/流转/复测、资产维护"),
+    ("安全专家", "secops", "漏洞审核/流转/复测、资产维护"),
     ("研发人员", "dev", "提交漏洞、认领修复、学习培训"),
     ("测试人员", "tester", "提交漏洞、复测验证"),
-    ("培训讲师", "trainer", "课程/题库/考试管理"),
+    # 已移除"培训讲师"角色：培训职能由安全专家/普通员工承担
     ("普通员工", "user", "个人工作台、学习、提交漏洞"),
 ]
 
@@ -77,15 +77,40 @@ def init():
             department_id=dept_map["研发部"].id,
         )
         db.add(dev_user)
-    trainer_user = db.query(User).filter(User.username == "trainer").first()
-    if not trainer_user:
-        trainer_user = User(
-            username="trainer", password_hash=hash_password("train123"),
-            full_name="安全培训讲师", role_id=role_map["trainer"].id,
-            department_id=dept_map["安全部"].id,
-        )
-        db.add(trainer_user)
-    db.commit()
+    # 兼容旧库：清理"培训讲师"角色与账号
+    # 旧版 seed 会在 ROLES 中创建 trainer 角色并生成 trainer 账号
+    # 本版已移除培训讲师角色，升级时主动清掉，避免前端下拉还显示"培训讲师"
+    from sqlalchemy import text as _sa_text
+    _trainer_user_ids = [
+        row[0] for row in db.execute(
+            _sa_text("SELECT id FROM sys_user WHERE username='trainer' AND is_deleted=0")
+        ).all()
+    ]
+    if _trainer_user_ids:
+        _ids = ",".join(str(i) for i in _trainer_user_ids)
+        # 培训课程的讲师改为 NULL（instructor_id 允许为空）
+        db.execute(_sa_text(
+            f"UPDATE training_course SET instructor_id=NULL WHERE instructor_id IN ({_ids})"
+        ))
+        # 软删除 trainer 账号
+        db.execute(_sa_text(
+            f"UPDATE sys_user SET is_deleted=1, is_active=0 WHERE id IN ({_ids})"
+        ))
+        db.commit()
+    # 删掉"培训讲师"角色（兼容旧库）
+    _trainer_role_row = db.execute(_sa_text(
+        "SELECT id FROM sys_role WHERE code='trainer' LIMIT 1"
+    )).first()
+    if _trainer_role_row:
+        # 把历史上 trainer 角色的用户改回普通员工（若有）
+        db.execute(_sa_text(
+            "UPDATE sys_user SET role_id=(SELECT id FROM sys_role WHERE code='user' LIMIT 1) "
+            "WHERE role_id=:rid"
+        ), {"rid": _trainer_role_row[0]})
+        db.execute(_sa_text("DELETE FROM sys_role WHERE id=:rid"), {"rid": _trainer_role_row[0]})
+        db.commit()
+
+    # 不再创建 trainer 账号（培训讲师角色已取消）
 
     # 示例系统
     sys_map = {}
@@ -224,7 +249,7 @@ def init():
         for title, cat, desc, content, required, dur in courses:
             db.add(TrainingCourse(
                 title=title, category=cat, description=desc, content=content,
-                instructor_id=trainer_user.id, duration_min=dur,
+                instructor_id=None, duration_min=dur,  # 讲师角色已取消，instructor 留空
                 is_required=required, is_published=True,
             ))
         db.commit()
@@ -275,9 +300,9 @@ def init():
 
     print("✅ 种子数据初始化完成")
     print("   管理员: admin / （请通过平台修改初始密码）")
-    print("   安全运营: secops / （请通过平台修改初始密码）")
+    print("   安全专家: secops / （请通过平台修改初始密码）")
     print("   研发人员: dev / （请通过平台修改初始密码）")
-    print("   培训讲师: trainer / （请通过平台修改初始密码）")
+    print("   （已移除培训讲师角色）")
     db.close()
 
 
