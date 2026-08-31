@@ -2,12 +2,12 @@
 
 运行：python -m seed
 
-环境变量：
-- ``SDLC_SKIP_SAMPLES=1`` 时跳过"演示/示例"数据 seed（角色/部门/管理员仍会 seed，
-  但已存在的角色/部门/管理员不会再被 update；示例系统/漏洞/CVE/SBOM/扫描/培训/题库
-  全部跳过）。
-  设计目的：用户已经在生产化使用本平台（已有真实用户/资产/漏洞），不希望每次容器
-  重建或升级时，已删除的演示数据又被自动回填。
+行为：
+- 角色/部门/管理员等"必需"数据：每次启动都会**幂等 upsert**（已有则跳过，没有则创建）
+- 演示/示例数据（系统/漏洞/CVE/SBOM/扫描/培训/题库/学习进度）：仅在**首次部署**时
+  seed ——判断标准是"业务表是否完全为空"（系统/漏洞/培训/CVE/SBOM 全部 count==0）。
+  设计目的：用户已经在生产化使用本平台后，删了的演示数据不会被容器重建/升级时
+  自动回填；只有当用户主动清空所有业务表（视作"回到首次部署"）才会重新 seed。
 """
 import os
 from datetime import datetime, timedelta
@@ -18,10 +18,6 @@ from app.models import (
     SBOMComponent, ScanResult, ScanTask, TrainingCourse, User, Vuln, VulnFlow,
 )
 from app.security import hash_password
-
-# 跳过示例数据（演示系统/漏洞/CVE/SBOM/扫描/培训/题库）的开关；
-# 角色/部门/管理员等"必需"数据仍会幂等 upsert，不受影响。
-SKIP_SAMPLES = os.getenv("SDLC_SKIP_SAMPLES") == "1"
 
 ROLES = [
     ("超级管理员", "admin", "平台全部权限"),
@@ -116,12 +112,21 @@ def init():
 
     # 不再创建 trainer 账号（培训讲师角色已取消）
 
-    # ── 演示/示例数据开关 ──
-    # 设为 SDLC_SKIP_SAMPLES=1 时：跳过全部示例/演示数据 seed（示例系统/漏洞/CVE/SBOM/扫描/培训/题库/学习进度），
-    # 角色/部门/管理员/培训讲师兼容 这些"必需"数据仍会幂等 upsert。
-    if SKIP_SAMPLES:
+    # ── 演示/示例数据 seed 决策 ──
+    # 仅当"业务表完全为空"时（即首次部署）才 seed 示例数据。
+    # 升级场景：用户已经有任何业务数据（资产/漏洞/培训/CVE/SBOM），
+    # 跳示例数据 seed → 已删的演示数据不会被自动回填。
+    # 边缘场景：用户主动清空所有业务表 → 视为"回到首次部署" → 自动重新 seed。
+    is_first_deploy = (
+        db.query(AssetSystem).count() == 0
+        and db.query(Vuln).count() == 0
+        and db.query(TrainingCourse).count() == 0
+        and db.query(CVEInfo).count() == 0
+        and db.query(SBOMComponent).count() == 0
+    )
+    if not is_first_deploy:
         print("✅ 种子数据初始化完成")
-        print("   ℹ️  SDLC_SKIP_SAMPLES=1：已跳过全部示例/演示数据")
+        print("   ℹ️  检测到已有业务数据（升级场景），跳过示例/演示数据 seed")
         print("   管理员: admin / （请通过平台修改初始密码）")
         print("   其他账号请在'人员管理'页面手动添加")
         db.close()

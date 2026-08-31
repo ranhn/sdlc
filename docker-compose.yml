@@ -22,9 +22,6 @@ services:
       - DATABASE_URL=sqlite:///./data/security_platform.db
       # CORS 默认从 .env 读取（生产用实际域名）
       - CORS_ORIGINS=${CORS_ORIGINS}
-      # 设为 1 后, 容器启动时不再 seed 示例系统/漏洞/CVE/SBOM/扫描/培训/题库
-      # 适用于已经在用本平台生产化工作的用户，避免删了演示数据又被自动回填
-      - SDLC_SKIP_SAMPLES=${SDLC_SKIP_SAMPLES:-1}
     volumes:
       # ✅ 只挂数据子目录，不再整目录挂 backend
       # 否则 named volume 会在首次启动后"冻结"代码，更新不生效
