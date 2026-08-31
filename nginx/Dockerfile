@@ -27,12 +27,16 @@ COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
 # 生成自签证书（如挂载了真实证书会覆盖此文件）
 # 浏览器会报警告；生产请把证书放到 nginx/ssl/ 目录挂载进来
-RUN mkdir -p /etc/nginx/ssl /var/www/certbot && \
-    openssl req -x509 -nodes -days 3650 \
+# 注意：不重定向 stderr，让构建失败时能立刻看到
+RUN mkdir -p /etc/nginx/ssl /var/www/certbot \
+    && cd /etc/nginx/ssl \
+    && openssl req -x509 -nodes -days 3650 \
         -newkey rsa:2048 \
-        -keyout /etc/nginx/ssl/privkey.pem \
-        -out /etc/nginx/ssl/fullchain.pem \
-        -subj "/CN=localhost" 2>/dev/null
+        -keyout privkey.pem \
+        -out fullchain.pem \
+        -subj "/CN=localhost" \
+    && ls -la /etc/nginx/ssl/ \
+    && echo "=== SSL cert generated ==="
 
 # 暴露端口
 EXPOSE 80 443
