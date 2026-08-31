@@ -80,16 +80,25 @@ EOF
   [ "$ans" = "yes" ] || { echo "已退出，请修改 .env 后重跑 deploy.sh"; exit 0; }
 fi
 
-# ---- 4. 防火墙 ----
+# ---- 4. 防火墙（firewalld/ufw 不可用时跳过，不阻塞部署） ----
 if command -v firewall-cmd >/dev/null 2>&1; then
-  log "开放 80/443 端口"
-  firewall-cmd --permanent --add-service=http
-  firewall-cmd --permanent --add-service=https
-  firewall-cmd --reload
+  log "尝试通过 firewalld 开放 80/443（失败不影响部署）"
+  firewall-cmd --permanent --add-service=http 2>/dev/null || true
+  firewall-cmd --permanent --add-service=https 2>/dev/null || true
+  firewall-cmd --reload 2>/dev/null || true
+  if ! systemctl is-active --quiet firewalld 2>/dev/null; then
+    warn "firewalld 未运行，端口开放需手动处理"
+  fi
 fi
 if command -v ufw >/dev/null 2>&1; then
-  ufw allow 80/tcp
-  ufw allow 443/tcp
+  ufw allow 80/tcp 2>/dev/null || true
+  ufw allow 443/tcp 2>/dev/null || true
+fi
+# iptables 兜底（容器/最小化系统常无 firewalld/ufw）
+if command -v iptables >/dev/null 2>&1 && ! systemctl is-active --quiet firewalld 2>/dev/null; then
+  log "通过 iptables 临时开放 80/443（重启失效）"
+  iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+  iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
 fi
 
 # ---- 5. 构建并启动 ----
