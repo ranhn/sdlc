@@ -17,13 +17,27 @@ import axios from 'axios'
 
 // 可选：从 localStorage 读取 API Token（用于后端开启了 API_TOKEN 鉴权的场景）
 const API_TOKEN_KEY = 'aitd.api.token'
-const token = localStorage.getItem(API_TOKEN_KEY)
+const apiToken = localStorage.getItem(API_TOKEN_KEY)
+
+// SDLC 平台登录后的 JWT 存于 localStorage.token；威胁建模子应用复用其身份
+// 以实现「按角色查看 / 删除建模结果」的权限控制（见 backend/threat/app/core/auth.py）
+const SDLC_TOKEN_KEY = 'token'
 
 export const http = axios.create({
   baseURL: '/threat/api',
   // AI 分析采用异步任务：提交立即返回，轮询用较短的超时
   timeout: 15000,
-  headers: token ? { 'X-API-Key': token } : {},
+  headers: apiToken ? { 'X-API-Key': apiToken } : {},
+})
+
+// 请求拦截器：每次请求自动附带 SDLC JWT，后端据此识别当前用户与角色
+http.interceptors.request.use((config) => {
+  const sdlcToken = localStorage.getItem(SDLC_TOKEN_KEY)
+  if (sdlcToken) {
+    config.headers = config.headers || {}
+    config.headers.Authorization = `Bearer ${sdlcToken}`
+  }
+  return config
 })
 
 /** 设置/清除 API Token 请求头（供设置界面调用） */

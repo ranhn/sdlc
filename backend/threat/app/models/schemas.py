@@ -113,6 +113,15 @@ class ResultMeta(BaseModel):
     stats: dict[str, Any] = Field(
         default_factory=dict, description="统计信息（组件数/威胁数等）"
     )
+    owner_id: Optional[int] = Field(
+        None, description="建模人用户 ID；历史无 owner 的旧结果为 None"
+    )
+    owner_username: str = Field(
+        "", description="建模人用户名（SDLC 平台 username）"
+    )
+    owner_display_name: str = Field(
+        "", description="建模人显示名（中文姓名 / 昵称）"
+    )
 
 
 class ResultListResponse(BaseModel):

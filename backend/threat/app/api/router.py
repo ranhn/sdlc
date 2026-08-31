@@ -14,6 +14,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from openai import APIStatusError, AuthenticationError, BadRequestError
 
 from ..config import settings
+from ..core.auth import get_sdlc_user, can_view_all, ADMIN_ROLES
 from ..models.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -144,6 +145,7 @@ async def analyze(
     req: Request,
     _auth: None = Depends(verify_api_key),
     _rl: None = Depends(enforce_rate_limit),
+    current_user: dict = Depends(get_sdlc_user),
 ) -> AnalyzeResponse:
     """异步提交 AI 威胁建模任务，立即返回 task_id。
 
@@ -180,9 +182,15 @@ async def analyze(
             industry=request.industry,
             attachments=request.attachments,
             title=request.title,
+            owner=current_user if current_user.get("user_id") else None,
         )
     )
-    logger.info("已提交分析任务 %s（IP=%s）", task_id, _client_ip(req))
+    logger.info(
+        "已提交分析任务 %s（IP=%s, user=%s）",
+        task_id,
+        _client_ip(req),
+        (current_user or {}).get("username") or "-",
+    )
     return AnalyzeResponse(task_id=task_id, status=TaskStatus.RUNNING, steps=analyze_steps)
 
 
@@ -258,6 +266,7 @@ async def _run_analysis_task(
     industry: str | None = None,
     attachments: list[str] | None = None,
     title: str | None = None,
+    owner: dict[str, Any] | None = None,
 ) -> None:
     """后台执行完整的 AI 威胁建模流程，并逐步上报进度。"""
     # 开始收集本次建模产生的 LLM 响应缓存键（供删除结果时精准失效）
@@ -388,6 +397,7 @@ async def _run_analysis_task(
                 source_text=source_text,
                 cache_keys=cache_keys,
                 title=title,
+                owner=owner,
             )
         except Exception:
             logger.exception("持久化建模结果失败（不影响本次任务）")
@@ -527,9 +537,15 @@ async def list_results(
     page_size: int = Query(20, ge=1, le=100, description="每页条数"),
     methodology: str | None = Query(None, description="按方法论筛选"),
     keyword: str | None = Query(None, description="按标题关键词搜索"),
+    current_user: dict = Depends(get_sdlc_user),
 ) -> ResultListResponse:
-    """返回已保存的建模结果元数据（按时间倒序，支持分页 / 筛选 / 搜索）。"""
-    items = result_store.list()
+    """返回已保存的建模结果元数据（按时间倒序，支持分页 / 筛选 / 搜索）。
+
+    权限规则：
+    - 系统管理员 (admin) / 安全专家 (secops)：可看到所有结果
+    - 其他角色：仅看到自己建模的结果
+    """
+    items = result_store.list(user=current_user)
     # 筛选
     if methodology:
         items = [i for i in items if i.get("methodology") == methodology]
@@ -555,9 +571,13 @@ async def list_results(
 async def get_result(
     result_id: str,
     _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
 ) -> ResultDetailResponse:
     """返回单个建模结果的完整详情。"""
-    record = result_store.get(result_id)
+    try:
+        record = result_store.get(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not record:
         raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
     return ResultDetailResponse(
@@ -575,15 +595,28 @@ async def get_result(
 async def delete_result(
     result_id: str,
     _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
 ) -> dict[str, Any]:
     """删除一条历史建模结果。
+
+    权限：
+    - admin / secops：可删除任意结果
+    - 其他用户：仅可删除自己建模的结果
 
     删除时会一并失效该结果对应输入的 LLM 响应缓存，
     保证删除后重新建模不会命中旧结果，而是真实调用 LLM 重新分析。
     """
-    # 删除前先取出该结果记录，用于获取对应输入的缓存键
-    record = result_store.get(result_id)
-    deleted = result_store.delete(result_id)
+    # 删除前先取出该结果记录，用于获取对应输入的缓存键与 owner 校验
+    try:
+        record = result_store.get(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not record:
+        raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
+    try:
+        deleted = result_store.delete(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
     # 失效该结果对应的缓存键。
@@ -615,9 +648,16 @@ async def rename_result(
     result_id: str,
     body: RenameResultBody,
     _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
 ) -> dict[str, Any]:
-    """重命名一条历史建模结果的标题，便于检索。"""
-    renamed = result_store.rename(result_id, body.title)
+    """重命名一条历史建模结果的标题，便于检索。
+
+    权限：admin / secops 可重命名任意结果；其他用户仅可重命名自己建模的结果。
+    """
+    try:
+        renamed = result_store.rename(result_id, body.title, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not renamed:
         raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
     return {"renamed": True, "id": result_id, "title": body.title.strip()}
@@ -627,10 +667,17 @@ async def rename_result(
 async def export_result(
     result_id: str,
     _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
     format: str = Query("md", description="导出格式：md | json | csv | docx"),
 ):
-    """导出指定建模结果（Markdown / Threat Dragon JSON / CSV 威胁清单 / Word 报告）。"""
-    record = result_store.get(result_id)
+    """导出指定建模结果（Markdown / Threat Dragon JSON / CSV 威胁清单 / Word 报告）。
+
+    权限：admin / secops 可导出任意结果；其他用户仅可导出自己建模的结果。
+    """
+    try:
+        record = result_store.get(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not record:
         raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
 
@@ -676,14 +723,22 @@ async def update_threat_status(
     threat_id: str,
     body: ThreatStatusUpdate,
     _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
 ) -> dict[str, Any]:
-    """更新指定结果中某条威胁的处置状态（Open → Mitigated 等）并持久化。"""
-    updated = result_store.update_threat_status(
-        result_id,
-        threat_id,
-        new_status=body.status,
-        out_of_scope=body.outOfScope,
-    )
+    """更新指定结果中某条威胁的处置状态（Open → Mitigated 等）并持久化。
+
+    权限：admin / secops 可修改任意结果；其他用户仅可修改自己建模的结果。
+    """
+    try:
+        updated = result_store.update_threat_status(
+            result_id,
+            threat_id,
+            new_status=body.status,
+            out_of_scope=body.outOfScope,
+            user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(
             status_code=404, detail="结果或威胁不存在，无法更新状态"

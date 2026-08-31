@@ -14,8 +14,16 @@
           <div class="rp-title-row">
             <h2 class="rp-title">威胁建模结果</h2>
             <span class="rp-count-pill">{{ total }} 条记录</span>
+            <span class="rp-scope-pill" :class="canViewAll ? 'scope-all' : 'scope-mine'">
+              {{ canViewAll ? '全部结果' : '我的结果' }}
+            </span>
           </div>
-          <span class="rp-sub">历史建模记录，可导出 Markdown / JSON / CSV / Word 报告</span>
+          <span class="rp-sub">
+            历史建模记录，可导出 Markdown / JSON / CSV / Word 报告
+            <template v-if="!canViewAll">
+              · 当前仅显示你建模的记录（{{ currentUsername || '未登录' }}）
+            </template>
+          </span>
         </div>
       </div>
       <div class="rp-toolbar">
@@ -64,6 +72,9 @@
                 {{ item.stats?.flowCount ?? '-' }} 数据流 ·
                 {{ item.stats?.threatCount ?? '-' }} 威胁
               </span>
+              <span class="rp-stat rp-owner" :title="ownerTitle(item)">
+                建模人：{{ ownerLabel(item) }}
+              </span>
             </div>
           </div>
           <div class="rp-item-actions">
@@ -85,11 +96,13 @@
             <button
               class="rp-icon-btn rp-rename"
               title="重命名标题"
+              :disabled="!canModify(item)"
               @click.stop="openRename(item)"
             >
               重命名
             </button>
             <button
+              v-if="canDelete(item)"
               class="rp-icon-btn rp-del"
               title="删除此结果"
               @click.stop="doDelete(item)"
@@ -197,7 +210,8 @@
                     class="rp-status-select"
                     :class="'status-' + (t.status || 'Open')"
                     :value="t.status || 'Open'"
-                    :title="'点击修改处置状态'"
+                    :title="canModify(item) ? '点击修改处置状态' : '仅建模人/系统管理员/安全专家可修改'"
+                    :disabled="!canModify(item)"
                     @change="changeThreatStatus(item, t, $event)"
                     @click.stop
                   >
@@ -296,6 +310,7 @@ import {
   updateThreatStatus as apiUpdateThreatStatus,
 } from '@/api/threat.js'
 import { tSeverity, tStatus, tType, tMethodology } from '../../utils/i18n.js'
+import { useUserStore } from '@/store/user'
 
 const toastRef = ref(null)
 const toast = (msg, type = 'info') => toastRef.value?.toast(msg, type)
@@ -310,6 +325,37 @@ const loading = ref(false)
 const expandedId = ref(null)
 const detail = ref(null)
 const detailLoading = ref(false)
+
+// 当前用户与权限：admin / secops 可查看与操作所有结果；其他角色仅能操作自己建模的结果
+const userStore = useUserStore()
+const currentRole = computed(() => userStore.role || '')
+const currentUsername = computed(() => userStore.username || '')
+const canViewAll = computed(() => ['admin', 'secops'].includes(currentRole.value))
+function isOwner(item) {
+  return !!(item && item.owner_username && currentUsername.value &&
+    item.owner_username === currentUsername.value)
+}
+/** 写操作权限：重命名/删除/修改威胁状态。admin/secops 任意；其他用户仅自己。 */
+function canModify(item) {
+  return canViewAll.value || isOwner(item)
+}
+/** 删除按钮的可见性：与 canModify 一致，UI 上隐藏。 */
+function canDelete(item) {
+  return canModify(item)
+}
+/** 显示用的「建模人」标签：优先显示后端返回的中文姓名，其次用户名，匿名兜底 */
+function ownerLabel(item) {
+  if (!item) return '-'
+  return item.owner_display_name || item.owner_username || '匿名'
+}
+/** 鼠标悬浮提示：username · displayName，便于识别 */
+function ownerTitle(item) {
+  if (!item) return ''
+  const u = item.owner_username || ''
+  const n = item.owner_display_name || ''
+  if (u && n && n !== u) return `${u} · ${n}`
+  return u || n || '匿名'
+}
 
 // 列表分页 / 筛选 / 搜索
 const page = ref(1)
@@ -676,6 +722,28 @@ onMounted(() => load(1))
   background: var(--primary-soft);
   color: var(--primary);
   border: 1px solid var(--primary-border);
+  font-family: var(--font-mono);
+}
+.rp-scope-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.rp-scope-pill.scope-all {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid var(--success-border);
+}
+.rp-scope-pill.scope-mine {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+}
+.rp-owner {
+  color: var(--text-faint);
   font-family: var(--font-mono);
 }
 .rp-sub {

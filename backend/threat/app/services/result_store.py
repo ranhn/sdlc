@@ -122,6 +122,7 @@ class ResultStore:
         source_text: str,
         cache_keys: list[str] | None = None,
         title: str | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """保存一次建模结果，返回该结果的元数据字典。
 
@@ -130,8 +131,19 @@ class ResultStore:
                 删除该结果时，会用这些键精准失效对应输入的缓存，
                 从而保证删除后重新建模不会命中旧结果。
             title: 用户自定义标题；为空时自动从 source_text 提取。
+            owner: 建模人信息 ``{"user_id": int, "username": str,
+                "display_name": str}``；None 表示匿名（兼容老数据）。
         """
         result_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        owner_payload: dict[str, Any] = {}
+        if owner:
+            owner_payload = {
+                "owner_id": owner.get("user_id"),
+                "owner_username": owner.get("username") or "",
+                "owner_display_name": owner.get("display_name")
+                or owner.get("username")
+                or "",
+            }
         record = {
             "id": result_id,
             "title": title.strip() if title else self._safe_title(source_text),
@@ -141,11 +153,12 @@ class ResultStore:
             "summary": summary,
             "stats": stats,
             "cache_keys": list(cache_keys or []),
+            **owner_payload,
         }
         with self._lock:
             self._write(record)
             self._prune()
-        logger.info("已保存建模结果 %s", result_id)
+        logger.info("已保存建模结果 %s (owner=%s)", result_id, owner_payload.get("owner_username") or "-")
         return self._meta(record)
 
     # ------------------------------------------------------------------
@@ -166,32 +179,100 @@ class ResultStore:
             "methodology": record["methodology"],
             "created_at": record["created_at"],
             "stats": record.get("stats", {}),
+            "owner_id": record.get("owner_id"),
+            "owner_username": record.get("owner_username") or "",
+            "owner_display_name": record.get("owner_display_name")
+            or record.get("owner_username")
+            or "",
         }
 
-    def list(self) -> list[dict[str, Any]]:
-        """按创建时间倒序返回所有结果的元数据。"""
+    @staticmethod
+    def _can_view(record: dict[str, Any], user: dict[str, Any] | None) -> bool:
+        """判断当前用户是否可访问该结果。
+
+        - 角色 ``admin`` / ``secops``：可访问所有结果（含无 owner 的历史结果）
+        - 其他角色：仅当 ``record.owner_username == user.username`` 时可访问
+        - 未登录（user 为 None 或 username 为空）：仅 admin/secops 可访问
+        """
+        if not user:
+            return False
+        role = user.get("role") or ""
+        if role in {"admin", "secops"}:
+            return True
+        owner_username = record.get("owner_username") or ""
+        # 历史无 owner 字段的旧结果：仅 admin/secops 可见（见 _can_view）
+        if not owner_username:
+            return False
+        return owner_username == (user.get("username") or "")
+
+    def list(
+        self,
+        user: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """按创建时间倒序返回当前用户可见的结果元数据。
+
+        - admin / secops：返回所有结果
+        - 其他用户：仅返回 ``owner_username`` 与当前用户匹配的结果
+        - 未登录（无 user_id 且无 username）：返回空列表
+        """
         with self._lock:
             records = [r for r in self._iter_records()]
         records.sort(key=lambda r: r.get("created_at", 0), reverse=True)
-        return [self._meta(r) for r in records]
+        # admin/secops 不过滤
+        is_admin = bool(user) and (user.get("role") in {"admin", "secops"})
+        if is_admin:
+            return [self._meta(r) for r in records]
+        username = (user or {}).get("username") or ""
+        if not username:
+            # 未登录用户不可见任何结果
+            return []
+        return [
+            self._meta(r)
+            for r in records
+            if (r.get("owner_username") or "") == username
+        ]
 
-    def get(self, result_id: str) -> dict[str, Any] | None:
-        """返回单个结果的完整内容；不存在返回 None。"""
+    def get(
+        self,
+        result_id: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """返回单个结果的完整内容；不存在返回 None。
+
+        当 ``user`` 不为空时，会校验访问权限：非 owner 且非 admin/secops 抛
+        ``PermissionError``，调用方需将其转译为 403。
+        """
         with self._lock:
             path = self._path(result_id)
             if not path.exists():
                 return None
-            return self._load(path)
+            record = self._load(path)
+        if record is None:
+            return None
+        if user is not None and not self._can_view(record, user):
+            raise PermissionError("无权访问该威胁建模结果")
+        return record
 
-    def delete(self, result_id: str) -> bool:
-        """删除指定结果；返回是否存在并删除成功。"""
+    def delete(self, result_id: str, user: dict[str, Any] | None = None) -> bool:
+        """删除指定结果；返回是否存在并删除成功。
+
+        - admin / secops：可直接删除任意结果
+        - 其他用户：仅可删除自己建模的结果
+        """
         with self._lock:
             path = self._path(result_id)
             if not path.exists():
                 return False
-            path.unlink()
-            logger.info("已删除建模结果 %s", result_id)
-            return True
+            record = self._load(path)
+        if record is None:
+            return False
+        if user is not None and not self._can_view(record, user):
+            raise PermissionError("无权删除该威胁建模结果")
+        path.unlink()
+        logger.info(
+            "已删除建模结果 %s (by %s)", result_id, (user or {}).get("username") or "-"
+        )
+        return True
 
     def update_threat_status(
         self,
@@ -199,6 +280,7 @@ class ResultStore:
         threat_id: str,
         new_status: str | None = None,
         out_of_scope: bool | None = None,
+        user: dict[str, Any] | None = None,
     ) -> bool:
         """更新指定结果中某条威胁的处置状态或范围外标记，并持久化回写。
 
@@ -207,6 +289,7 @@ class ResultStore:
             threat_id: 威胁 id（cell 的 threat id）
             new_status: 新的处置状态（Open / Mitigated / ...），None 表示不修改
             out_of_scope: 是否标记为范围外，None 表示不修改
+            user: 当前操作人；非 owner 且非 admin/secops 时抛 ``PermissionError``
 
         Returns:
             是否找到并成功更新（找不到威胁返回 False）。
@@ -221,6 +304,8 @@ class ResultStore:
             record = self._load(path)
             if record is None:
                 return False
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权修改该威胁建模结果")
             model = record.get("model") or {}
             diagrams = ((model.get("detail") or {}).get("diagrams")) or []
             found = False
@@ -247,8 +332,16 @@ class ResultStore:
             )
             return True
 
-    def rename(self, result_id: str, title: str) -> bool:
+    def rename(
+        self,
+        result_id: str,
+        title: str,
+        user: dict[str, Any] | None = None,
+    ) -> bool:
         """重命名指定结果的标题，并持久化回写。
+
+        Args:
+            user: 当前操作人；非 owner 且非 admin/secops 时抛 ``PermissionError``
 
         Returns:
             是否找到并成功更新（找不到结果返回 False）。
@@ -264,6 +357,8 @@ class ResultStore:
             record = self._load(path)
             if record is None:
                 return False
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权重命名该威胁建模结果")
             record["title"] = title
             # 同步更新 meta（部分调用方读取 meta.title）
             meta = record.setdefault("meta", {})

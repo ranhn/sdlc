@@ -39,7 +39,11 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已删除")
 
     access_token = create_access_token(
-        data={"sub": str(user.id)},
+        data={
+            "sub": str(user.id),
+            "username": user.username,
+            "role": user.role.code if user.role else "user",
+        },
         expires_delta=timedelta(minutes=720),
     )
     return Token(
