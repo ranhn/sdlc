@@ -51,8 +51,14 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      # SSL 证书（生产环境挂载真实证书到 nginx/ssl/）
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      # ⚠️ 不再 bind mount nginx/ssl
+      # 原因：空目录挂载会"覆盖"镜像内生成的自签证书，导致 nginx 启动失败
+      # 镜像内 Dockerfile 已自动生成自签证书，浏览器会有警告但可访问
+      # 生产环境用真实证书时：
+      #   1. 在服务器 mkdir -p nginx/ssl 并放入 fullchain.pem + privkey.pem
+      #   2. 取消下面这行注释
+      #   3. docker compose up -d --force-recreate nginx
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
       # Let's Encrypt 验证目录
       - ./nginx/certbot:/var/www/certbot
       # Nginx 日志（落盘到宿主机）
