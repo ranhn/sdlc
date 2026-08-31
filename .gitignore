@@ -30,6 +30,9 @@ backend/static_new/
 backend/security_platform.db
 backend/security_platform.db-*
 backend/security_platform.db.bak*
+# SDLC 主库（用户/漏洞/审计等敏感数据，绝对不能进 git）
+backend/sdlc.db
+backend/sdlc.db-*
 backend/threat/data/llm_cache.sqlite
 backend/threat/data/llm_cache.sqlite-*
 backend/threat/data/results/

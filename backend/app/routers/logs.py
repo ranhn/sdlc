@@ -1,9 +1,11 @@
 """操作审计日志查询接口（仅超级管理员）。"""
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import OperationLog, User
+from ..models import OperationLog, User, Vuln
 from ..security import get_current_user
 
 router = APIRouter(prefix="/api/logs", tags=["审计日志"])
@@ -32,6 +34,40 @@ def _resolve_operator_names(db: Session, user_ids: list[int]) -> dict[int, tuple
     return {r[0]: (r[1], r[2]) for r in rows}
 
 
+# 匹配「指派漏洞 #N 给 M」老格式（M 是 assignee_id 数字），用于补全日志可读性
+_ASSIGN_LEGACY_RE = re.compile(r"指派漏洞\s*#\s*(\d+)\s*给\s*(\d+)\s*$")
+# 匹配「删除漏洞 #N xxx」老格式（不需处理，仅参考）
+
+
+def _enrich_assign_detail(
+    db: Session,
+    detail: str,
+    user_map: dict[int, tuple[str, str]],
+    vuln_map: dict[int, str],
+) -> str:
+    """对 ``assign_vuln`` 类的历史 detail 做可读性增强。
+
+    早期版本写入的 detail 形如 ``指派漏洞 #10 给 3``（仅 ID 无姓名），
+    审计时看不出接收人。这里将 ID 反查成 ``给 username(全名)[ID=3]``，
+    已知格式化好的新 detail（带 ``[ID=3]`` 标识）则原样返回。
+    """
+    if not detail:
+        return detail
+    m = _ASSIGN_LEGACY_RE.match(detail.strip())
+    if not m:
+        return detail
+    vuln_id = int(m.group(1))
+    assignee_id = int(m.group(2))
+    title = vuln_map.get(vuln_id)
+    if assignee_id in user_map:
+        u_name, u_full = user_map[assignee_id]
+        assignee_desc = f"{u_name}({u_full})[ID={assignee_id}]"
+    else:
+        assignee_desc = f"ID={assignee_id}（用户不存在）"
+    title_part = f"「{title}」" if title else ""
+    return f"指派漏洞 #{vuln_id}{title_part}给 {assignee_desc}"
+
+
 @router.get("")
 def list_logs(
     operator: str | None = Query(default=None),
@@ -55,10 +91,27 @@ def list_logs(
         .all()
     )
     # 批量解析操作人当前 full_name，UI 可与 OperationLog.username 组合展示
-    name_map = _resolve_operator_names(db, [l.user_id for l in logs if l.user_id])
+    name_map = _resolve_operator_names(db, [l.user_id for l in logs if l.user_id is not None])
+    # 收集 assign_vuln 类日志里的漏洞 id，用于反查标题（增强历史 detail 可读性）
+    vuln_ids: set[int] = set()
+    for l in logs:
+        if l.action == "assign_vuln" and l.detail:
+            m = _ASSIGN_LEGACY_RE.match(l.detail.strip())
+            if m:
+                try:
+                    vuln_ids.add(int(m.group(1)))
+                except (TypeError, ValueError):
+                    pass
+    vuln_map: dict[int, str] = {}
+    if vuln_ids:
+        for vid, vtitle in (
+            db.query(Vuln.id, Vuln.title).filter(Vuln.id.in_(vuln_ids)).all()
+        ):
+            vuln_map[vid] = vtitle
+
     items = []
     for l in logs:
-        if l.user_id and l.user_id in name_map:
+        if l.user_id is not None and l.user_id in name_map:
             cur_username, cur_full = name_map[l.user_id]
             username = cur_username or l.username
             full_name = cur_full
@@ -66,6 +119,9 @@ def list_logs(
             # 用户已删除 / 老日志：仅以写入时的快照为准
             username = l.username
             full_name = ""
+        detail = l.detail or ""
+        if l.action == "assign_vuln":
+            detail = _enrich_assign_detail(db, detail, name_map, vuln_map)
         items.append(
             {
                 "id": l.id,
@@ -74,7 +130,7 @@ def list_logs(
                 "full_name": full_name or "",
                 "action": l.action,
                 "module": l.module,
-                "detail": l.detail,
+                "detail": detail,
                 "created_at": l.created_at,
             }
         )
