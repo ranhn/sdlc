@@ -247,11 +247,13 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElImageViewer } from 'element-plus'
 import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 
 const store = useUserStore()
+const route = useRoute()
 const canExport = computed(() => store.role === 'admin' || store.role === 'secops')
 const list = ref([])
 const systems = ref([])
@@ -510,6 +512,18 @@ onMounted(async () => {
   load()
   try { systems.value = (await systemApi.list()).data } catch {}
   try { users.value = (await adminApi.users()).data } catch {}
+  // 兼容审计日志等外部跳转：?id=123 直接打开该漏洞详情
+  const qid = Number(route.query.id)
+  if (qid && Number.isFinite(qid)) {
+    try {
+      const res = await vulnApi.detail(qid)
+      current.value = res.data
+      detailVisible.value = true
+      loadComments(qid)
+    } catch (e) {
+      // 静默失败：可能权限不足或漏洞已删
+    }
+  }
 })
 </script>
 

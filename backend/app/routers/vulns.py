@@ -248,10 +248,20 @@ def assign_vuln(vuln_id: int, data: VulnAssign, db: Session = Depends(get_db),
         raise HTTPException(status_code=403, detail="仅安全专家可指派")
     if not db.query(User).filter(User.id == data.assignee_id).first():
         raise HTTPException(status_code=400, detail="负责人不存在")
+    assignee = db.query(User).filter(User.id == data.assignee_id).first()
     v.assignee_id = data.assignee_id
     db.commit()
     db.refresh(v)
-    write_operation_log(db, current, "assign_vuln", "vuln", f"指派漏洞 #{v.id} 给 {data.assignee_id}")
+    # 详情里同时记录「指派给 谁(中文名)[ID]」，便于审计日志辨识接收人
+    assignee_desc = (
+        f"{assignee.username}({assignee.full_name})[ID={assignee.id}]"
+        if assignee
+        else f"ID={data.assignee_id}"
+    )
+    write_operation_log(
+        db, current, "assign_vuln", "vuln",
+        f"指派漏洞 #{v.id}「{v.title}」给 {assignee_desc}",
+    )
     return _to_out(v, db)
 
 
