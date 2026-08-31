@@ -95,7 +95,7 @@ docker run --rm \
 # ==================================================
 log "[4/4] 合并成总包"
 docker run --rm \
-    -v "$BACKUP_DIR":/backup:ro \
+    -v "$BACKUP_DIR":/backup \
     alpine:3.18 sh -c "
         set -e
         WORK=/tmp/final
