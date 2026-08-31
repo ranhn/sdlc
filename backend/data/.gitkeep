@@ -1,0 +1,2 @@
+# 占位文件，确保 backend/data/ 目录被 git 追踪
+# 运行时这里会生成 security_platform.db（被 .gitignore 排除）

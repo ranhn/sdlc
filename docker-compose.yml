@@ -1,8 +1,8 @@
 # ============================================
 # VeSync SDLC 安全平台 - 一键部署
-# 双服务：Nginx（前端 + HTTPS 终结） + FastAPI（后端 API）
+# 双服务：Nginx（HTTPS 终结 + 静态托管） + FastAPI（后端 API + 业务 SPA）
 # 访问：http://<服务器IP> 或 https://<域名>
-# 默认账号：admin / admin123
+# 默认账号：admin / admin123（部署后立即修改！）
 # ============================================
 
 version: "3.8"
@@ -17,14 +17,16 @@ services:
     env_file:
       - .env
     environment:
-      # 如果 .env 中未设置，使用以下默认值
-      - DATABASE_URL=sqlite:///./security_platform.db
-      - CORS_ORIGINS=http://localhost:5173,http://localhost:8000
+      # 关键：数据库放 data 子目录，单独用 named volume 挂载
+      # 这样后端代码更新（--build）后不会被 volume 覆盖
+      - DATABASE_URL=sqlite:///./data/security_platform.db
+      # CORS 默认从 .env 读取（生产用实际域名）
+      - CORS_ORIGINS=${CORS_ORIGINS}
     volumes:
-      # 持久化数据库与附件
-      - sdlc_data:/app/backend
-      # 开发时挂载代码热更新（生产可注释）
-      # - ./backend:/app/backend
+      # ✅ 只挂数据子目录，不再整目录挂 backend
+      # 否则 named volume 会在首次启动后"冻结"代码，更新不生效
+      - sdlc_db:/app/backend/data          # SQLite 数据库
+      - sdlc_uploads:/app/backend/uploads  # 用户上传的附件
     restart: unless-stopped
     # 不暴露端口到宿主机，仅 Nginx 能访问
     expose:
@@ -48,14 +50,15 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      # 前端构建产物（需先 npm run build）
-      - ./frontend/dist:/usr/share/nginx/html:ro
-      # SSL 证书（生产环境挂载真实证书）
+      # SSL 证书（生产环境挂载真实证书到 nginx/ssl/）
       - ./nginx/ssl:/etc/nginx/ssl:ro
       # Let's Encrypt 验证目录
       - ./nginx/certbot:/var/www/certbot
-      # Nginx 日志
+      # Nginx 日志（落盘到宿主机）
       - ./nginx/logs:/var/log/nginx
+      # ⚠️ 不再 bind mount frontend/dist
+      # nginx 镜像内已通过 nginx/Dockerfile COPY 进 frontend/dist，
+      # rebuild 镜像时会自动更新；避免 bind mount 缺失导致空目录。
     depends_on:
       sdlc:
         condition: service_healthy
@@ -69,7 +72,10 @@ services:
       - sdlc-net
 
 volumes:
-  sdlc_data:
+  # 数据库独立卷：可单独备份/迁移
+  sdlc_db:
+  # 上传文件独立卷：可单独备份/清理
+  sdlc_uploads:
 
 networks:
   sdlc-net:
