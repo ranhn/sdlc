@@ -343,15 +343,20 @@ function canModify(item) {
 function canDelete(item) {
   return canModify(item)
 }
-/** 显示用的「建模人」标签：优先显示后端返回的中文姓名，其次用户名，匿名兜底 */
+/** 显示用的「建模人」标签：优先显示后端返回的中文姓名，其次用户名，匿名兜底。
+ *  若后端尚未写入 owner（老数据 / 匿名记录），回退到当前登录用户名，方便辨识。
+ */
 function ownerLabel(item) {
   if (!item) return '-'
-  return item.owner_display_name || item.owner_username || '匿名'
+  const u = item.owner_username || currentUsername.value || ''
+  const n = item.owner_display_name || ''
+  if (n && n !== u) return `${u} · ${n}`  // username · 中文名
+  return u || n || '匿名'
 }
 /** 鼠标悬浮提示：username · displayName，便于识别 */
 function ownerTitle(item) {
   if (!item) return ''
-  const u = item.owner_username || ''
+  const u = item.owner_username || currentUsername.value || ''
   const n = item.owner_display_name || ''
   if (u && n && n !== u) return `${u} · ${n}`
   return u || n || '匿名'
