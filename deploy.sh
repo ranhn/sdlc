@@ -8,7 +8,12 @@ set -e
 
 APP_DIR="${1:-/opt/sdlc-platform}"
 REPO_URL="${REPO_URL:-https://github.com/ranhn/sdlc.git}"
-BRANCH="${BRANCH:-main}"
+# 默认分支：先看 env，否则看本地仓库，再否则 main
+BRANCH="${BRANCH:-}"
+if [ -z "$BRANCH" ] && [ -d "$APP_DIR/.git" ]; then
+  BRANCH=$(git -C "$APP_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || echo "")
+fi
+BRANCH="${BRANCH:-master}"
 DOMAIN="${DOMAIN:-$(hostname -f)}"
 
 # ---- 颜色 ----
