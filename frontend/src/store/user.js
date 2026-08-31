@@ -10,7 +10,7 @@ export const useUserStore = defineStore('user', {
     isLogin: (s) => !!s.token,
     role: (s) => s.user?.role || s.user?.role_code || '',
     username: (s) => s.user?.username || '',
-    displayName: (s) => s.user?.real_name || s.user?.username || '',
+    displayName: (s) => s.user?.full_name || s.user?.username || '',
   },
   actions: {
     setLogin(token, user, mustChangePassword = false) {

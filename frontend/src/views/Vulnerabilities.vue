@@ -2,9 +2,23 @@
   <div class="vulns">
     <div class="page-header">
       <span class="page-title">提交漏洞</span>
-      <el-button type="primary" @click="openCreate">
-        <el-icon><Plus /></el-icon>&nbsp;提交漏洞
-      </el-button>
+      <div class="header-actions">
+        <el-dropdown v-if="canExport" @command="doExport" trigger="click">
+          <el-button>
+            <el-icon><Download /></el-icon>&nbsp;批量导出
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="csv">导出为 CSV</el-dropdown-item>
+              <el-dropdown-item command="docx">导出为 Word（.docx）</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button type="primary" @click="openCreate">
+          <el-icon><Plus /></el-icon>&nbsp;提交漏洞
+        </el-button>
+      </div>
     </div>
 
     <!-- 筛选 -->
@@ -73,13 +87,21 @@
 
     <!-- 新建漏洞弹窗 -->
     <el-dialog v-model="createVisible" title="提交漏洞" width="640px" :close-on-click-modal="false">
-      <el-form ref="createRef" :model="createForm" :rules="createRules" label-width="90px">
+      <el-form ref="createRef" :model="createForm" :rules="createRules" label-width="90px" @paste="onPaste">
         <el-form-item label="漏洞标题" prop="title">
           <el-input v-model="createForm.title" placeholder="请输入漏洞标题" />
         </el-form-item>
         <el-form-item label="所属系统" prop="system_id">
           <el-select v-model="createForm.system_id" clearable filterable placeholder="选择系统">
             <el-option v-for="s in systems" :key="s.id" :label="s.name" :value="s.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="修复负责人">
+          <el-select v-model="createForm.assignee_id" clearable filterable placeholder="可留空，由安全专家指派" style="width: 100%">
+            <el-option v-for="u in users" :key="u.id" :value="u.id">
+              <span style="display: inline-block; width: 160px">{{ u.username }}</span>
+              <span>{{ u.full_name || '—' }}</span>
+            </el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="等级" prop="severity">
@@ -99,22 +121,29 @@
           <el-input v-model="createForm.description" type="textarea" :rows="3" placeholder="描述漏洞位置与现象" />
         </el-form-item>
         <el-form-item label="复现步骤" prop="reproduce_steps">
-          <el-input v-model="createForm.reproduce_steps" type="textarea" :rows="3" placeholder="1. 访问... 2. 操作... 3. 观察结果" />
+          <div class="steps-list">
+            <div v-for="(s, idx) in createForm.steps" :key="s.id" class="step-row" :data-step-idx="idx">
+              <div class="step-no">{{ idx + 1 }}</div>
+              <el-input v-model="s.desc" type="textarea" :rows="2" placeholder="这一步做了什么、观察到什么" class="step-desc" />
+              <div class="step-shot">
+                <el-image v-if="s.img" :src="s.img" :preview-src-list="stepImgList" :initial-index="stepImgList.indexOf(s.img)" fit="cover" class="step-thumb" hide-on-click-modal />
+                <el-upload v-if="!s.img" :auto-upload="false" :limit="1" list-type="picture-card" accept="image/*"
+                  :show-file-list="false" :on-change="(file) => onStepFile(idx, file)">
+                  <el-icon><Plus /></el-icon>
+                </el-upload>
+                <el-button v-if="s.img" link type="danger" size="small" class="step-shot-del" @click="removeStepImg(idx)">移除</el-button>
+              </div>
+              <el-button v-if="createForm.steps.length > 1" link type="danger" size="small" @click="removeStep(idx)">删步</el-button>
+            </div>
+          </div>
+          <el-button link type="primary" size="small" @click="addStep" :disabled="createForm.steps.length >= 6">+ 添加步骤</el-button>
+          <div class="tip">每步可粘贴或选择截图，步骤 1-6 步</div>
         </el-form-item>
         <el-form-item label="影响范围">
           <el-input v-model="createForm.impact" type="textarea" :rows="2" placeholder="可能造成的影响" />
         </el-form-item>
-        <el-form-item label="CVSS">
-          <el-input v-model="createForm.cvss" placeholder="如 8.6" style="width: 200px" />
-        </el-form-item>
-        <el-form-item label="截图证据">
-          <el-upload :auto-upload="false" :limit="6" list-type="picture-card" accept="image/*"
-            :on-change="handleFile" :on-remove="handleRemove" :file-list="fileList">
-            <el-icon><Plus /></el-icon>
-          </el-upload>
-          <div class="tip">支持粘贴或选择截图（png/jpg），最多 6 张</div>
-        </el-form-item>
       </el-form>
+      <el-image-viewer v-if="previewVisible" :url-list="previewList" :initial-index="previewIndex" @close="previewVisible = false" />
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="submitCreate">提交</el-button>
@@ -135,7 +164,6 @@
           <el-descriptions-item label="类型">{{ current.vuln_type || '—' }}</el-descriptions-item>
           <el-descriptions-item label="提交人">{{ current.reporter_name }}</el-descriptions-item>
           <el-descriptions-item label="负责人">{{ current.assignee_name || '未指派' }}</el-descriptions-item>
-          <el-descriptions-item label="CVSS">{{ current.cvss || '—' }}</el-descriptions-item>
           <el-descriptions-item label="提交时间">{{ fmt(current.created_at) }}</el-descriptions-item>
         </el-descriptions>
 
@@ -143,13 +171,22 @@
         <el-text>{{ current.description || '无' }}</el-text>
 
         <div class="sec-title">复现步骤</div>
-        <el-text><pre class="pre">{{ current.reproduce_steps || '无' }}</pre></el-text>
+        <div v-if="renderSteps(current).length" class="detail-steps">
+          <div v-for="(s, i) in renderSteps(current)" :key="i" class="detail-step">
+            <div class="detail-step-no">{{ s.step_no }}</div>
+            <div class="detail-step-body">
+              <div class="detail-step-desc">{{ s.desc }}</div>
+              <el-image v-if="s.img" :src="s.img" :preview-src-list="detailImgs" :initial-index="detailImgs.indexOf(s.img)" fit="cover" class="shot" hide-on-click-modal />
+            </div>
+          </div>
+        </div>
+        <el-text v-else><pre class="pre">{{ current.reproduce_steps || '无' }}</pre></el-text>
 
         <div class="sec-title">影响范围</div>
         <el-text>{{ current.impact || '无' }}</el-text>
 
-        <div v-if="current.screenshots && current.screenshots.length" class="sec-title">截图证据</div>
-        <el-image v-for="(img, i) in current.screenshots" :key="i" :src="img" :preview-src-list="current.screenshots"
+        <div v-if="!renderSteps(current).length && current.screenshots && current.screenshots.length" class="sec-title">截图证据</div>
+        <el-image v-if="!renderSteps(current).length" v-for="(img, i) in current.screenshots" :key="i" :src="img" :preview-src-list="current.screenshots"
           fit="cover" class="shot" />
 
         <!-- 操作区 -->
@@ -160,7 +197,7 @@
           <el-button v-if="can('finish_fix')" type="warning" size="small" @click="doAction('finish_fix')">修复完成</el-button>
           <el-button v-if="can('pass_retest')" type="success" size="small" @click="doAction('pass_retest')">复测通过</el-button>
           <el-button v-if="can('close')" type="primary" size="small" @click="doAction('close')">关闭</el-button>
-          <el-button v-if="current.status === 'pending' && can('assign')" type="info" size="small" @click="assignVisible = true">指派</el-button>
+          <el-button v-if="can('assign')" type="info" size="small" @click="openAssign">指派</el-button>
           <el-button v-if="can('reject')" type="danger" size="small" plain @click="openReject">驳回</el-button>
         </div>
 
@@ -186,7 +223,10 @@
     <!-- 指派弹窗 -->
     <el-dialog v-model="assignVisible" title="指派负责人" width="400px">
       <el-select v-model="assignTo" placeholder="选择负责人" style="width: 100%" filterable>
-        <el-option v-for="u in users" :key="u.id" :label="`${u.real_name || u.username}（${u.role?.name || ''}）`" :value="u.id" />
+        <el-option v-for="u in users" :key="u.id" :value="u.id">
+          <span style="display: inline-block; width: 160px">{{ u.username }}</span>
+          <span>{{ u.full_name || '—' }}</span>
+        </el-option>
       </el-select>
       <template #footer>
         <el-button @click="assignVisible = false">取消</el-button>
@@ -207,11 +247,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElImageViewer } from 'element-plus'
 import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 
 const store = useUserStore()
+const canExport = computed(() => store.role === 'admin' || store.role === 'secops')
 const list = ref([])
 const systems = ref([])
 const users = ref([])
@@ -230,6 +271,7 @@ const actionRoles = {
   confirm: ['admin', 'secops'], reject: ['admin', 'secops'], ignore: ['admin', 'secops'],
   start_fix: ['admin', 'secops', 'dev'], finish_fix: ['admin', 'secops', 'dev', 'tester'],
   pass_retest: ['admin', 'secops', 'tester'], close: ['admin', 'secops'],
+  assign: ['admin', 'secops'],
 }
 // 各动作允许的前置状态（与后端 state_machine.ACTION_RULES 保持一致）
 const actionFrom = {
@@ -240,6 +282,7 @@ const actionFrom = {
   finish_fix: ['fixing'],
   pass_retest: ['retest'],
   close: ['fixed'],
+  assign: ['pending', 'confirmed', 'fixing', 'retest', 'fixed'],
 }
 const flowMap = { pending: 1, confirmed: 2, fixing: 3, retest: 4, fixed: 5, closed: 6 }
 
@@ -253,34 +296,94 @@ function can(action) {
 // 新建
 const createVisible = ref(false)
 const submitting = ref(false)
-const fileList = ref([])
 const createRef = ref()
-const createForm = reactive({ title: '', system_id: null, severity: 'medium', vuln_type: '', description: '', reproduce_steps: '', impact: '', cvss: '' })
+const createForm = reactive({
+  title: '', system_id: null, severity: 'medium', vuln_type: '',
+  description: '', impact: '', assignee_id: null,
+  steps: [{ id: 's1', desc: '', img: null }],
+})
 const createRules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
   system_id: [{ required: true, message: '请选择所属系统', trigger: 'change' }],
   severity: [{ required: true, message: '请选择等级', trigger: 'change' }],
   vuln_type: [{ required: true, message: '请输入漏洞类型', trigger: 'blur' }],
-  reproduce_steps: [{ required: true, message: '请输入复现步骤', trigger: 'blur' }]
 }
-
-function openCreate() {
-  Object.assign(createForm, { title: '', system_id: null, severity: 'medium', vuln_type: '', description: '', reproduce_steps: '', impact: '', cvss: '' })
-  fileList.value = []
-  createVisible.value = true
+let _stepSeq = 1
+function newStep() { return { id: 's' + (++_stepSeq), desc: '', img: null } }
+function addStep() {
+  if (createForm.steps.length >= 6) return ElMessage.warning('最多 6 步')
+  createForm.steps.push(newStep())
 }
-function handleFile(file) {
+function removeStep(idx) {
+  if (createForm.steps.length <= 1) return
+  createForm.steps.splice(idx, 1)
+}
+function removeStepImg(idx) {
+  if (createForm.steps[idx]) createForm.steps[idx].img = null
+}
+function onStepFile(idx, file) {
   const reader = new FileReader()
-  reader.onload = (e) => { file.raw._data = e.target.result }
+  reader.onload = (e) => {
+    if (createForm.steps[idx]) createForm.steps[idx].img = e.target.result
+  }
   reader.readAsDataURL(file.raw)
 }
-function handleRemove(file) { file.raw._data = null }
+const stepImgList = computed(() => createForm.steps.map((s) => s.img).filter(Boolean))
+function openCreate() {
+  Object.assign(createForm, {
+    title: '', system_id: null, severity: 'medium', vuln_type: '',
+    description: '', impact: '', assignee_id: null,
+  })
+  createForm.steps = [newStep()]
+  createVisible.value = true
+}
+function onPaste(e) {
+  if (!createVisible.value) return
+  const items = e.clipboardData?.items
+  if (!items || items.length === 0) return
+  const target = e.target
+  const row = target?.closest?.('[data-step-idx]')
+  const idx = row ? Number(row.dataset.stepIdx) : createForm.steps.length - 1
+  const step = createForm.steps[idx]
+  if (!step) return
+  if (step.img) return ElMessage.warning(`第 ${idx + 1} 步已有截图，请先移除`)
+  for (const it of items) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      const blob = it.getAsFile()
+      if (!blob) continue
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        if (createForm.steps[idx]) createForm.steps[idx].img = ev.target.result
+      }
+      reader.readAsDataURL(blob)
+      e.preventDefault()
+      break
+    }
+  }
+}
 async function submitCreate() {
   await createRef.value.validate()
+  const validSteps = createForm.steps.filter((s) => (s.desc || '').trim() || s.img)
+  if (validSteps.length === 0) return ElMessage.warning('请至少填写一步复现步骤')
   submitting.value = true
-  const shots = fileList.value.map((f) => f.raw._data).filter(Boolean)
+  const reproduce_steps = validSteps.map((s, i) => (s.desc || '').trim() || `步骤 ${i + 1}`).join('\n')
+  const step_screenshots = validSteps
+    .map((s, i) => s.img ? { step_no: i + 1, data_url: s.img } : null)
+    .filter(Boolean)
+  const screenshots = step_screenshots.map((s) => s.data_url)
   try {
-    await vulnApi.create({ ...createForm, screenshots: shots })
+    await vulnApi.create({
+      title: createForm.title,
+      system_id: createForm.system_id,
+      severity: createForm.severity,
+      vuln_type: createForm.vuln_type,
+      description: createForm.description,
+      impact: createForm.impact,
+      assignee_id: createForm.assignee_id,
+      reproduce_steps,
+      screenshots,
+      step_screenshots,
+    })
     ElMessage.success('漏洞提交成功')
     createVisible.value = false
     load()
@@ -299,6 +402,16 @@ const assignTo = ref(null)
 const rejectVisible = ref(false)
 const rejectReason = ref('')
 const flowActive = computed(() => (current.value ? flowMap[current.value.status] || 0 : 0))
+function renderSteps(v) {
+  if (!v || !v.step_screenshots || !v.step_screenshots.length) return []
+  const lines = (v.reproduce_steps || '').split('\n')
+  return v.step_screenshots.map((ss) => ({
+    step_no: ss.step_no,
+    desc: lines[ss.step_no - 1] || `步骤 ${ss.step_no}`,
+    img: ss.data_url,
+  }))
+}
+const detailImgs = computed(() => renderSteps(current.value).map((s) => s.img).filter(Boolean))
 
 async function openDetail(row) {
   const res = await vulnApi.detail(row.id)
@@ -343,14 +456,42 @@ async function submitReject() {
   load()
 }
 async function submitAssign() {
-  if (!assignTo.value) return ElMessage.warning('请选择负责人')
+  if (assignTo.value == null) return ElMessage.warning('请选择负责人')
   await vulnApi.assign(current.value.id, { assignee_id: assignTo.value })
   ElMessage.success('指派成功')
   assignVisible.value = false
   openDetail(current.value)
 }
+function openAssign() {
+  assignTo.value = current.value?.assignee_id ?? null
+  assignVisible.value = true
+}
 
 function fmt(d) { return d ? d.replace('T', ' ').slice(0, 16) : '' }
+
+async function doExport(fmt) {
+  if (!canExport.value) return ElMessage.warning('仅管理员/安全专家可导出')
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.severity) params.severity = filters.severity
+  if (filters.system_id) params.system_id = filters.system_id
+  if (filters.mine) params.mine = true
+  try {
+    const res = await vulnApi.export(fmt, params)
+    const ext = fmt === 'csv' ? 'csv' : 'docx'
+    const blob = new Blob([res.data], { type: res.data.type || (fmt === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+    a.download = `vulns_${ts}.${ext}`
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${fmt === 'csv' ? 'CSV' : 'Word'} 文件`)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '导出失败')
+  }
+}
 
 async function load() {
   loading.value = true
@@ -375,6 +516,7 @@ onMounted(async () => {
 <style scoped>
 .vulns { height: 100%; display: flex; flex-direction: column; }
 .vulns .page-header { flex-shrink: 0; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
 .filter-card { margin-bottom: 12px; flex-shrink: 0; }
 .filter-card :deep(.el-card__body) { padding: 12px; }
 .vuln-table { background: #fff; border-radius: 10px; }
@@ -385,6 +527,20 @@ onMounted(async () => {
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.steps-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.step-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+.step-no { width: 26px; height: 26px; line-height: 26px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; font-size: 13px; }
+.step-desc { flex: 1; }
+.step-shot { width: 92px; height: 92px; flex-shrink: 0; position: relative; }
+.step-thumb { width: 90px; height: 90px; border-radius: 6px; border: 1px solid #e2e8f0; }
+.step-shot-del { position: absolute; bottom: -6px; right: -6px; background: #fff; border-radius: 10px; padding: 0 6px; }
+.step-row :deep(.el-upload--picture-card) { width: 90px; height: 90px; }
+.step-row :deep(.el-upload--picture-card .el-upload) { width: 90px; height: 90px; }
+.detail-steps { display: flex; flex-direction: column; gap: 10px; }
+.detail-step { display: flex; gap: 10px; padding: 10px; background: #f8fafc; border-radius: 8px; }
+.detail-step-no { width: 28px; height: 28px; line-height: 28px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; }
+.detail-step-body { flex: 1; }
+.detail-step-desc { white-space: pre-wrap; margin-bottom: 6px; color: #0f172a; }
 .comment { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; }
 .comment-input { display: flex; gap: 8px; }
 </style>

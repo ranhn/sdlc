@@ -101,9 +101,10 @@ class Vuln(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
-    reproduce_steps = Column(Text, nullable=True)     # 漏洞复现步骤
+    reproduce_steps = Column(Text, nullable=True)     # 漏洞复现步骤（拼接文本，兼容老数据）
     impact = Column(Text, nullable=True)              # 影响范围/危害
-    screenshots = Column(Text, nullable=True)         # JSON 数组：base64 截图
+    screenshots = Column(Text, nullable=True)         # JSON 数组：base64 截图（所有图，兼容老数据）
+    step_screenshots = Column(Text, nullable=True)    # JSON 数组：[{"step_no": 1, "data_url": "data:image/png;base64,..."}]
     system_id = Column(Integer, ForeignKey("asset_system.id"), nullable=True)
     severity = Column(String(20), default="medium")  # critical/high/medium/low
     status = Column(String(20), default="pending", index=True)

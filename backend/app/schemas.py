@@ -70,10 +70,12 @@ class VulnCreate(BaseModel):
     reproduce_steps: Optional[str] = None
     impact: Optional[str] = None
     screenshots: Optional[list[str]] = None
+    step_screenshots: Optional[list[dict]] = None  # [{"step_no": 1, "data_url": "data:image/png;base64,..."}]
     system_id: Optional[int] = None
     severity: str = "medium"
     vuln_type: Optional[str] = None
     cvss: Optional[str] = None
+    assignee_id: Optional[int] = None
 
 
 class VulnAssign(BaseModel):
@@ -95,6 +97,7 @@ class VulnOut(BaseModel):
     reproduce_steps: Optional[str] = None
     impact: Optional[str] = None
     screenshots: Optional[list[str]] = None
+    step_screenshots: Optional[list[dict]] = None
     system_id: Optional[int] = None
     system_name: Optional[str] = None
     severity: str

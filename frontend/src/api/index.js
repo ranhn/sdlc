@@ -82,6 +82,7 @@ export const vulnApi = {
   comments: (id) => http.get(`/vulns/${id}/comments`),
   addComment: (id, data) => http.post(`/vulns/${id}/comments`, data),
   remove: (id) => http.delete(`/vulns/${id}`),
+  export: (fmt, params) => http.get(`/vulns/export`, { params: { fmt, ...params }, responseType: 'blob' }),
 }
 
 // ---------- 工作台 ----------
