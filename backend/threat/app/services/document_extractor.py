@@ -20,6 +20,30 @@ class UnsupportedFileTypeError(ValueError):
     """不支持的文件类型。"""
 
 
+def _friendly_parse_error(ext: str, exc: BaseException) -> str:
+    """把底层 PDF/DOCX 库异常翻译成用户能看懂的提示。
+
+    设计目标：不要把 "文档解析失败" 这种无用信息直接抛给前端。
+    常见原因（按概率排）：加密 PDF / PDF 截断 / PDF 格式损坏 / DOCX 损坏 /
+    扫描版 PDF（pypdf 抽不出文字时不会抛异常，会返回空字符串，那种由调用方
+    单独检查 "extracted 文本为空" 来报）。
+    """
+    name = type(exc).__name__
+    msg = str(exc).strip()
+    e_lower = (msg or name).lower()
+    if ext == ".pdf":
+        if "encrypted" in e_lower or "decrypted" in e_lower or "password" in e_lower:
+            return "PDF 已加密，无法解析（请先用 PDF 工具去除密码后再上传）"
+        if name in ("EofError",) or "unexpected eof" in e_lower:
+            return "PDF 文件不完整（被截断），请重新下载/导出后上传"
+        if "xref" in e_lower or "startxref" in e_lower or "invalid" in e_lower:
+            return f"PDF 格式损坏或不规范（{msg or name}），请用 PDF 工具重新导出后再上传"
+    if ext == ".docx":
+        if "not a zip file" in e_lower or "bad zipfile" in e_lower:
+            return "DOCX 文件格式损坏（不是有效的 zip 容器），请用 Word 重新保存后上传"
+    # 兜底：把底层错误透出
+    return f"文档解析失败（{ext}）：{msg or name}"
+
 def extract_text(filename: str, data: bytes) -> str:
     """根据文件扩展名抽取文本。
 
@@ -48,8 +72,8 @@ def extract_text(filename: str, data: bytes) -> str:
     except UnsupportedFileTypeError:
         raise
     except Exception as e:  # noqa: BLE001 —— 解析失败统一转成用户可读错误
-        logger.warning("文档解析失败 %s: %s", filename, e)
-        raise ValueError(f"文档解析失败（{ext}），请检查文件是否损坏或格式是否规范") from e
+        logger.warning("文档解析失败 %s: %s", filename, e, exc_info=True)
+        raise ValueError(_friendly_parse_error(ext, e)) from e
 
     return _clean(text)
 
@@ -82,8 +106,8 @@ def extract_assets(filename: str, data: bytes) -> dict:
     except UnsupportedFileTypeError:
         raise
     except Exception as e:  # noqa: BLE001
-        logger.warning("文档解析失败 %s: %s", filename, e)
-        raise ValueError(f"文档解析失败（{ext}），请检查文件是否损坏或格式是否规范") from e
+        logger.warning("文档解析失败 %s: %s", filename, e, exc_info=True)
+        raise ValueError(_friendly_parse_error(ext, e)) from e
 
     return {
         "text": _clean(text),
