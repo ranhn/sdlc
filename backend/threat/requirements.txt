@@ -6,3 +6,5 @@ pydantic==2.10.4
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
 python-multipart==0.0.20
+# PDF 解析（document_extractor.py 用了 pypdf.PdfReader，漏装会导致上传 PDF 422）
+pypdf==4.3.1

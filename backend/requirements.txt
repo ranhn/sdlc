@@ -23,3 +23,5 @@ openai==1.59.6
 python-dotenv==1.0.1
 aiosqlite==0.20.0
 tenacity==9.0.0
+# PDF 解析（document_extractor.py 用了 pypdf.PdfReader，漏装会导致上传 PDF 422）
+pypdf==4.3.1
