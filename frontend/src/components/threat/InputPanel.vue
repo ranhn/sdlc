@@ -322,7 +322,12 @@ async function handleFileSelected(e) {
     }
     emit('upload', [att])
   } catch (err) {
-    const detail = err?.message || '文档解析失败，请检查文件格式'
+    // 优先用后端返回的 detail（包含 422 真实原因），其次用 axios message
+    const detail =
+      err?.response?.data?.detail ||
+      err?.response?.data?.message ||
+      err?.message ||
+      '文档解析失败，请检查文件格式'
     emit('error', detail)
   } finally {
     if (flag) flag.value = false

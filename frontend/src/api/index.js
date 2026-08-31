@@ -126,7 +126,8 @@ export const trainingApi = {
   createCourse: (data) => http.post('/training/courses', data),
   updateCourse: (id, data) => http.put(`/training/courses/${id}`, data),
   removeCourse: (id) => http.delete(`/training/courses/${id}`),
-  uploadFile: (formData) => http.post('/training/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  // 不要显式设 Content-Type, 让 axios 自动加 boundary
+  uploadFile: (formData) => http.post('/training/upload', formData),
   startCourse: (id) => http.post(`/training/courses/${id}/start`),
   completeCourse: (id) => http.post(`/training/courses/${id}/complete`),
   progress: () => http.get('/training/progress'),
