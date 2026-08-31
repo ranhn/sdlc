@@ -17,11 +17,33 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (res) => res,
   (err) => {
+    // 401: 清除 token + 跳登录
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
       if (!location.pathname.includes('/login')) {
         location.href = '/login'
+      }
+    }
+    // 把后端的 detail 冒到 message, 避免 UI 只看到
+    // "Request failed with status code 4xx" 不知根因。
+    // - 字符串 detail (业务 HTTPException) → 直接拼
+    // - 数组 detail (Pydantic 校验错误) → 拼 "loc: msg"
+    const status = err.response?.status
+    const d = err.response?.data?.detail
+    if (status && d !== undefined) {
+      if (typeof d === 'string') {
+        err.message = `${status} ${d}`
+      } else if (Array.isArray(d)) {
+        err.message = `${status} ` + d
+          .map((e) => {
+            const loc = Array.isArray(e?.loc) ? e.loc.join('.') : ''
+            return `${loc}: ${e?.msg || ''}`
+          })
+          .filter(Boolean)
+          .join('; ')
+      } else {
+        err.message = `${status} ${JSON.stringify(d)}`
       }
     }
     return Promise.reject(err)

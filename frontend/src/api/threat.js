@@ -40,6 +40,34 @@ http.interceptors.request.use((config) => {
   return config
 })
 
+// 响应拦截器：把后端的 detail 字段冒到 error.message, 避免前端 UI 只看到
+// "Request failed with status code 422" 这种看不出根因的提示。
+// - 字符串 detail（业务抛的 HTTPException）: 直接拼到 message
+// - 数组 detail（FastAPI/Pydantic 校验错误）: 拼成 "loc: msg" 列表
+http.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err.response?.status
+    const d = err.response?.data?.detail
+    if (status && d !== undefined) {
+      if (typeof d === 'string') {
+        err.message = `${status} ${d}`
+      } else if (Array.isArray(d)) {
+        err.message = `${status} ` + d
+          .map((e) => {
+            const loc = Array.isArray(e?.loc) ? e.loc.join('.') : ''
+            return `${loc}: ${e?.msg || ''}`
+          })
+          .filter(Boolean)
+          .join('; ')
+      } else {
+        err.message = `${status} ${JSON.stringify(d)}`
+      }
+    }
+    return Promise.reject(err)
+  }
+)
+
 /** 设置/清除 API Token 请求头（供设置界面调用） */
 export function setApiToken(t) {
   if (t) {
