@@ -107,8 +107,8 @@ docker run --rm \
     "
 rm -f "$DB_TAR" "$UP_TAR"
 
-# 清理 sdlc 容器内残留的临时热备文件
-docker compose exec -T sdlc rm -f "/app/backend/data/${HOT_BACKUP_BN}" || true
+# 清理 sdlc 容器内残留的临时热备文件（包括历史上失败 backup 留下的）
+docker compose exec -T sdlc sh -c "rm -f /app/backend/data/.hot_backup_*.db" || true
 
 # 清理 30 天前的旧备份
 DELETED=$(find "$BACKUP_DIR" -name "sdlc-*.tar.gz" -mtime +30 -delete -print | wc -l)
