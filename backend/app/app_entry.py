@@ -24,6 +24,16 @@ from .routers import admin, auth, baseline, dashboard, feishu, logs, scan, train
 # 创建数据表
 Base.metadata.create_all(bind=engine)
 
+# 自动初始化种子数据（角色/部门/管理员账号/示例漏洞/培训课程/SBOM/扫描任务等）
+# 幂等：seed.init() 内部每个数据项都做了存在性检查，可重复调用
+try:
+    from seed import init as _seed_init
+    _seed_init()
+except Exception as _seed_err:
+    # seed 失败不阻塞启动（表结构已建好，只是缺演示数据）
+    import logging
+    logging.getLogger(__name__).warning("种子数据初始化失败: %s", _seed_err)
+
 
 def _run_lightweight_migrations():
     """轻量级迁移：对老库添加新列（SQLite 3.35+ 支持 ADD COLUMN IF NOT EXISTS）。"""
