@@ -103,7 +103,7 @@ docker run --rm \
         tar xzf /backup/$(basename "$DB_TAR") -C \$WORK
         mkdir -p \$WORK/uploads
         tar xzf /backup/$(basename "$UP_TAR") -C \$WORK/uploads
-        tar czf /backup/$(basename "$FINAL") -C \$WORK .
+        tar czf /backup/$(basename "$FINAL") -C \$WORK data uploads
     "
 rm -f "$DB_TAR" "$UP_TAR"
 

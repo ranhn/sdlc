@@ -22,8 +22,8 @@ BACKUP_FILE="${1:?用法: $0 <backup.tar.gz>}"
 
 # 验证包结构
 log "验证备份包结构..."
-if ! tar -tzf "$BACKUP_FILE" 2>/dev/null | head -1 | grep -qE '^\./?(data|uploads)/'; then
-    echo "❌ 备份包结构异常：顶层应包含 data/ 或 uploads/ 目录"
+if ! tar -tzf "$BACKUP_FILE" 2>/dev/null | head -20 | grep -qE '(^|/)data/?($|-)|(^|/)uploads/?($|-)'; then
+    echo "❌ 备份包结构异常：包内应包含 data/ 或 uploads/ 目录"
     echo "实际顶层:"
     tar -tzf "$BACKUP_FILE" 2>/dev/null | head -5
     exit 1
