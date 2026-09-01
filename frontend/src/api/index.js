@@ -56,15 +56,19 @@ export { http }
 // ---------- 认证 ----------
 export const authApi = {
   // 后端使用 OAuth2PasswordRequestForm，需提交 form-urlencoded
-  login: (data) => {
+  login: async (data) => {
     const body = new URLSearchParams()
     body.append('username', data.username)
     body.append('password', data.password)
-    return http.post('/auth/login', body, {
+    const { data: res } = await http.post('/auth/login', body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
+    return res
   },
-  changePassword: (data) => http.post('/auth/change-password', data),
+  changePassword: async (data) => {
+    const { data: res } = await http.post('/auth/change-password', data)
+    return res
+  },
 }
 
 // ---------- 人员/部门/角色 ----------
