@@ -576,8 +576,14 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
 2. **Actor（外部用户/系统）不应作为数据流的中间节点**：actor 仅表示触发者 / 接收者，
    不要给 actor 同时配置入流和出流。如果「用户手机端 App」与「外部用户」是同一主体，
    应建模为一个 process（H5 App / Mobile App），不要把「用户」也建成 actor。
-3. **涉及敏感数据的数据流**（健康/医疗/体征/身份证/手机号/支付/交易/订单/密码/密钥/
-   token/session/HTTPS/TLS/OAuth/JWT 等）→ properties.isEncrypted 必须为 true。
+3. **isEncrypted / isPublicNetwork 必须按"传输场景"区分，不能因为含敏感字就一刀切标 true**：
+   - **跨公网/外网/无线链路**（互联网/公网/WiFi/BLE/4G/5G/移动网络/HTTPS 端到端等）→ properties.isPublicNetwork=true
+   - **公网 + 任何数据**（即使已加密）→ isEncrypted 取决于 protocol 字段（写明 HTTPS/TLS/SSL/WSS → true）
+   - **内网 service-to-service**（如「应用后端 ↔ MySQL」「应用后端 ↔ Redis」「业务后端 ↔ 业务后端」）→
+     isPublicNetwork=false，isEncrypted 取决于 protocol（MySQL 驱动/HTTP/RPC/AMQP 内部等**不算** HTTPS 加密），
+     只有 protocol 明确写明 HTTPS/TLS/SSL 才标 isEncrypted=true
+   - 关键: 「订单」「支付」「凭证」「健康」等敏感字段**在公网传输**才需要加密；**写入内网数据库**属于内网
+     service-to-service,默认不标 isEncrypted
 4. **跨公网/无线/BLE/WiFi/4G/5G 的数据流** → properties.isPublicNetwork 必须为 true。
 5. **手机端 App ↔ 后端服务 / H5 ↔ 后端 / 第三方支付回调**等必经公网链路，
    properties.protocol 写明 HTTPS / TLS / MQTT 等具体协议，并按上述规则标记加密与公网。
@@ -993,11 +999,26 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
 
             # 自动纠错：根据数据流名/描述推断加密与公网属性
             inferred = _auto_fix_flow_props(flow)
-            if inferred["isEncrypted"] and not props.get("isEncrypted", False):
-                props["isEncrypted"] = True
-                autofix_log.append(
-                    f"数据流「{flow.get('name') or (src + '\u2192' + tgt)}」自动标记 isEncrypted=true（敏感数据）"
-                )
+            # 加密标记:仅在 (公网 + 含加密协议关键字) 或 (公网 + 敏感数据) 时强制 true
+            # 单纯「内网敏感数据」(如内网 service ↔ DB) 不再自动标 true,避免误报
+            protocol_str = str(flow.get("properties", {}).get("protocol") or "")
+            has_https = any(p in protocol_str.lower() for p in ("https", "tls", "ssl", "wss"))
+            if inferred["isEncrypted"]:
+                should_encrypt = inferred["isPublicNetwork"] or has_https
+                if should_encrypt and not props.get("isEncrypted", False):
+                    props["isEncrypted"] = True
+                    autofix_log.append(
+                        f"数据流「{flow.get('name') or (src + '\u2192' + tgt)}」自动标记 isEncrypted=true"
+                        f"（{'公网传输' if inferred['isPublicNetwork'] else 'TLS/HTTPS 协议'}）"
+                    )
+                # 反向修正: 内网 + 协议无 HTTPS/TLS → 取消加密
+                elif not should_encrypt and not inferred["isPublicNetwork"] and not has_https \
+                        and props.get("isEncrypted", False):
+                    props["isEncrypted"] = False
+                    autofix_log.append(
+                        f"数据流「{flow.get('name') or (src + '\u2192' + tgt)}」取消 isEncrypted=true"
+                        f"（内网 service-to-service,协议无 TLS/HTTPS）"
+                    )
             if inferred["isPublicNetwork"] and not props.get("isPublicNetwork", False):
                 props["isPublicNetwork"] = True
                 autofix_log.append(

@@ -86,6 +86,18 @@
         </svg>
         <span class="lg-label">跨边界</span>
       </span>
+      <span class="lg-item">
+        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+          <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" stroke-dasharray="6 4" />
+        </svg>
+        <span class="lg-label">跨边界+加密</span>
+      </span>
+      <span class="lg-item">
+        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+          <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" stroke-dasharray="6 4" />
+        </svg>
+        <span class="lg-label">跨边界+公网</span>
+      </span>
       <span class="lg-hint">点击任一数据流查看详情</span>
     </div>
 
@@ -729,31 +741,70 @@ function labelPos(seed) {
   return { distance, offset }
 }
 
+// 推断 cell 属于哪个 BoundaryBox（基于位置包含关系）
+// 返回 boundary id 或 null（不在任何 boundary 内）
+function findContainingBoundary(cell, allCells) {
+  if (!cell?.position) return null
+  const cx = cell.position.x
+  const cy = cell.position.y
+  const cw = cell.size?.width || 0
+  const ch = cell.size?.height || 0
+  for (const b of allCells) {
+    if (b.shape !== 'tm.BoundaryBox') continue
+    const bp = b.position
+    const bs = b.size
+    if (!bp || !bs) continue
+    // cell 完全包含在 boundary 矩形内
+    if (cx >= bp.x && cx + cw <= bp.x + bs.width
+        && cy >= bp.y && cy + ch <= bp.y + bs.height) {
+      return b.id
+    }
+  }
+  return null
+}
+
 function addEdge(cell) {
   const data = cell.data || {}
   const isBidirectional = !!data.isBidirectional
   const isEncrypted = !!data.isEncrypted
   const isPublicNetwork = !!data.isPublicNetwork
   const isOutOfScope = !!data.outOfScope
-  const crossesBoundary = data.crossesTrustBoundary === true
 
-  // —— 视觉语义（与官方 Threat Dragon data-changed.js 一致）——
+  // 跨边界判定: 优先用后端 LLM 标注;字段缺失时基于位置推断（兼容老 result）
+  // 推断规则保守: 只在两端都明确属于某个 boundary 且不同时才推断为跨边界
+  // (不推断"一端在、一端不在"——大部分 cell 不在任何 boundary 内,会过度标记)
+  let crossesBoundary = data.crossesTrustBoundary === true
+  if (data.crossesTrustBoundary === undefined && allCellsRef.length) {
+    const srcCell = allCellsRef.find(c => c.id === cell.source?.cell)
+    const tgtCell = allCellsRef.find(c => c.id === cell.target?.cell)
+    const srcB = srcCell ? findContainingBoundary(srcCell, allCellsRef) : null
+    const tgtB = tgtCell ? findContainingBoundary(tgtCell, allCellsRef) : null
+    // 两端都在 boundary 内且不同 → 跨边界
+    if (srcB && tgtB && srcB !== tgtB) crossesBoundary = true
+  }
+
+  // —— 视觉语义 ——
   // 1. 默认实线 + 灰色
   // 2. outOfScope（超出模型范围）→ 短虚线 '4 3'
-  // 3. 跨信任边界（端点不在同一 boundary）→ 中虚线 '7 5'
-  // 4. isEncrypted → 绿色描边（加密信道，绿色表示安全），实线
-  // 5. isPublicNetwork → 橙色描边（公网风险，醒目），实线
-  // 注意：流的"基准颜色"只承载信道语义，不被"是否已识别威胁"持续性改写——
-  // 否则只要一条流识别出未缓解威胁，整条连线变红淹没所有语义信息。
-  // "有未缓解威胁"信息改由节点上的 ⚠ N 徽章承载，并仅在 hover 时整条变红。
-  const strokeDasharray = isOutOfScope ? '4 3' : crossesBoundary ? '7 5' : null
+  // 3. 跨信任边界 → 中虚线 '6 4' + 强制灰色（与图例一致，覆盖加密/公网颜色）
+  // 4. isEncrypted → 绿色描边（不跨边界时）
+  // 5. isPublicNetwork → 橙色描边（不跨边界时）
+  // 跨边界的"灰色"优先级最高：跨边界本身就是最重要的视觉信号，
+  // 加密/公网信息通过详情面板/标签查看，避免颜色叠加导致跨边界无法识别。
+  const strokeDasharray = isOutOfScope ? '4 3' : crossesBoundary ? '6 4' : null
 
-  // 加密流略粗,公网流略粗(高视觉权重),普通流适中
-  const baseStrokeWidth = isEncrypted ? 1.9 : isPublicNetwork ? 1.9 : 1.5
+  // 视觉权重: 加密+公网双标记最粗(2.0) > 加密或公网(1.8) > 跨边界(1.6) > 普通(1.4)
+  let baseStrokeWidth = 1.4
+  if (isEncrypted || isPublicNetwork) baseStrokeWidth = 1.8
+  if (isEncrypted && isPublicNetwork) baseStrokeWidth = 2.0
+  if (crossesBoundary && !isEncrypted && !isPublicNetwork) baseStrokeWidth = 1.6
 
+  // 颜色优先级: 公网(橙) > 加密(绿) > 默认(灰)
+  // 跨边界通过虚线样式（strokeDasharray）表达，不覆盖颜色——保持叠加语义。
+  // 跨边界+加密 = 绿虚线;跨边界+公网 = 橙虚线;跨边界+普通 = 灰虚线
   let stroke = STYLE.Flow.stroke
-  if (isEncrypted) stroke = '#16a34a'
-  else if (isPublicNetwork) stroke = '#ea580c'
+  if (isPublicNetwork) stroke = '#ea580c'
+  else if (isEncrypted) stroke = '#16a34a'
 
   // 标签：加密/公网带语义图标(放在边上 0.5 处),普通流仅显示名称
   const hint = isEncrypted ? '🔒 ' : isPublicNetwork ? '🌐 ' : ''
