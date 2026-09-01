@@ -7,6 +7,7 @@ import io
 import logging
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -683,9 +684,17 @@ async def export_result(
 
     # 统一文件名：威胁建模标题 + 时间戳
     title = (record.get("title") or "threat-model").strip() or "threat-model"
-    safe_title = "".join(c for c in title if c.isalnum() or c in "_- ").replace(" ", "_")
+    # ASCII-only safe title for HTTP header (Python 3 str.isalnum() 接受 Unicode，需要 .isascii() 限制)
+    ascii_title = "".join(c if c.isascii() and c.isalnum() else "_" for c in title)
+    ascii_title = "".join(c for c in ascii_title if c.isalnum() or c in "_-").strip("_-_") or "export"
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{safe_title}_{ts}.{format}"
+    ascii_filename = f"{ascii_title}_{ts}.{format}"
+    # RFC 5987: 中文/Unicode 文件名用 filename* (UTF-8''percent-encoded) + ASCII fallback
+    content_disp = (
+        f'attachment; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{quote(f'{title}_{ts}.{format}')}"
+    )
+    filename = ascii_filename
 
     if format == "json":
         content = render_result_json(record)
@@ -701,11 +710,7 @@ async def export_result(
         return StreamingResponse(
             io.BytesIO(payload),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="{filename}"'
-                )
-            },
+            headers={"Content-Disposition": content_disp},
         )
     else:  # 默认 md
         content = render_result_markdown(record)
@@ -713,7 +718,7 @@ async def export_result(
     return PlainTextResponse(
         content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disp},
     )
 
 
