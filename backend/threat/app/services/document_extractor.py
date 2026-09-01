@@ -189,9 +189,12 @@ def _extract_pdf_assets(data: bytes) -> tuple[str, list[str]]:
                     uri = _image_to_data_uri(img.data, img.name)
                     if uri:
                         images.append(uri)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    # 不再静默吞掉：pypdf.page.images 需要 Pillow，否则会 ImportError 导致 0 张架构图
+                    logger.warning("page image skipped: %s: %s", type(exc).__name__, exc)
                     continue
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("page.images traversal failed: %s: %s", type(exc).__name__, exc)
             continue
     return "\n".join(parts), images
 

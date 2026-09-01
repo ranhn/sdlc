@@ -24,4 +24,5 @@ python-dotenv==1.0.1
 aiosqlite==0.20.0
 tenacity==9.0.0
 # PDF 解析（document_extractor.py 用了 pypdf.PdfReader，漏装会导致上传 PDF 422）
-pypdf==4.3.1
+# pypdf 4.x/5.x 的 page.images 依赖 Pillow —— 用 [image] extra 自动装，否则图片会被静默吞掉（0 张架构图）
+pypdf[image]>=4.3.1
