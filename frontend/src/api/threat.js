@@ -351,7 +351,8 @@ export async function uploadDocument(file) {
   // 不要显式设 Content-Type, 否则 axios 不会自动加 boundary,
   // FastAPI 会因为无法解析 multipart 边界返回 422。
   // axios 看到 FormData 会自动加: multipart/form-data; boundary=----xxx
-  return await http.post('/upload', fd, {
+  const { data } = await http.post('/upload', fd, {
     timeout: 60000, // 大文档解析可能较慢
   })
+  return data
 }
