@@ -57,7 +57,8 @@ async function handleLogin() {
   loading.value = true
   try {
     const res = await authApi.login(form)
-    const data = res.data
+    // authApi.login 已经解包 response.data，res 直接是后端返回的 body
+    const data = res
     // 登录接口返回 { access_token, token_type, role, full_name, username, must_change_password }
     const user = {
       username: data.username || form.username,
