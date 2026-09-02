@@ -1,4 +1,4 @@
-"""操作审计日志查询接口（仅超级管理员）。"""
+"""操作审计日志查询接口（管理员/安全专家）。"""
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,8 +12,8 @@ router = APIRouter(prefix="/api/logs", tags=["审计日志"])
 
 
 def _require_admin(current: User):
-    if current.role is None or current.role.code != "admin":
-        raise HTTPException(status_code=403, detail="仅超级管理员可查看审计日志")
+    if current.role is None or current.role.code not in ("admin", "secops"):
+        raise HTTPException(status_code=403, detail="仅管理员/安全专家可查看审计日志")
     return current
 
 

@@ -25,8 +25,26 @@ router = APIRouter(prefix="/api", tags=["管理"])
 
 
 def require_admin(user: User):
-    if user.role is None or user.role.code not in ("admin",):
-        raise HTTPException(status_code=403, detail="仅超级管理员可操作")
+    """admin + secops 均可操作（管理层共权）。"""
+    if user.role is None or user.role.code not in ("admin", "secops"):
+        raise HTTPException(status_code=403, detail="仅管理员/安全专家可操作")
+
+
+def _ensure_can_target_admin(current: User, target: User, action: str = "操作"):
+    """secops 不能对 admin 角色账号执行写操作（防提权）。admin 不受限。
+
+    仅在写接口（create/toggle/delete/change-password）调用；read 接口无需此保护。
+    """
+    if (
+        current.role
+        and current.role.code == "secops"
+        and target.role
+        and target.role.code == "admin"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=f"安全专家无权{action}超级管理员账号",
+        )
 
 
 # ============ 部门 ============
@@ -47,8 +65,12 @@ def create_user(data: UserCreate, db: Session = Depends(get_db), current: User =
     require_admin(current)
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(status_code=400, detail="用户名已存在")
-    if not db.query(Role).filter(Role.id == data.role_id).first():
+    target_role = db.query(Role).filter(Role.id == data.role_id).first()
+    if not target_role:
         raise HTTPException(status_code=400, detail="角色不存在")
+    # secops 不能创建 admin 角色账号（防提权：避免 secops 自创 admin 后登录提权）
+    if current.role.code == "secops" and target_role.code == "admin":
+        raise HTTPException(status_code=403, detail="安全专家无权创建超级管理员账号")
     user = User(
         username=data.username,
         password_hash=hash_password(data.password),
@@ -85,6 +107,7 @@ def list_users(
     for u in users:
         out = UserOut.model_validate(u)
         out.role_name = u.role.name if u.role else None
+        out.role_code = u.role.code if u.role else None
         result.append(out)
     return result
 
@@ -95,6 +118,7 @@ def toggle_user(user_id: int, db: Session = Depends(get_db), current: User = Dep
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_can_target_admin(current, user, "启停")
     if user.id == current.id:
         raise HTTPException(status_code=400, detail="不能禁用自己")
     user.is_active = not user.is_active
@@ -110,6 +134,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db), current: User = Dep
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_can_target_admin(current, user, "删除")
     if user.id == current.id:
         raise HTTPException(status_code=400, detail="不能删除当前登录用户")
     if user.role and user.role.code == "admin":
@@ -129,6 +154,7 @@ def change_user_password(user_id: int, data: ChangePasswordIn, db: Session = Dep
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_can_target_admin(current, user, "重置密码")
     user.password_hash = hash_password(data.new_password)
     db.commit()
     write_operation_log(db, current, "change_password", "admin", f"重置用户 {user.username} 密码")

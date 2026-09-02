@@ -24,7 +24,7 @@
         <el-tooltip v-if="isAdmin && !feishuEnabled" content="飞书未配置（FEISHU_APP_ID / FEISHU_APP_SECRET）" placement="top">
           <el-icon class="hint-icon"><QuestionFilled /></el-icon>
         </el-tooltip>
-        <el-button type="primary" @click="visible = true">
+        <el-button v-if="isPrivileged" type="primary" @click="visible = true">
           <el-icon><Plus /></el-icon>&nbsp;新增用户
         </el-button>
       </div>
@@ -56,11 +56,14 @@
         </el-table-column>
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
-            <el-button link :type="row.is_active ? 'danger' : 'success'" size="small" @click="toggle(row)">
-              {{ row.is_active ? '禁用' : '启用' }}
-            </el-button>
-            <el-button link type="warning" size="small" @click="openChangePassword(row)">改密</el-button>
-            <el-button link type="danger" size="small" @click="del(row)">删除</el-button>
+            <template v-if="canTargetUser(row)">
+              <el-button link :type="row.is_active ? 'danger' : 'success'" size="small" @click="toggle(row)">
+                {{ row.is_active ? '禁用' : '启用' }}
+              </el-button>
+              <el-button link type="warning" size="small" @click="openChangePassword(row)">改密</el-button>
+              <el-button link type="danger" size="small" @click="del(row)">删除</el-button>
+            </template>
+            <el-tag v-else-if="row.role_code === 'admin'" size="small" type="info" effect="plain">仅超级管理员可操作</el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -130,6 +133,9 @@ import { useUserStore } from '../store/user'
 
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.role === 'admin')
+const isPrivileged = computed(() => ['admin', 'secops'].includes(userStore.role))
+// secops 不能对 admin 角色账号做写操作（后端已 403 兜底，前端这里隐藏按钮避免误点）
+const canTargetUser = (row) => isAdmin.value || row.role_code !== 'admin'
 
 const list = ref([])
 const roles = ref([])

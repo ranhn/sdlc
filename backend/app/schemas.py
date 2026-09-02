@@ -38,6 +38,7 @@ class UserOut(BaseModel):
     email: Optional[str] = None
     role_id: int
     role_name: Optional[str] = None
+    role_code: Optional[str] = None  # 用于前端判断是否对目标用户开放写操作（如 secops 不可操作 admin 行）
     department_id: Optional[int] = None
     is_active: bool
     is_deleted: bool = False
