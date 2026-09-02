@@ -459,6 +459,7 @@ async function onModelingFinished(payload) {
 
 function onErrorToast(payload) {
   const msg = typeof payload === 'string' ? payload : (payload?.message || '发生错误')
+  if (!msg) return
   ElMessage.error(msg)
 }
 

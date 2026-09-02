@@ -528,7 +528,10 @@ function fillTemplate(tpl) {
   architecture.value = tpl.architecture || ''
   if (tpl.methodology) methodology.value = tpl.methodology
   activeTemplate.value = tpl
-  emit('error', '')
+  // 切换模板后清空"输入指纹 / 缓存命中"状态：指纹会随 watcher 重新计算
+  currentFingerprint.value = ''
+  lastSubmittedFingerprint.value = ''
+  replayAvailable.value = false
 }
 
 onMounted(loadTemplates)
