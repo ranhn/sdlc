@@ -164,8 +164,8 @@
         </button>
       </div>
 
-      <!-- 输入指纹 / 稳定性提示 -->
-      <div class="fp-hint">
+      <!-- 输入指纹 / 稳定性提示（默认隐藏，仅命中缓存时显示） -->
+      <div v-if="replayAvailable" class="fp-hint fp-hint--replay">
         <div class="fp-row">
           <span class="fp-dot" :class="{ same: replayAvailable }" />
           <span class="fp-text">
@@ -853,7 +853,11 @@ onMounted(loadTemplates)
 }
 
 /* —— 输入指纹 / 稳定性提示 —— */
+/* 暂时隐藏输入指纹 + 固定种子提示，按用户要求仅保留缓存命中（replay）状态 */
 .fp-hint {
+  display: none;
+}
+.fp-hint.fp-hint--replay {
   display: flex;
   flex-direction: column;
   gap: 4px;

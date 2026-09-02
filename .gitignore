@@ -54,6 +54,8 @@ backend/_reset_*.py
 backend/backend.log
 backend/backend_err.log
 frontend/frontend.log
+frontend/vite.log
+frontend/_rp_compiled.js
 
 # ---- 备份与日志 ----
 backups/
