@@ -1,21 +1,21 @@
 <template>
   <el-container class="app-layout">
-    <el-aside :width="isCollapse ? '64px' : '220px'" class="app-aside">
+    <el-aside width="220px" class="app-aside">
       <div class="logo" @click="$router.push('/dashboard')">
         <div class="logo-mark">V</div>
-        <div v-if="!isCollapse" class="logo-text">
+        <div class="logo-text">
           <div class="logo-title">VeSync SDLC</div>
         </div>
       </div>
       <el-menu
         :default-active="$route.path"
-        :collapse="isCollapse"
+        :collapse="false"
         :collapse-transition="false"
         router
         class="app-menu"
       >
         <template v-for="g in menus" :key="g.heading">
-          <div v-if="!isCollapse" class="menu-heading">{{ g.heading }}</div>
+          <div class="menu-heading">{{ g.heading }}</div>
           <template v-for="m in g.items" :key="m.path || m.title">
             <el-sub-menu v-if="m.children" :index="m.title">
               <template #title>
@@ -38,9 +38,6 @@
     <el-container class="app-main">
       <el-header class="app-header">
         <div class="header-left">
-          <el-icon class="collapse-btn" @click="isCollapse = !isCollapse">
-            <Expand v-if="isCollapse" /><Fold v-else />
-          </el-icon>
           <el-breadcrumb separator="/">
             <el-breadcrumb-item :to="{ path: '/dashboard' }">首页</el-breadcrumb-item>
             <el-breadcrumb-item
@@ -77,14 +74,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../store/user'
 
 const router = useRouter()
 const store = useUserStore()
-const isCollapse = ref(false)
 
 const roleMap = {
   admin: '安全管理员',
@@ -179,12 +175,28 @@ function handleCommand(cmd) {
 
 <style scoped>
 .app-layout { height: 100vh; }
-.app-aside { background: #0f172a; transition: width 0.2s; overflow-x: hidden; }
-.logo { display: flex; align-items: center; gap: 10px; height: 60px; padding: 0 16px; color: #fff; cursor: pointer; }
+.app-aside {
+  background: #0f172a;
+  width: 220px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
+  flex: 0 0 220px !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.logo { display: flex; align-items: center; gap: 10px; height: 60px; padding: 0 16px; color: #fff; cursor: pointer; flex-shrink: 0; }
 .logo-mark { width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg,#3b82f6,#8b5cf6); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; color: #fff; flex-shrink: 0; }
 .logo-text { display: flex; align-items: center; }
 .logo-title { font-size: 15px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
-.app-menu { border-right: none; background: transparent; }
+.app-menu {
+  border-right: none;
+  background: transparent;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .app-menu :deep(.el-sub-menu .el-menu .el-menu-item) { padding-left: 48px !important; }
 .menu-heading { padding: 16px 20px 6px; font-size: 12px; color: #64748b; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
 .menu-icon { margin-right: 10px; font-size: 18px; }
@@ -194,10 +206,14 @@ function handleCommand(cmd) {
 .app-menu :deep(.el-sub-menu__title) { color: #cbd5e1; }
 .app-menu :deep(.el-sub-menu__title:hover) { background: rgba(255,255,255,0.06); color: #fff; }
 .app-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) { color: #fff; }
+/* 滚动条样式：细一点，更干净 */
+.app-menu::-webkit-scrollbar { width: 6px; }
+.app-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+.app-menu::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+.app-menu::-webkit-scrollbar-track { background: transparent; }
 .app-main { background: #f1f5f9; }
 .app-header { background: #fff; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; height: 52px; padding: 0 20px; }
 .header-left { display: flex; align-items: center; gap: 16px; }
-.collapse-btn { font-size: 20px; cursor: pointer; color: #475569; }
 .header-right .user-info { display: flex; align-items: center; gap: 8px; cursor: pointer; color: #334155; }
 .avatar { background: #3b82f6; color: #fff; font-weight: 600; }
 .username { font-size: 14px; }

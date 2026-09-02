@@ -203,3 +203,29 @@ class HealthResponse(BaseModel):
     model: str = Field(
         "", description="当前生效的 LLM 模型名"
     )
+
+
+class LLMConfigUpdate(BaseModel):
+    """管理员更新 LLM 统一配置的请求体（仅 admin 可写）。"""
+
+    base_url: str = Field(..., description="OpenAI 兼容 API 地址")
+    model: str = Field(..., description="模型名称")
+    api_key: Optional[str] = Field(
+        None,
+        description=(
+            "API Key。**留空表示不更新**（管理员只改 model 时不丢 key）；"
+            "传值则覆盖。完整 key 永不会通过接口返回给前端。"
+        ),
+    )
+
+
+class LLMConfigPublic(BaseModel):
+    """LLM 运行时配置的"公开视图"（所有登录用户可读）。"""
+
+    base_url: str = ""
+    model: str = ""
+    configured: bool = False
+    source: str = "none"  # "disk" | "env" | "none"
+    api_key_masked: Optional[str] = None
+    api_key_configured: bool = False
+    is_admin: bool = False

@@ -125,23 +125,51 @@
     </el-dialog>
 
     <!-- LLM 配置弹窗 -->
-    <el-dialog v-model="settingsVisible" title="LLM 服务配置" width="520px" top="10vh">
-      <el-form :model="llmForm" label-width="96px">
+    <el-dialog v-model="settingsVisible" title="LLM 服务配置（公司统一配置）" width="540px" top="10vh">
+      <el-alert
+        v-if="!isAdmin"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 14px"
+        title="您不是管理员，只能查看公司统一 LLM 配置；如需修改请联系管理员。"
+      />
+      <el-form :model="llmForm" label-width="100px">
         <el-form-item label="API 地址">
-          <el-input v-model="llmForm.base_url" placeholder="https://api.openai.com/v1" />
+          <el-input
+            v-model="llmForm.base_url"
+            :disabled="!isAdmin"
+            placeholder="https://api.openai.com/v1"
+          />
         </el-form-item>
-        <el-form-item label="API Key">
-          <el-input v-model="llmForm.api_key" type="password" show-password placeholder="sk-…" />
+        <el-form-item :label="isAdmin ? 'API Key' : 'API Key 状态'">
+          <el-input
+            v-if="isAdmin"
+            v-model="llmForm.api_key"
+            type="password"
+            show-password
+            :placeholder="llmKeyChanged ? '输入新 Key 覆盖' : '留空 = 保留当前 Key'"
+            @input="llmKeyChanged = true"
+          />
+          <el-input
+            v-else
+            :model-value="llmKeyMasked || '（未配置）'"
+            disabled
+          />
         </el-form-item>
         <el-form-item label="模型">
-          <el-input v-model="llmForm.model" placeholder="gpt-4o" />
+          <el-input
+            v-model="llmForm.model"
+            :disabled="!isAdmin"
+            placeholder="deepseek-v3-flash"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="settingsVisible = false">取消</el-button>
-        <el-button plain @click="clearLlmConfig">清空配置</el-button>
-        <el-button type="primary" :loading="settingsSaving" @click="saveLlmConfig">
-          保存配置
+        <el-button v-if="isAdmin" plain @click="clearLlmSettings">清空配置</el-button>
+        <el-button v-if="isAdmin" type="primary" :loading="settingsSaving" @click="saveLlmSettings">
+          保存配置（公司全员生效）
         </el-button>
       </template>
     </el-dialog>
@@ -172,6 +200,9 @@ import {
   analyze,
   getTask,
   cancelTask,
+  getLlmConfig,
+  saveLlmConfig as saveLlmConfigApi,
+  clearLlmConfig as clearLlmConfigApi,
 } from '@/api/threat.js'
 import { useThreatAnalysisStore } from '@/store/threat-analysis.js'
 import '@/styles/threat.css'
@@ -197,6 +228,14 @@ const pageTitle = computed(() => {
 const llmStatus = ref('unknown')
 const backendStatus = ref('checking')
 const llmForm = ref({ base_url: '', api_key: '', model: '' })
+// 当前登录用户角色（决定是否显示 LLM 编辑入口）
+const currentRole = ref('')
+const isAdmin = computed(() => {
+  const r = (currentRole.value || '').toLowerCase()
+  return r === 'admin' || r === 'secops'
+})
+// 保存 LLM 配置时是否在改 key（admin 改 model 时不丢 key 用）
+const llmKeyChanged = ref(false)
 
 const llmBadge = computed(() => {
   if (llmStatus.value === 'ready') return { text: '模型已配置', cls: 'ready' }
@@ -281,40 +320,95 @@ function onBackendBadgeClick() {
   }
 }
 
-// ---- LLM 配置 ----
-function loadLlmConfig() {
+// ---- LLM 配置（公司统一，由管理员在 UI 配置；所有用户共享） ----
+function _readUserRole() {
+  // 从 SDLC 平台登录信息读取角色（存于 localStorage.user JSON.role 字段）
   try {
-    const raw = localStorage.getItem('ai-td-llm')
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      llmForm.value = { ...llmForm.value, ...parsed }
-      if (parsed?.base_url || parsed?.api_key || parsed?.model) {
-        llmStatus.value = 'ready'
-      }
-    }
-  } catch (e) { /* ignore */ }
+    const raw = localStorage.getItem('user')
+    if (!raw) return ''
+    const u = JSON.parse(raw)
+    return (u?.role || u?.user?.role || '').toLowerCase()
+  } catch (e) {
+    return ''
+  }
 }
-function saveLlmConfig() {
+const llmKeyMasked = ref('')  // 非管理员看到的脱敏 key（仅展示）
+
+async function loadLlmConfig() {
+  // 从后端读取公司统一 LLM 配置。
+  // 关键：完整 api_key **不**从后端返回（安全设计）。
+  // 非管理员：admin 配的 base_url / model 仍可看（只读），api_key 字段用脱敏值展示
+  // 管理员：可编辑
+  try {
+    const cfg = await getLlmConfig()
+    currentRole.value = cfg?.is_admin ? 'admin' : 'user'
+    if (cfg) {
+      llmForm.value = {
+        base_url: cfg.base_url || '',
+        api_key: '',
+        model: cfg.model || '',
+      }
+      llmKeyMasked.value = cfg.api_key_masked || ''
+      llmKeyChanged.value = false
+    }
+    if (cfg?.configured) llmStatus.value = 'ready'
+  } catch (e) {
+    // 后端没起来时，尝试从 localStorage 兼容读取
+    currentRole.value = _readUserRole()
+    try {
+      const raw = localStorage.getItem('ai-td-llm-legacy')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        llmForm.value = { ...llmForm.value, ...parsed }
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+async function saveLlmSettings() {
+  if (!isAdmin.value) {
+    window.$toast?.('仅管理员可修改 LLM 统一配置，请联系管理员', 'error')
+    return
+  }
   settingsSaving.value = true
   try {
-    localStorage.setItem('ai-td-llm', JSON.stringify(llmForm.value))
-    const f = llmForm.value || {}
-    if (f.base_url || f.api_key || f.model) {
-      llmStatus.value = 'ready'
+    const payload = {
+      base_url: llmForm.value.base_url,
+      model: llmForm.value.model,
     }
-    window.$toast?.('已保存 LLM 配置（本次会话生效）', 'success')
+    // api_key 留空且没改 → 不传，保留旧值
+    if (llmKeyChanged.value && llmForm.value.api_key) {
+      payload.api_key = llmForm.value.api_key
+    }
+    await saveLlmConfigApi(payload)
+    window.$toast?.('已保存 LLM 统一配置（公司全员立即生效）', 'success')
+    llmKeyChanged.value = false
+    llmForm.value.api_key = ''
     settingsVisible.value = false
+    checkLLM()
   } catch (e) {
-    window.$toast?.('保存失败：' + (e?.message || e), 'error')
+    window.$toast?.('保存 LLM 配置失败: ' + (e?.message || e), 'error')
   } finally {
     settingsSaving.value = false
   }
 }
-function clearLlmConfig() {
-  localStorage.removeItem('ai-td-llm')
-  llmForm.value = { base_url: '', api_key: '', model: '' }
-  checkLLM()
-  window.$toast?.('已清除 LLM 配置', 'info')
+
+async function clearLlmSettings() {
+  if (!isAdmin.value) {
+    window.$toast?.('仅管理员可清空 LLM 统一配置', 'error')
+    return
+  }
+  if (!confirm('确定要清空公司统一 LLM 配置吗？清空后所有用户立即无法调用 LLM。')) return
+  try {
+    await clearLlmConfigApi()
+    llmForm.value = { base_url: '', api_key: '', model: '' }
+    llmKeyMasked.value = ''
+    llmStatus.value = 'missing'
+    window.$toast?.('已清空 LLM 统一配置', 'info')
+    settingsVisible.value = false
+  } catch (e) {
+    window.$toast?.('清空失败: ' + (e?.message || e), 'error')
+  }
 }
 
 // ---- 系统提示词 ----
@@ -489,6 +583,8 @@ async function restoreLatestResult() {
 
 // ---- 生命周期 ----
 onMounted(() => {
+  // 恢复持久化的 LLM 配置到表单（localStorage 读，弹窗打开即可看到）
+  loadLlmConfig()
   checkBackend()
   checkLLM()
   heartbeatTimer = setInterval(() => checkBackend(), 15000)

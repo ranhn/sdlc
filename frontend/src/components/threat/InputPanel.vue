@@ -459,19 +459,11 @@ function submit(isReplay = false) {
     attachments: collectAttachmentImages(),
     methodology: methodology.value,
   }
-  try {
-    const raw = localStorage.getItem('ai-td-llm')
-    if (raw) {
-      const llm = JSON.parse(raw)
-      const filtered = {}
-      if (llm?.base_url) filtered.base_url = llm.base_url
-      if (llm?.api_key) filtered.api_key = llm.api_key
-      if (llm?.model) filtered.model = llm.model
-      if (Object.keys(filtered).length) payload.llm = filtered
-    }
-  } catch (e) {
-    /* 忽略 */
-  }
+  // 不再从前端 localStorage 取 LLM 配置。
+  // 管理员在公司统一配置 LLM 后，所有用户（包括本用户）发起分析时，
+  // 后端会自动用统一配置（见 llm_config_store.py）。
+  // —— 这就是"管理员配一次，全员都能用"的实现。
+  // 如果用户想要覆盖（仅 admin 调试用），可在此按需读旧 key 'ai-td-llm-legacy'。
   computeInputFingerprint({
     title: payload.title,
     requirements: reqText,

@@ -20,6 +20,8 @@ from ..models.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     HealthResponse,
+    LLMConfigPublic,
+    LLMConfigUpdate,
     RenameResultBody,
     ResultDetailResponse,
     ResultListResponse,
@@ -31,6 +33,7 @@ from ..models.schemas import (
     ThreatStatusUpdate,
 )
 from ..services.llm_client import LLMClient
+from ..services import llm_config_store
 from ..services.dfd_reviewer import DFDReviewer
 from ..services.document_extractor import extract_assets, extract_text, UnsupportedFileTypeError
 from ..services.attachment_store import save_attachment
@@ -52,6 +55,9 @@ router = APIRouter()
 
 # 根据配置初始化限流参数
 rate_limiter.set_config(settings.rate_limit_per_minute)
+
+# 启动时加载磁盘上的 LLM 运行时配置（覆盖 .env 默认值）
+llm_config_store.load_from_disk()
 
 # 方法论 -> 威胁分析阶段展示文案（与前端进度面板一一对应）
 # 第 2 步针对所选方法论动态渲染，避免出现「选了 CIA 却显示 STRIDE」的情况
@@ -128,13 +134,89 @@ def validate_input_chars(request: AnalyzeRequest) -> None:
 # ----------------------------------------------------------------------
 @router.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """健康检查。"""
+    """健康检查。
+
+    LLM 状态从 llm_config_store 读取（admin 在 UI 配置后立即生效），
+    不再读 settings.llm_configured（那是启动时的快照，无法热更新）。
+    """
+    cfg = llm_config_store.get_config()
     return HealthResponse(
         status="ok",
-        llm_configured=settings.llm_configured,
-        base_url=settings.llm_base_url if settings.llm_configured else "",
-        model=settings.llm_model if settings.llm_configured else "",
+        llm_configured=cfg["configured"],
+        base_url=cfg["base_url"] if cfg["configured"] else "",
+        model=cfg["model"] if cfg["configured"] else "",
     )
+
+
+# ----------------------------------------------------------------------
+# LLM 统一配置（管理员在 UI 一次性配置，全公司用户共享）
+# ----------------------------------------------------------------------
+def _is_admin(user: dict) -> bool:
+    """当前用户是否为管理员（可改 LLM 配置）。"""
+    return (user or {}).get("role") in {"admin", "secops"}
+
+
+@router.get("/api/llm/config", response_model=LLMConfigPublic)
+async def get_llm_config(
+    current_user: dict = Depends(get_sdlc_user),
+) -> LLMConfigPublic:
+    """读取公司统一的 LLM 配置（**所有登录用户可读**）。
+
+    - 非管理员：返回 base_url / model / configured / api_key_masked（脱敏），
+      用于前端展示"已为公司配置 X 模型"等状态。
+    - 管理员（admin / secops）：额外返回 is_admin=true 标记，
+      前端据此显示"编辑配置"入口。
+
+    **完整 api_key 永远不返回给前端**（仅在内存中给 LLMClient 构造使用）。
+    """
+    admin = _is_admin(current_user)
+    cfg = llm_config_store.get_public_config(for_admin=admin)
+    return LLMConfigPublic(**cfg)
+
+
+@router.post("/api/llm/config", response_model=LLMConfigPublic)
+async def update_llm_config(
+    body: LLMConfigUpdate,
+    current_user: dict = Depends(get_sdlc_user),
+) -> LLMConfigPublic:
+    """保存公司统一的 LLM 配置（**仅 admin / secops**）。
+
+    - api_key 留空 → 保留旧值（不覆盖），便于只改 model。
+    - 立即写入磁盘 + 内存，下一次 LLMClient 构造生效，
+      **用户无需刷新页面、无需重启后端**。
+    """
+    if not _is_admin(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="仅管理员可修改 LLM 统一配置，请联系管理员",
+        )
+    try:
+        cfg = llm_config_store.set_config(
+            base_url=body.base_url,
+            api_key=body.api_key,
+            model=body.model,
+            updated_by=(current_user or {}).get("username") or "admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LLMConfigPublic(**cfg)
+
+
+@router.delete("/api/llm/config")
+async def delete_llm_config(
+    current_user: dict = Depends(get_sdlc_user),
+) -> dict[str, Any]:
+    """清空公司统一的 LLM 配置（**仅 admin / secops**）。
+
+    清空后所有用户立即无法调用 LLM。重启后端会从 .env 自动 load 回来（如果 .env 里有）。
+    """
+    if not _is_admin(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="仅管理员可清空 LLM 统一配置",
+        )
+    llm_config_store.clear_config()
+    return {"cleared": True}
 
 
 # ----------------------------------------------------------------------

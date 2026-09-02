@@ -37,6 +37,8 @@ backend/threat/data/llm_cache.sqlite
 backend/threat/data/llm_cache.sqlite-*
 backend/threat/data/results/
 backend/threat/data/attachments/
+# 公司统一 LLM 运行时配置（含明文 api_key，禁止入仓）
+backend/threat/app/services/.llm_runtime.json
 backend/uploads/
 # 运行时的 data 目录（SQLite 数据库），但保留 .gitkeep 占位
 backend/data/*

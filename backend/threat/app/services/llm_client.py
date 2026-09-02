@@ -14,6 +14,7 @@ import httpx
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
 
 from ..config import settings
+from . import llm_config_store
 
 # 记录最近一次 LLM 调用是否命中响应缓存（供任务收尾时透出给前端展示）。
 # 每次建模任务的 4 次 LLM 调用在单任务内串行执行，因此模块级标志是安全的；
@@ -67,26 +68,32 @@ class LLMClient:
         api_key: str | None = None,
         model: str | None = None,
     ) -> None:
-        # 前端界面传入的配置优先，否则回退到 .env
-        api_key = api_key or settings.llm_api_key
-        base_url = base_url or settings.llm_base_url
+        # 优先级：调用方显式传入 > 后端 runtime 配置（admin 在 UI 统一管理）
+        # 之前的实现是回退到 .env 默认值（启动时一次加载，无法热更新）。
+        # 现在改用 llm_config_store 实时取值，admin 在 UI 改完后，
+        # 正在进行的下一次分析立即生效，无需重启后端。
+        runtime = llm_config_store.get_config()
+        api_key = api_key or runtime["api_key"] or settings.llm_api_key
+        base_url = base_url or runtime["base_url"] or settings.llm_base_url
         self.base_url = base_url
-        self.model = model or settings.llm_model
+        self.model = model or runtime["model"] or settings.llm_model
         self.temperature = settings.llm_temperature
         # 生成稳定性：固定种子（0 表示由服务商随机，等价不传）
         self.seed = settings.llm_seed
 
         if not api_key:
             raise ValueError(
-                "缺少 LLM API Key。请在顶部「配置模型」中填写，或在 backend/.env 中配置。"
+                "缺少 LLM API Key。请联系管理员在「LLM 服务配置」中填写，"
+                "或在 backend/.env 中配置 LLM_API_KEY 后重启服务。"
             )
 
-        # 拦截 .env 占位符——这种情况说明后端其实没真正配置 LLM
+        # 拦截 .env / store 中的占位符——这种情况说明后端其实没真正配置 LLM
         low = api_key.lower()
         if any(p in low for p in self._PLACEHOLDER_KEYS):
             raise ValueError(
-                "检测到 API Key 仍是 .env 中的占位符（sk-your-…）。"
-                "请在顶部「配置模型」中粘贴真实的 Key，或修改 backend/.env 中的 LLM_API_KEY 后重启服务。"
+                "检测到 API Key 仍是占位符（sk-your-…）。"
+                "请联系管理员在「LLM 服务配置」中粘贴真实的 Key，"
+                "或修改 backend/.env 中的 LLM_API_KEY 后重启服务。"
             )
         self.client = AsyncOpenAI(
             api_key=api_key,

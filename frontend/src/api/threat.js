@@ -356,3 +356,36 @@ export async function uploadDocument(file) {
   })
   return data
 }
+
+/**
+ * 读取公司统一的 LLM 配置（所有登录用户可读）。
+ * 后端不返回完整 api_key，仅返回 base_url / model / configured / api_key_masked。
+ * 管理员（is_admin=true）才会在前端显示"编辑配置"入口。
+ * @returns {Promise<{base_url: string, model: string, configured: boolean, source: string, api_key_masked: string|null, api_key_configured: boolean, is_admin: boolean}>}
+ */
+export async function getLlmConfig() {
+  const { data } = await http.get('/llm/config')
+  return data
+}
+
+/**
+ * 保存公司统一的 LLM 配置（仅管理员）。
+ * 写入立即生效，正在进行的下一次分析会使用新配置，无需重启后端/刷新页面。
+ * @param {{base_url: string, model: string, api_key?: string}} payload
+ *        api_key 留空 → 保留旧值（不覆盖）
+ * @returns {Promise<object>} 更新后的公开视图
+ */
+export async function saveLlmConfig(payload) {
+  const { data } = await http.post('/llm/config', payload)
+  return data
+}
+
+/**
+ * 清空公司统一的 LLM 配置（仅管理员）。
+ * 清空后所有用户立即无法调用 LLM。
+ * @returns {Promise<{cleared: boolean}>}
+ */
+export async function clearLlmConfig() {
+  const { data } = await http.delete('/llm/config')
+  return data
+}
