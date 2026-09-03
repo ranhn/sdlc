@@ -221,9 +221,11 @@ class LLMClient:
     ) -> Any:
         """按补丁浅拷贝 kwargs 并调用 chat.completions.create，避免污染原始参数。
 
-        支持两种补丁：
+        支持的 patch 操作：
         - patch["messages"] = None 且提供 pure_text：把多模态 user content 换成纯文本；
-        - patch["response_format"] = None：删除 response_format（触发降级）。
+        - patch["response_format"] = dict / None：覆盖 / 删除 response_format（触发降级）；
+        - patch["temperature"] = None：删除 temperature 参数（gpt-5 / o-series
+          reasoning 模型只支持 temperature=1，省略后走模型默认值）。
         """
         new_kwargs = dict(kwargs)
         if "messages" in patch and patch["messages"] is None and pure_text is not None:
@@ -234,6 +236,11 @@ class LLMClient:
                 new_kwargs.pop("response_format", None)
             else:
                 new_kwargs["response_format"] = patch["response_format"]
+        if "temperature" in patch:
+            if patch["temperature"] is None:
+                new_kwargs.pop("temperature", None)
+            else:
+                new_kwargs["temperature"] = patch["temperature"]
         return await self.client.chat.completions.create(**new_kwargs)
 
     @staticmethod
@@ -276,6 +283,31 @@ class LLMClient:
                 "not supported",
                 "unsupported",
                 "invalid_request_error",
+            )
+        )
+
+    @staticmethod
+    def _is_temperature_unsupported(exc: Exception) -> bool:
+        """判断异常是否因模型不支持自定义 temperature 导致。
+
+        gpt-5 / o-series / o1 / o3 等 reasoning 模型只支持 temperature=1（默认），
+        传非默认值会报 400 invalid_request_error：
+        ``Unsupported value: 'temperature' does not support 0.2 with this model.
+        Only the default (1) value is supported.``
+        命中后应降级为省略 temperature 参数，让模型走默认温度。
+        """
+        msg = str(exc)
+        msg_lower = msg.lower()
+        if "temperature" not in msg_lower:
+            return False
+        return any(
+            m in msg_lower
+            for m in (
+                "does not support",
+                "doesn't support",
+                "not supported",
+                "unsupported",
+                "default (1) value is supported",
             )
         )
 
@@ -380,6 +412,7 @@ class LLMClient:
             #   图片不支持 → 去掉图片只留文本
             #   json_schema → 降级 json_object
             #   response_format → 完全移除 response_format，只靠系统提示词约束
+            #   temperature 不支持（gpt-5 / o-series）→ 省略 temperature 参数
             #
             # 关键：一旦首调因“模型不支持图片”失败，后续所有降级都必须保持无图，
             # 否则降级 2/3 又带图重试，会反复撞同一 400 错误（“已尝试 N+1 种方式均失败”）。
@@ -418,6 +451,12 @@ class LLMClient:
                 "移除 response_format",
                 {"response_format": None},
             ))
+            # 降级 4：模型不支持自定义 temperature（gpt-5 / o-series）→ 省略 temperature
+            if self._is_temperature_unsupported(exc):
+                attempts.append(make_attempt(
+                    "省略 temperature 参数走模型默认值",
+                    {"temperature": None},
+                ))
 
             for label, fn in attempts:
                 try:
@@ -448,15 +487,23 @@ class LLMClient:
         user_prompt: str,
     ) -> str:
         """调用 LLM 返回纯文本。"""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                temperature=self.temperature,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
+            response = await self.client.chat.completions.create(**kwargs)
         except (httpx.ConnectError, httpx.TimeoutException, APIConnectionError) as exc:
             self._raise_connection_error(exc, self.base_url)
+        except Exception as exc:
+            # 兼容 gpt-5 / o-series 不支持自定义 temperature：去掉 temperature 重试一次
+            if self._is_temperature_unsupported(exc):
+                kwargs.pop("temperature", None)
+                response = await self.client.chat.completions.create(**kwargs)
+            else:
+                raise
         return response.choices[0].message.content or ""
