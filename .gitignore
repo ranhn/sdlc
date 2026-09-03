@@ -70,6 +70,7 @@ server_err.log.*
 # ---- IDE / 系统 ----
 .idea/
 .vscode/
+.codebuddy/   # CodeBuddy IDE 本地脑图/工作数据，不入仓
 *.swp
 .DS_Store
 Thumbs.db

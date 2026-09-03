@@ -123,6 +123,7 @@ class ResultStore:
         cache_keys: list[str] | None = None,
         title: str | None = None,
         owner: dict[str, Any] | None = None,
+        fingerprint: str | None = None,
     ) -> dict[str, Any]:
         """保存一次建模结果，返回该结果的元数据字典。
 
@@ -133,6 +134,9 @@ class ResultStore:
             title: 用户自定义标题；为空时自动从 source_text 提取。
             owner: 建模人信息 ``{"user_id": int, "username": str,
                 "display_name": str}``；None 表示匿名（兼容老数据）。
+            fingerprint: 输入指纹（需求+架构+方法论的 sha1 前 16 字节），
+                用于在前端双击 / 网络重试 / 用户重复点提交 时做幂等去重。
+                同 owner + 同 fingerprint 在窗口期内的重复请求将复用已有 result。
         """
         result_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         owner_payload: dict[str, Any] = {}
@@ -153,6 +157,7 @@ class ResultStore:
             "summary": summary,
             "stats": stats,
             "cache_keys": list(cache_keys or []),
+            "input_fingerprint": (fingerprint or "").strip() or None,
             **owner_payload,
         }
         with self._lock:
@@ -164,6 +169,39 @@ class ResultStore:
     # ------------------------------------------------------------------
     # 读取
     # ------------------------------------------------------------------
+    def find_recent_by_fingerprint(
+        self,
+        owner_username: str,
+        fingerprint: str,
+        window_sec: int = 60,
+    ) -> dict[str, Any] | None:
+        """查找同 owner 在最近 window_sec 秒内使用相同 fingerprint 提交的已有结果。
+
+        用于 P0 持久化幂等：网络重试 / 用户双击 / 浏览器重发 POST 都能命中。
+        返回的 dict 已剥离完整 model（仅 meta），无访问权限限制（仅按 owner_username 过滤）。
+
+        Returns:
+            找到的元数据字典（含 id / created_at），未命中返回 None。
+        """
+        if not (owner_username and fingerprint):
+            return None
+        cutoff = time.time() - max(1, int(window_sec))
+        with self._lock:
+            for p in self._dir.glob("*.json"):
+                if p.name.startswith("."):
+                    continue
+                rec = self._load(p)
+                if not rec:
+                    continue
+                if (rec.get("owner_username") or "") != owner_username:
+                    continue
+                if (rec.get("input_fingerprint") or "") != fingerprint:
+                    continue
+                if rec.get("created_at", 0) < cutoff:
+                    continue
+                return self._meta(rec)
+        return None
+
     def _write(self, record: dict[str, Any]) -> None:
         tmp = self._dir / f".{record['id']}.tmp"
         with tmp.open("w", encoding="utf-8") as f:

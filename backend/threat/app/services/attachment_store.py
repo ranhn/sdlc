@@ -22,7 +22,9 @@ DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 ATTACH_DIR = DATA_DIR / "attachments"
 
 # 单附件图片数量/大小上限，防止超大附件压垮 LLM 请求
-MAX_IMAGES_PER_ATTACH = 12
+# P1-6：上限从 12 提升到 24，覆盖更完整的架构图集合；
+#       超过时在 meta 里记录 image_truncated 字段，前端可告知用户。
+MAX_IMAGES_PER_ATTACH = 24
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 单张图片原始字节上限 4MB
 
 # attachment_id 白名单：仅允许 12 位十六进制（由 uuid.uuid4().hex[:12] 生成），
@@ -79,13 +81,21 @@ def save_attachment(
 
     # 保存抽取图片为独立文件（保留 data URI），便于后续读取
     image_paths: list[str] = []
+    dropped_count = 0      # P1-6：因超 MAX_IMAGE_BYTES 被丢弃的张数
+    truncated_count = 0    # P1-6：因超 MAX_IMAGES_PER_ATTACH 被截断的张数
+    oversized_count = 0    # P1-6：超过 4MB 的张数
     for i, uri in enumerate(images):
-        if not uri or i >= MAX_IMAGES_PER_ATTACH:
+        if not uri:
+            continue
+        if i >= MAX_IMAGES_PER_ATTACH:
+            truncated_count += 1
             continue
         try:
             mime, b64 = _split_data_uri(uri)
             raw = base64.b64decode(b64)
             if len(raw) > MAX_IMAGE_BYTES:
+                oversized_count += 1
+                dropped_count += 1
                 continue
             ext = mimetypes.guess_extension(mime.split(";")[0].strip()) or ".img"
             ip = folder / f"image_{i:03d}{ext}"
@@ -93,6 +103,7 @@ def save_attachment(
             image_paths.append(uri)
         except Exception as e:  # noqa: BLE001 —— 单张图失败不影响整体
             logger.warning("保存附件图片失败 %s: %s", filename, e)
+            dropped_count += 1
 
     meta: dict[str, Any] = {
         "attachment_id": attachment_id,
@@ -102,11 +113,26 @@ def save_attachment(
         "images": image_paths,
         "text": extracted_text,
         "image_count": len(image_paths),
+        # P1-6：截断 / 超限统计，供前端展示提示
+        "image_original_count": len(images),
+        "image_truncated": truncated_count > 0 or oversized_count > 0,
+        "image_dropped": dropped_count,
+        "image_oversized": oversized_count,
     }
+    if meta["image_truncated"]:
+        logger.info(
+            "附件 %s 图片有截断：原始 %d 张 → 保留 %d 张（%d 张超 4MB，%d 张超 %d 上限）",
+            attachment_id, len(images), len(image_paths),
+            oversized_count, truncated_count, MAX_IMAGES_PER_ATTACH,
+        )
     (folder / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    logger.info("附件已保存 %s (%s, %d 字符, %d 张图)", attachment_id, safe_name, len(extracted_text), len(image_paths))
+    logger.info(
+        "附件已保存 %s (%s, %d 字符, %d 张图%s)",
+        attachment_id, safe_name, len(extracted_text), len(image_paths),
+        f"，{dropped_count} 张被截断" if dropped_count else "",
+    )
     return meta
 
 

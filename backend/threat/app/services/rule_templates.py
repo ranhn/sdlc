@@ -273,14 +273,112 @@ def get_rule_threat_template(
 
     同一 (methodology, threat_type, elem_type) 永远返回相同文案，
     保证骨架威胁跨 run 字节级一致。
+
+    P2-11：支持元素属性插槽（{db_engine}、{store_type}、{protocol}、{action} 等），
+    根据组件 properties 推断具体值，让骨架威胁更"贴业务"。
     """
     method = normalize_methodology(methodology)
     name = _display_name(elem_type)
     table = _TEMPLATE_MAP.get(method, _STRIDE_TEMPLATES)
     template = table.get(threat_type, _FALLBACK)
     title, desc, mitigation = template
+    # P2-11：先按属性填插槽，再把 {type} 替换成中文展示名
+    var_map = _resolve_template_vars(elem_type, props)
     return (
-        title.replace("{type}", name),
-        desc.replace("{type}", name),
+        _fill_template(title, name, var_map),
+        _fill_template(desc, name, var_map),
         mitigation,
     )
+
+
+# P2-11：根据组件属性推断模板插槽值
+def _resolve_template_vars(elem_type: str, props: dict[str, Any] | None) -> dict[str, str]:
+    """根据组件 properties 推断模板插槽（{db_engine}、{store_type} 等）。
+
+    目标：在保持"骨架确定性"的前提下，让标题/描述尽量贴具体业务。
+    对未知属性，回退到默认空字符串（不破坏模板）。
+    """
+    p = props or {}
+    et = (elem_type or "").lower()
+    out: dict[str, str] = {}
+
+    # 存储引擎：根据协议/属性推断
+    protocol = str(p.get("protocol") or "").lower()
+    if et in ("datastore", "vectorstore", "trainingdata"):
+        # db_engine：根据名字关键词（粗筛）
+        # 这里不在 props 里强制要求 db_engine 字段，从 element name 推断不出，因此给一个通用回退
+        if "https" in protocol or "tls" in protocol:
+            out["db_engine"] = "启用 TLS 的数据库"
+        else:
+            out["db_engine"] = "数据库"
+    if "https" in protocol:
+        out["protocol"] = "HTTPS"
+    elif "grpc" in protocol:
+        out["protocol"] = "gRPC"
+    elif "mqtt" in protocol:
+        out["protocol"] = "MQTT"
+    elif "db" in protocol:
+        out["protocol"] = "数据库连接"
+    else:
+        out["protocol"] = "传输"
+
+    # store_type：根据 storesCredentials / handlesCardPayment / isALog 推断
+    if _truthy(p, "storesCredentials"):
+        out["store_type"] = "凭据存储"
+    elif _truthy(p, "handlesCardPayment"):
+        out["store_type"] = "支付数据存储"
+    elif _truthy(p, "isALog"):
+        out["store_type"] = "审计日志"
+    elif _truthy(p, "isVectorStore"):
+        out["store_type"] = "向量库"
+    elif _truthy(p, "storesTrainingData"):
+        out["store_type"] = "训练数据"
+    else:
+        out["store_type"] = "业务数据"
+
+    # action：仅 process 适用
+    if et == "process":
+        if _truthy(p, "isLLMService"):
+            out["action"] = "大模型推理"
+        elif _truthy(p, "hasRAG"):
+            out["action"] = "RAG 检索增强生成"
+        elif _truthy(p, "hasTools"):
+            out["action"] = "工具调用"
+        else:
+            out["action"] = "业务处理"
+    elif et in ("model",):
+        out["action"] = "推理生成"
+    elif et in ("tool",):
+        out["action"] = "工具执行"
+    elif et in ("prompt",):
+        out["action"] = "提示词拼接"
+    else:
+        out["action"] = "数据处理"
+
+    # 加密 / 公网标记（仅用于描述增强）
+    if _truthy(p, "isPublicNetwork"):
+        out["network"] = "公网"
+    elif _truthy(p, "isEncrypted"):
+        out["network"] = "TLS 加密"
+    else:
+        out["network"] = "内网"
+
+    return out
+
+
+def _fill_template(text: str, type_name: str, var_map: dict[str, str]) -> str:
+    """把 {type} / {var} 替换成具体值。"""
+    out = text.replace("{type}", type_name)
+    # 用占位符 + 还原的简单方式避免循环引用
+    for k, v in var_map.items():
+        out = out.replace("{" + k + "}", v)
+    return out
+
+
+def _truthy(props: dict[str, Any], key: str) -> bool:
+    v = props.get(key)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "1")
+    return False

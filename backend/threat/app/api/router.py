@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
+import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -52,6 +55,59 @@ from ..services.result_exporter import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ----------------------------------------------------------------------
+# P0-1：In-flight 任务去重（5 秒窗口）
+# ----------------------------------------------------------------------
+# 同一 owner 在 5 秒内对相同 fingerprint 提交分析请求，视为重复提交：
+# 直接复用已注册的 task_id（前端轮询同一任务），不再开新的 LLM 任务。
+# 任务结束（success / fail / cancel）必须 _unregister_inflight 释放，
+# 否则用户在 5 秒内不能再次重提（用户感知：按钮无效）。
+_INFLIGHT: dict[tuple[str, str], tuple[float, str]] = {}
+_INFLIGHT_TTL_SEC = 5.0
+
+
+def _compute_fingerprint(req: AnalyzeRequest) -> str:
+    """基于 (title, requirements, architecture, methodology, images) 计算输入指纹。
+
+    客户端传来的 input_fingerprint 仅作交叉验证用，**不**直接信任——
+    后端再算一遍以防止客户端伪造绕过幂等。
+    P0-3：把 pasted_images 也纳入指纹（同一粘贴图 + 同一文档应复用缓存）。
+    """
+    payload = {
+        "title": (req.title or "").strip(),
+        "requirements": (req.requirements or "").strip(),
+        "architecture": (req.architecture or "").strip(),
+        "methodology": (req.methodology or "STRIDE").strip(),
+        # 图片仅按"张数 + 总哈希"纳入指纹（避免巨大 data URI 把指纹算得很慢）
+        "image_count": (
+            len(req.attachments or []) + len(req.pasted_images or [])
+        ),
+        "image_hash": hashlib.sha1(
+            "".join(
+                list(req.attachments or []) + list(req.pasted_images or [])
+            ).encode("utf-8", "ignore")
+        ).hexdigest(),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:16]
+
+
+def _register_inflight(owner: str, fp: str, task_id: str) -> None:
+    """登记一个正在跑的任务，TTL 内同 owner+fp 的请求会复用。"""
+    now = time.time()
+    # 顺手清理过期键，避免长时间运行后 dict 膨胀
+    for k, (ts, _) in list(_INFLIGHT.items()):
+        if now - ts > _INFLIGHT_TTL_SEC:
+            _INFLIGHT.pop(k, None)
+    _INFLIGHT[(owner, fp)] = (now, task_id)
+
+
+def _unregister_inflight(owner: str, fp: str, task_id: str) -> None:
+    """任务结束（无论 success/fail/cancel）时释放 in-flight 槽位。"""
+    cur = _INFLIGHT.get((owner, fp))
+    if cur and cur[1] == task_id:
+        _INFLIGHT.pop((owner, fp), None)
 
 # 根据配置初始化限流参数
 rate_limiter.set_config(settings.rate_limit_per_minute)
@@ -117,7 +173,11 @@ def enforce_rate_limit(request: Request) -> None:
 
 
 def validate_input_chars(request: AnalyzeRequest) -> None:
-    """校验输入长度，防止超大文档导致 LLM 超时或烧钱。"""
+    """校验输入长度，防止超大文档导致 LLM 超时或烧钱。
+
+    P1-8：补充校验多模态图片总字节数（data URI 长度累加），
+    避免图片超限后被 LLM 网关直接 5xx 拒掉。
+    """
     total = len(request.requirements or "") + len(request.architecture or "")
     if total > settings.max_input_chars:
         raise HTTPException(
@@ -127,6 +187,10 @@ def validate_input_chars(request: AnalyzeRequest) -> None:
                 "请精简文档后重试，或在 backend/.env 中调大 MAX_INPUT_CHARS。"
             ),
         )
+    # P1-8：图片总字节校验（attachments + pasted_images）
+    from ..services.image_pipeline import validate_image_byte_budget
+    all_images = list(request.attachments or []) + list(request.pasted_images or [])
+    validate_image_byte_budget(all_images)
 
 
 # ----------------------------------------------------------------------
@@ -234,6 +298,9 @@ async def analyze(
 
     真实的分析流程在后台执行，前端通过 ``GET /api/tasks/{task_id}``
     轮询进度与结果。流程：文档 -> DFD 数据流图 -> STRIDE 威胁 -> 威胁模型。
+
+    P0-1 in-flight 去重：同 owner + 同 fingerprint 在 5 秒内视为重复提交，
+    直接复用已注册的 task_id（前端轮询同一任务），不再开新的 LLM 任务。
     """
     # 输入长度校验
     validate_input_chars(request)
@@ -241,9 +308,31 @@ async def analyze(
     # 按所选方法论动态生成进度阶段
     analyze_steps = _build_analyze_steps(request.methodology)
 
+    owner_username = (current_user or {}).get("username") or ""
+    fingerprint = _compute_fingerprint(request)
+
+    # P0-1 in-flight 去重：同 owner + 同 fp 在 TTL 内复用 task_id
+    if owner_username:
+        existing = _INFLIGHT.get((owner_username, fingerprint))
+        if existing:
+            ts, existing_tid = existing
+            if time.time() - ts <= _INFLIGHT_TTL_SEC:
+                logger.info(
+                    "P0-1 in-flight 去重：复用 task_id=%s（owner=%s, fp=%s, age=%.2fs）",
+                    existing_tid, owner_username, fingerprint, time.time() - ts,
+                )
+                return AnalyzeResponse(
+                    task_id=existing_tid,
+                    status=TaskStatus.RUNNING,
+                    steps=analyze_steps,
+                    deduped=True,
+                )
+
     # 创建任务并立即返回
     task_id = task_manager.create(analyze_steps)
     task_manager.mark_running(task_id)
+    if owner_username:
+        _register_inflight(owner_username, fingerprint, task_id)
 
     # 后台执行完整分析
     asyncio.get_running_loop().create_task(
@@ -264,15 +353,18 @@ async def analyze(
             methodology=request.methodology,
             industry=request.industry,
             attachments=request.attachments,
+            pasted_images=request.pasted_images,
             title=request.title,
             owner=current_user if current_user.get("user_id") else None,
+            fingerprint=fingerprint,
         )
     )
     logger.info(
-        "已提交分析任务 %s（IP=%s, user=%s）",
+        "已提交分析任务 %s（IP=%s, user=%s, fp=%s）",
         task_id,
         _client_ip(req),
-        (current_user or {}).get("username") or "-",
+        owner_username or "-",
+        fingerprint,
     )
     return AnalyzeResponse(task_id=task_id, status=TaskStatus.RUNNING, steps=analyze_steps)
 
@@ -348,10 +440,13 @@ async def _run_analysis_task(
     methodology: str = "STRIDE",
     industry: str | None = None,
     attachments: list[str] | None = None,
+    pasted_images: list[str] | None = None,    # P0-3：用户在前端粘贴的图（多模态进 LLM）
     title: str | None = None,
     owner: dict[str, Any] | None = None,
+    fingerprint: str | None = None,
 ) -> None:
     """后台执行完整的 AI 威胁建模流程，并逐步上报进度。"""
+    owner_username = (owner or {}).get("username") or ""
     # 开始收集本次建模产生的 LLM 响应缓存键（供删除结果时精准失效）
     from ..services.llm_cache import begin_cache_run, end_cache_run
     begin_cache_run()
@@ -362,6 +457,36 @@ async def _run_analysis_task(
 
         method = normalize_methodology(methodology)
         task_manager.add_log(task_id, f"采用威胁建模方法论：{method}")
+
+        # P2-12：轻量架构推理——用户没给 architecture 时，从 requirements 推断
+        inferred_arch_meta: dict[str, Any] | None = None
+        if not (architecture or "").strip():
+            try:
+                from ..services.architecture_reasoner import infer_architecture
+                inferred = infer_architecture(requirements)
+                if inferred.get("arch_text"):
+                    architecture = "（自动推断，置信度 {:.0%}）\n{}".format(
+                        inferred["confidence"], inferred["arch_text"]
+                    )
+                    inferred_arch_meta = inferred
+                    if inferred.get("matched_template"):
+                        task_manager.add_log(
+                            task_id,
+                            f"未提供架构文档，已按标准模板「{inferred['matched_template']}」"
+                            f"（置信度 {inferred['confidence']:.0%}）自动补全",
+                        )
+                    else:
+                        task_manager.add_log(
+                            task_id,
+                            f"未提供架构文档，已按关键词命中自动补全"
+                            f"（{len(inferred['matched_components'])} 个组件，置信度 {inferred['confidence']:.0%}）",
+                        )
+                else:
+                    task_manager.add_log(
+                        task_id, "未提供架构文档，且无法从需求中推断（继续使用空架构）"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("架构推理失败：%s", exc)
 
         # 行业场景模板（STRIDE-AI 下可选）
         industry_hint = None
@@ -385,22 +510,103 @@ async def _run_analysis_task(
             return
         task_manager.add_log(task_id, "LLM 连接就绪")
 
-        # 1. 文档分析 -> DFD 元素
-        task_manager.mark_step(task_id, 0)
-        analyzer = DocumentAnalyzer(llm)
-        dfd = await analyzer.analyze(
-            requirements,
-            architecture,
-            images,
-            progress=lambda msg: task_manager.add_log(task_id, msg),
-            methodology=method,
-            image_data_uris=attachments,
+        # P0-3：合并多模态图片（附件 + 粘贴图），按总上限截断并去重
+        from ..services.image_pipeline import merge_image_data_uris
+        merged_images, img_truncated, img_deduped = merge_image_data_uris(
+            attachments or [], pasted_images or []
         )
+        if pasted_images:
+            task_manager.add_log(
+                task_id,
+                f"已合并 {len(attachments or [])} 张附件图 + {len(pasted_images or [])} 张粘贴图 → "
+                f"{len(merged_images)} 张多模态图（{img_truncated} 张被截断，{img_deduped} 张去重）",
+            )
+
+        # P1-8：阶段内细粒度进度回调。
+        # - progress(msg, sub_progress) 任意调用点都可推 sub（sub 0~1）
+        # - 长 LLM 期间是黑盒（一个 await 30~90s），无法内推；用 _heartbeat
+        #   后台协程每 2s 自动从 start_sub 线性推到 end_sub（保留 end-1 给
+        #   LLM 完成后的真实 sub 推送），让进度条"动起来"而不是卡 30s
+        def _progress_factory(step_index: int, log: bool = True):
+            def _cb(msg: str, sub_progress: float | None = None) -> None:
+                if log and msg:
+                    task_manager.add_log(task_id, msg)
+                if sub_progress is not None:
+                    task_manager.mark_step(
+                        task_id, step_index, sub_progress=sub_progress
+                    )
+            return _cb
+
+        def _heartbeat(
+            step_index: int,
+            start_sub: float,
+            end_sub: float,
+            interval: float = 2.0,
+        ):
+            """在 LLM 黑盒调用期间的后台心跳：每 interval 秒把 sub 从
+            start_sub 线性推到 end_sub - 0.05（保留少量余量给 LLM 完成
+            后的真实 sub 推送），让前端进度条持续可见推进。
+
+            返回 ``(task, stop_event)``：调用方 await asyncio.create_task(task) 启动，
+            LLM 完成后调用 stop_event.set() 让心跳协程在下一次循环优雅退出。
+            """
+            stop_event = asyncio.Event()
+
+            async def _run() -> None:
+                # 留 5% 余量给真实 sub（避免心跳推太满导致 mark_step 后续被
+                # 较小的真实 sub 覆盖时进度条"回退"）。
+                cap = max(start_sub, end_sub - 0.05)
+                i = 0
+                while not stop_event.is_set():
+                    # 线性插值（最多 60 步 ≈ 2 分钟），公式：
+                    #   sub = start + (cap - start) * (i / 60)
+                    frac = min(1.0, i / 60.0)
+                    sub = start_sub + (cap - start_sub) * frac
+                    try:
+                        task_manager.mark_step(
+                            task_id, step_index, sub_progress=sub
+                        )
+                    except Exception:  # noqa: BLE001 - 心跳不影响主流程
+                        pass
+                    i += 1
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                    except asyncio.TimeoutError:
+                        continue
+                    else:
+                        return
+
+            task = asyncio.create_task(_run())
+            return task, stop_event
+
+        # 1. 文档分析 -> DFD 元素
+        task_manager.mark_step(task_id, 0, sub_progress=0.05)
+        analyzer = DocumentAnalyzer(llm)
+        # P1-8: LLM 期间 0.10→0.40 心跳；真实 sub 由 analyzer.analyze 内部进度回调推送
+        hb_task, hb_stop = _heartbeat(0, start_sub=0.10, end_sub=0.45)
+        try:
+            dfd = await analyzer.analyze(
+                requirements,
+                architecture,
+                images,
+                progress=_progress_factory(0),
+                methodology=method,
+                image_data_uris=merged_images,
+            )
+        finally:
+            hb_stop.set()
+            try:
+                await asyncio.wait_for(hb_task, timeout=1.0)
+            except (asyncio.TimeoutError, Exception):
+                hb_task.cancel()
         if task_manager.is_cancelled(task_id):
             _finish_cancelled(task_id)
             return
         components = dfd["components"]
         flows = dfd["flows"]
+        # P1-8: 阶段收尾 - refine 路径 analyzer 内部已推 0.85；非 refine 路径这里补推。
+        # 同值幂等，不影响已有 sub 进度。
+        task_manager.mark_step(task_id, 0, sub_progress=0.85)
         task_manager.mark_step(task_id, 1)
         task_manager.add_log(
             task_id,
@@ -411,11 +617,22 @@ async def _run_analysis_task(
         #    并确定性纠偏（类型/生命周期合法化、去自环/悬空/重复）。可配置关闭，
         #    失败静默降级为原结果，不影响主流程。
         if getattr(settings, "dfd_review_enabled", True):
-            review_result = await DFDReviewer(llm).review(components, flows)
+            task_manager.mark_step(task_id, 1, sub_progress=0.55, message="DFD AI 自校验中…")
+            # P1-8: 0.60→0.90 心跳
+            hb_task, hb_stop = _heartbeat(1, start_sub=0.60, end_sub=0.95)
+            try:
+                review_result = await DFDReviewer(llm).review(components, flows)
+            finally:
+                hb_stop.set()
+                try:
+                    await asyncio.wait_for(hb_task, timeout=1.0)
+                except (asyncio.TimeoutError, Exception):
+                    hb_task.cancel()
             components = review_result["components"]
             flows = review_result["flows"]
             for log_line in review_result["log"]:
                 task_manager.add_log(task_id, log_line)
+        task_manager.mark_step(task_id, 1, sub_progress=0.95)
 
         # 2. 威胁识别（组件 + 数据流都纳入方法论分析）
         #    行业模板：为 STRIDE-AI 组件注入行业相关的 AI 属性默认值
@@ -431,13 +648,23 @@ async def _run_analysis_task(
                         for k, v in ai_props.items():
                             c.setdefault(k, v)
         threat_analyzer = ThreatAnalyzer(llm)
-        threats = await threat_analyzer.analyze_components(
-            components,
-            flows=flows,
-            progress=lambda msg: task_manager.add_log(task_id, msg),
-            methodology=method,
-            industry_hint=industry_hint,
-        )
+        # P1-8: 0.10→0.55 心跳（LLM 主体调用 30~90s）；后处理由 analyze_components 内部
+        # 通过 progress(msg, sub) 推 0.55→0.95；最后 mark_step(2) 走 1.0
+        hb_task, hb_stop = _heartbeat(2, start_sub=0.10, end_sub=0.55)
+        try:
+            threats = await threat_analyzer.analyze_components(
+                components,
+                flows=flows,
+                progress=_progress_factory(2),
+                methodology=method,
+                industry_hint=industry_hint,
+            )
+        finally:
+            hb_stop.set()
+            try:
+                await asyncio.wait_for(hb_task, timeout=1.0)
+            except (asyncio.TimeoutError, Exception):
+                hb_task.cancel()
         if task_manager.is_cancelled(task_id):
             _finish_cancelled(task_id)
             return
@@ -481,6 +708,7 @@ async def _run_analysis_task(
                 cache_keys=cache_keys,
                 title=title,
                 owner=owner,
+                fingerprint=fingerprint,
             )
         except Exception:
             logger.exception("持久化建模结果失败（不影响本次任务）")
@@ -512,6 +740,11 @@ async def _run_analysis_task(
         logger.exception("分析任务 %s 失败", task_id)
         http_exc = _map_llm_error(exc)
         task_manager.fail(task_id, http_exc.detail, status_code=http_exc.status_code)
+    finally:
+        # P0-1：任务结束（无论成功/失败/取消）必须释放 in-flight 槽位，
+        # 否则用户在 5 秒窗口内无法再次提交相同输入。
+        if owner_username and fingerprint:
+            _unregister_inflight(owner_username, fingerprint, task_id)
 
 
 def _count_by_severity(threats: list[dict]) -> dict[str, int]:
@@ -953,7 +1186,11 @@ async def upload_document(
         "filename": meta["filename"],
         "filetype": meta["filetype"],
         "chars": len(text),
-        "image_count": len(images),
+        "image_count": meta.get("image_count", len(images)),
+        "image_original_count": meta.get("image_original_count", len(images)),
+        "image_truncated": meta.get("image_truncated", False),
+        "image_oversized": meta.get("image_oversized", 0),
+        "warnings": assets.get("warnings", []),   # P1-5：抽取过程告警
         "extracted": text,
         "images": images,
     }

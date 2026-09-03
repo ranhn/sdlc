@@ -93,14 +93,30 @@ class TaskManager:
     def mark_running(self, task_id: str) -> None:
         self._update(task_id, status=TaskStatus.RUNNING)
 
-    def mark_step(self, task_id: str, index: int, message: str | None = None) -> None:
-        """标记当前进度阶段。index 为 0 基的阶段下标。"""
+    def mark_step(
+        self,
+        task_id: str,
+        index: int,
+        message: str | None = None,
+        sub_progress: float | None = None,
+    ) -> None:
+        """标记当前进度阶段。index 为 0 基的阶段下标。
+
+        P1-7：新增 ``sub_progress`` 参数（0~1），表示"当前阶段内"的细粒度进度。
+        最终 progress = (index + sub_progress) / steps_count * 100，
+        让长 LLM 调用的阶段不再"卡在固定 25%/50% 上很久"。
+        例如：DFD 提取阶段（index=0, steps=4）下，sub_progress=0.6
+        会显示 progress = 15% 而非 0%。
+        """
         task = self._tasks.get(task_id)
         if not task:
             return
         task["step_index"] = max(0, min(index, max(0, len(task["steps"]) - 1)))
+        steps_n = max(1, len(task["steps"]))
+        sub = 0.0 if sub_progress is None else max(0.0, min(1.0, float(sub_progress)))
+        # 阶段完成（sub=1.0）才把进度推到下一阶段起点；阶段内推进时按 (i+sub) 算
         task["progress"] = int(
-            task["step_index"] / max(1, len(task["steps"])) * 100
+            (task["step_index"] + sub) / steps_n * 100
         )
         if message:
             task["log"].append({"time": time.time(), "message": message})

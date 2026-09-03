@@ -338,7 +338,10 @@ class ThreatAnalyzer:
 
         total = len(components) + len(flows)
         if progress:
-            progress(f"正在对 {len(components)} 个组件、{len(flows)} 条数据流进行 {method} 威胁分析…")
+            progress(
+                f"正在对 {len(components)} 个组件、{len(flows)} 条数据流进行 {method} 威胁分析…",
+                sub_progress=0.10,
+            )
         # 结构化输出：锁定威胁字段、类型枚举、严重度枚举，压制随机性
         allowed_types = self._all_types_for_method(method)
         threat_schema = build_threat_schema(method, allowed_types)
@@ -350,7 +353,10 @@ class ThreatAnalyzer:
         threats = result.get("threats", [])
         logger.info("LLM 返回 %d 条威胁", len(threats))
         if progress:
-            progress(f"威胁识别完成：LLM 初步生成 {len(threats)} 条威胁")
+            progress(
+                f"威胁识别完成：LLM 初步生成 {len(threats)} 条威胁",
+                sub_progress=0.55,
+            )
 
         # 兜底规则：即使 LLM 遗漏，也确保符合方法论类型约束
         allowed = self._build_allowed_map(components, flows, method)
@@ -457,6 +463,10 @@ class ThreatAnalyzer:
         # 这里按 (componentId, type, severity, title) 稳定排序，内容不变、仅锁顺序，
         # 保证同输入 → 威胁列表字节级一致。
         valid = _sort_threats(valid)
+        if progress:
+            progress(
+                f"威胁去重/补齐完成：最终 {len(valid)} 条威胁", sub_progress=0.95
+            )
         return valid
 
     # ------------------------------------------------------------------

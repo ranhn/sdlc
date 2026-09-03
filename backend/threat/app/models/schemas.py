@@ -34,13 +34,21 @@ class AnalyzeRequest(BaseModel):
         "", description="产品架构设计文档文本内容"
     )
     images: Optional[list[str]] = Field(
-        None, description="架构图/流程图的可选描述文本"
+        None, description="架构图/流程图的可选描述文本（仅作为文本拼到 prompt，不进 LLM 多模态）"
     )
     attachments: Optional[list[str]] = Field(
         None,
         description=(
             "上传文档内嵌图片的 data URI 列表（架构图/数据流图等），"
             "以多模态方式交给 LLM 分析。模型不支持图片时后端自动降级为纯文本。"
+        ),
+    )
+    pasted_images: Optional[list[str]] = Field(
+        None,
+        description=(
+            "P0-3：用户在前端 textarea 直接粘贴的架构图/数据流图 data URI 列表。"
+            "与 attachments 等价（多模态交给 LLM），但语义独立、便于审计/限流区分。"
+            "模型不支持图片时后端自动降级为纯文本。"
         ),
     )
     llm: Optional[LLMConfig] = Field(
@@ -77,6 +85,9 @@ class AnalyzeResponse(BaseModel):
     )
     steps: list[str] = Field(
         default_factory=list, description="分析阶段名列表（用于展示真实进度）"
+    )
+    deduped: bool = Field(
+        False, description="P0-1：true 表示该 task_id 是 5 秒内同输入去重复用的"
     )
 
 

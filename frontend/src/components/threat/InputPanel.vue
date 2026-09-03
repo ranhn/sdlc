@@ -68,6 +68,7 @@
             v-model="requirements"
             rows="4"
             placeholder="粘贴或上传系统需求文档，例如：&#10;1、系统包含用户管理、订单、支付模块；&#10;2、用户通过 Web 登录，数据存入 MySQL；&#10;3、支持第三方支付回调（微信/支付宝）等。"
+            @paste="onPaste($event, 'requirements')"
           ></textarea>
         </div>
         <div v-if="reqAttachment" class="field-actions">
@@ -111,6 +112,7 @@
             v-model="architecture"
             rows="4"
             placeholder="粘贴或上传架构设计文档，例如：&#10;1、前端 Vue 应用 → 后端 API → 数据库；&#10;2、Redis 缓存、消息队列、对象存储等。"
+            @paste="onPaste($event, 'architecture')"
           ></textarea>
         </div>
         <div v-if="archAttachment" class="field-actions">
@@ -124,6 +126,22 @@
           </div>
         </div>
       </section>
+
+      <!-- P0-3：粘贴的架构图/数据流图缩略图列表（不进 LLM 多模态） -->
+      <div v-if="pastedImages.length" class="pasted-images">
+        <div class="pi-head">
+          <span class="pi-title">已粘贴的架构图</span>
+          <span class="pi-hint">（这些图将以多模态方式一起发给 AI）</span>
+          <button class="pi-clear" type="button" @click="clearPastedImages">清空</button>
+        </div>
+        <div class="pi-grid">
+          <div v-for="(img, i) in pastedImages" :key="i" class="pi-item">
+            <img :src="img.dataUri" :alt="img.name" />
+            <span class="pi-name" :title="img.name">{{ img.name }}</span>
+            <button class="pi-remove" type="button" title="移除" @click="removePastedImage(i)">✕</button>
+          </div>
+        </div>
+      </div>
 
       <!-- 方法论 + CTA（同一行） -->
       <div class="cta-row">
@@ -268,6 +286,67 @@ const showExample = ref(false)
 const templates = ref([])
 const activeTemplate = ref(null)
 
+// —— P0-3：用户直接在 textarea 粘贴的图片（架构图/数据流图） ——
+const pastedImages = ref([])   // [{ dataUri, name, bytes }]
+
+const MAX_PASTED_COUNT = 10
+const MAX_PASTED_SINGLE = 3 * 1024 * 1024
+
+function removePastedImage(idx) {
+  pastedImages.value.splice(idx, 1)
+}
+function clearPastedImages() {
+  pastedImages.value = []
+}
+
+async function onPaste(ev, _target) {
+  // 只处理图片类型粘贴（P0-3：让粘贴图进 LLM 多模态）
+  const items = ev?.clipboardData?.items
+  if (!items || !items.length) return
+  const imageItems = []
+  for (const it of items) {
+    if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+      imageItems.push(it)
+    }
+  }
+  if (!imageItems.length) return
+  // 阻止默认粘贴（避免图片被转成 base64 文本塞进 textarea）
+  ev.preventDefault()
+  for (const it of imageItems) {
+    if (pastedImages.value.length >= MAX_PASTED_COUNT) {
+      emit('error', `粘贴图最多 ${MAX_PASTED_COUNT} 张，超出已忽略`)
+      break
+    }
+    const file = it.getAsFile()
+    if (!file) continue
+    if (file.size > MAX_PASTED_SINGLE) {
+      emit('error', `粘贴图「${file.name || '未命名'}」超过 ${Math.round(MAX_PASTED_SINGLE / 1024 / 1024)}MB，已忽略`)
+      continue
+    }
+    try {
+      const dataUri = await readAsDataURI(file)
+      // 去重：与已有 pastedImages 比 SHA-1
+      if (pastedImages.value.some((p) => p.dataUri === dataUri)) continue
+      pastedImages.value.push({
+        dataUri,
+        name: file.name || `粘贴图 ${pastedImages.value.length + 1}`,
+        bytes: file.size,
+      })
+    } catch (e) {
+      emit('error', `读取粘贴图失败：${e?.message || e}`)
+    }
+  }
+}
+
+function readAsDataURI(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onload = () => resolve(String(fr.result || ''))
+    fr.onerror = () => reject(fr.error || new Error('FileReader failed'))
+    fr.readAsDataURL(file)
+  })
+}
+
 // —— 文档上传 ——
 const ACCEPT = '.txt,.md,.markdown,.pdf,.docx'
 const MAX_IMAGE_TOTAL_BYTES = 8 * 1024 * 1024
@@ -310,6 +389,8 @@ async function handleFileSelected(e) {
       attachment_id: res.attachment_id,
       filename: res.filename || file.name,
       image_count: res.image_count || 0,
+      image_original_count: res.image_original_count || 0,
+      image_truncated: !!res.image_truncated,
       images: capAttachmentImages(res.images || []),
       text: res.extracted || '',
     }
@@ -321,6 +402,26 @@ async function handleFileSelected(e) {
       else if (target === 'architecture') architecture.value = att.text
     }
     emit('upload', [att])
+
+    // P1-5 / P1-6：后端 warnings 与截断告知（Pillow 缺失/超张数/超 4MB）
+    if (Array.isArray(res.warnings) && res.warnings.length) {
+      for (const w of res.warnings) emit('error', w)
+    }
+    if (res.image_truncated) {
+      const orig = res.image_original_count || 0
+      const kept = res.image_count || 0
+      if (res.image_oversized) {
+        emit(
+          'error',
+          `附件「${att.filename}」中有 ${res.image_oversized} 张图超过 4MB，已自动忽略（仅保留 ${kept}/${orig} 张）`,
+        )
+      } else {
+        emit(
+          'error',
+          `附件「${att.filename}」含 ${orig} 张架构图，超过单附件上限 24 张，仅保留前 ${kept} 张`,
+        )
+      }
+    }
   } catch (err) {
     // 优先用后端返回的 detail（包含 422 真实原因），其次用 axios message
     const detail =
@@ -410,6 +511,11 @@ function collectAttachmentImages() {
   return capAttachmentImages(out)
 }
 
+// P0-3：把粘贴图的 data URI 列表抽出来给后端
+function collectPastedImages() {
+  return pastedImages.value.map((p) => p.dataUri).filter(Boolean)
+}
+
 const currentFingerprint = ref('')
 const lastSubmittedFingerprint = ref('')
 const replayAvailable = ref(false)
@@ -420,7 +526,7 @@ async function refreshFingerprint() {
     title: title.value,
     requirements: requirements.value,
     architecture: architecture.value,
-    images: collectAttachmentImages(),
+    images: [...collectAttachmentImages(), ...collectPastedImages()],
     methodology: methodology.value,
   })
   currentFingerprint.value = fp
@@ -436,18 +542,26 @@ watch(
   { immediate: true },
 )
 watch(
-  () => [reqAttachment.value, archAttachment.value].map((a) => (a ? a.attachment_id + (a.image_count || 0) : '')),
+  () => [
+    reqAttachment.value ? reqAttachment.value.attachment_id + (reqAttachment.value.image_count || 0) : '',
+    archAttachment.value ? archAttachment.value.attachment_id + (archAttachment.value.image_count || 0) : '',
+    pastedImages.value.length,
+  ],
   () => {
     clearTimeout(fingerprintTimer)
     fingerprintTimer = setTimeout(refreshFingerprint, 300)
   },
 )
 
-function submit(isReplay = false) {
+async function submit(isReplay = false) {
   if (!canAnalyze.value) {
     emit('error', '请至少输入 10 个字符的需求文档内容，或上传一份需求文档')
     return
   }
+  // P0-4：子组件级防抖——不依赖父组件 disabled（按钮 disabled 是 reactive，
+  // 双击两个不同 button 时父组件 store.analyzing 检查可能因 event loop 调度
+  // 在同一 tick 内被绕过）。父组件 onAnalyzeRequest 仍会再 check 一遍。
+  if (props.analyzing) return
   const reqText = requirements.value.trim() ||
     (reqAttachment.value?.text || '').trim()
   const archText = architecture.value.trim() ||
@@ -457,6 +571,7 @@ function submit(isReplay = false) {
     requirements: reqText,
     architecture: archText,
     attachments: collectAttachmentImages(),
+    pasted_images: collectPastedImages(),
     methodology: methodology.value,
   }
   // 不再从前端 localStorage 取 LLM 配置。
@@ -464,18 +579,24 @@ function submit(isReplay = false) {
   // 后端会自动用统一配置（见 llm_config_store.py）。
   // —— 这就是"管理员配一次，全员都能用"的实现。
   // 如果用户想要覆盖（仅 admin 调试用），可在此按需读旧 key 'ai-td-llm-legacy'。
-  computeInputFingerprint({
-    title: payload.title,
-    requirements: reqText,
-    architecture: archText,
-    images: payload.attachments,
-    methodology: payload.methodology,
-  }).then((fp) => {
-    lastSubmittedFingerprint.value = fp
-    currentFingerprint.value = fp
-    replayAvailable.value = false
-  })
-  emit('analyze', payload)
+  // P0-5：等 fingerprint 算完再 emit（之前是 fire-and-forget，后端收到的 input_fingerprint
+  // 永远是空，in-flight 去重失效）。fingerprint 错误时回退为空串，后端会自己再算一次。
+  let fp = ''
+  try {
+    fp = (await computeInputFingerprint({
+      title: payload.title,
+      requirements: reqText,
+      architecture: archText,
+      images: [...(payload.attachments || []), ...(payload.pasted_images || [])],
+      methodology: payload.methodology,
+    })) || ''
+  } catch (_e) {
+    fp = ''
+  }
+  lastSubmittedFingerprint.value = fp
+  currentFingerprint.value = fp
+  replayAvailable.value = false
+  emit('analyze', { ...payload, input_fingerprint: fp })
 }
 
 const EXAMPLE = {
@@ -1068,6 +1189,95 @@ onMounted(loadTemplates)
   border-color: #bfdbfe;
   background: #f8fafc;
 }
+
+/* —— P0-3：粘贴图列表 —— */
+.pasted-images {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+}
+.pi-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #475569;
+}
+.pi-title {
+  font-weight: 600;
+  color: #1e293b;
+}
+.pi-hint {
+  color: #94a3b8;
+  flex: 1;
+}
+.pi-clear {
+  font-size: 10.5px;
+  color: #ef4444;
+  background: transparent;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.pi-clear:hover { background: #fef2f2; }
+.pi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.pi-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 4px;
+  overflow: hidden;
+}
+.pi-item img {
+  width: 100%;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #f1f5f9;
+}
+.pi-name {
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.pi-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  line-height: 1;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e2e8f0;
+  border-radius: 50%;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.pi-remove:hover { color: #fff; background: #ef4444; border-color: #ef4444; }
 </style>
 
 <style>

@@ -7,9 +7,12 @@ OWASP Threat Dragon 打开编辑。
 from __future__ import annotations
 
 import json
+import logging
 import math
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Threat Dragon 版本号（保持兼容）
 TD_VERSION = "2.6.2"
@@ -459,13 +462,25 @@ class ThreatModelBuilder:
         if not components:
             return {}
 
-        # 生命周期泳道布局：当任一非信任边界组件带 lifecycle 字段时启用，
+        # 生命周期泳道布局：当**至少一个非信任边界组件**带 lifecycle 字段（且值在白名单内）时启用。
         # 组件按 数据收集→存储→使用→交换→删除 分组排布，使数据流图呈现生命周期结构。
-        if any(
-            c.get("lifecycle") for c in components
+        #
+        # P2-1 兜底：若所有 lifecycle 字段都是 None / "" / 不在白名单内（LLM 漏标或全标 other），
+        # 则**回退**到主 Kahn 分层布局——避免 5+1 个 swimlane 中前 5 个全空、节点全挤 "other" lane。
+        lifecycle_typed = [
+            c for c in components
             if c.get("type") != "trustboundary"
-        ):
-            return self._layout_lifecycle_lanes(components, flows)
+            and (c.get("lifecycle") or "").strip().lower() in LIFECYCLE_LABELS
+        ]
+        if lifecycle_typed:
+            layout_lanes = self._layout_lifecycle_lanes(components, flows)
+            # P2-2 sanity check：扫描布局后节点 y，统计有多少节点**不**在任何 swimlane 矩形内
+            # 仅做 warn 日志，**不**中断流程（让上游 dfd_reviewer 二次纠偏可观测）
+            try:
+                self._layout_sanity_check(components, layout_lanes)
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("layout sanity check 异常（不中断流程）: %s", _exc)
+            return layout_lanes
 
         comp_by_id = {c["id"]: c for c in components}
         comp_type = {c["id"]: c.get("type", "process") for c in components}
@@ -555,7 +570,9 @@ class ThreatModelBuilder:
         col_width = self.NODE_WIDTH + self.H_GAP
         per_layer_max = max((len(layer_buckets[l]) for l in layer_buckets), default=1)
         # 画布宽度：按最宽层铺开，并为信任边界容器与单节点层锯齿偏移留足横向空间
-        canvas_width = max(per_layer_max * col_width, self.NODE_WIDTH * 3) + self.MARGIN * 2 + 480
+        # P1-2 同 lifecycle 布局：用 boundary 数量做横向预算（容器可达 1200px+）
+        boundary_reserve_main = len(boundary_ids) * 240 + 240
+        canvas_width = max(per_layer_max * col_width, self.NODE_WIDTH * 3) + self.MARGIN * 2 + boundary_reserve_main
 
         positions: dict[str, dict] = {}
         n_layers = max_layer + 1
@@ -743,9 +760,15 @@ class ThreatModelBuilder:
         visible = [k for k in lane_keys if buckets[k]]
         col_width = self.NODE_WIDTH + self.H_GAP
         per_lane_max = max((len(buckets[k]) for k in visible), default=1)
+        # P1-2：跨多个 swimlane 的 trustboundary 容器实际宽度可达 1200px+，
+        # 原来固定 +480 横向余量在 5 lane 场景下不够，fitView 后节点看起来散在
+        # 一侧又超出右边界。改为：boundary 数量 * 240 + 240 给容器留 240 边距。
+        # （容器本身在 _infer_boundary_children 里基于内含组件 bbox 包裹，
+        # 此处不重算 bbox，只做粗略上限预算，节点仍按 swimlane 铺开）
+        boundary_reserve = len(boundary_ids) * 240 + 240
         canvas_width = max(
             per_lane_max * col_width, self.NODE_WIDTH * 3
-        ) + self.MARGIN * 2 + 480
+        ) + self.MARGIN * 2 + boundary_reserve
 
         lane_h = self.NODE_HEIGHT + self.V_GAP * 2
         lane_gap = self.V_GAP * 2.5  # 增加泳道间距，给跨泳道流与同泳道拱留出垂直空间
@@ -911,6 +934,45 @@ class ThreatModelBuilder:
             for k in visible
         ]
         return positions
+
+    def _layout_sanity_check(
+        self,
+        components: list[dict[str, Any]],
+        layout: dict[str, Any],
+    ) -> None:
+        """P2-2：扫描生命周期布局后节点 y 坐标，统计有多少节点中心**不**在任一 swimlane 矩形内。
+
+        仅做 warn 日志（不中断流程），让上游 dfd_reviewer 二次纠偏可观测。
+        异常标准：节点中心 y 偏离最近的 swimlane 区间 > lane_h / 2。
+        """
+        lanes = layout.get("_lanes") or []
+        if not lanes:
+            return  # Kahn 主布局无 swimlane，跳过
+        lane_ranges = [
+            (float(ln["y"]), float(ln["y"]) + float(ln["height"]))
+            for ln in lanes
+        ]
+        lane_h = lanes[0]["height"] if lanes else 0
+        threshold = max(lane_h / 2.0, 50.0)  # 至少 50px 容忍
+        outliers: list[tuple[str, float, str]] = []
+        for c in components:
+            cid = c["id"]
+            pos = layout.get(cid)
+            if not isinstance(pos, dict) or "x" not in pos:
+                continue
+            cy = float(pos.get("y", 0)) + self.NODE_HEIGHT / 2
+            # 找最近 lane
+            best_dist = min((min(abs(cy - lo), abs(cy - hi)) for lo, hi in lane_ranges), default=0)
+            if best_dist > threshold:
+                outliers.append((cid, cy, c.get("name", "")))
+        if outliers:
+            preview = ", ".join(f"{n}({cid} y={y:.0f})" for cid, y, n in outliers[:5])
+            logger.warning(
+                "DFD 布局有 %d 个节点 y 偏离最近 swimlane > %dpx（threshold=lane_h/2）：%s%s",
+                len(outliers), int(threshold),
+                preview,
+                "..." if len(outliers) > 5 else "",
+            )
 
     # ------------------------------------------------------------------
     # 组件 cell 生成

@@ -78,12 +78,26 @@ def score_severity(
     properties: dict[str, Any] | None = None,
     methodology: str = "STRIDE",
 ) -> str:
-    """按（元素类型 × 威胁类型）查表得到基础严重度，再叠加属性修正。"""
+    """按（元素类型 × 威胁类型）查表得到基础严重度，再叠加属性修正。
+
+    P0-2 / P1-9 修复：
+    - STRIDE-AI 元素（model/prompt/vectorstore/tool/trainingdata/agentconfig）
+      不再统一归为 process，而是按各自语义有独立严重度矩阵：
+        * vectorstore ≈ datastore（投毒/泄露后果严重）
+        * trainingdata ≈ datastore（投毒影响模型）
+        * model：模型窃取/提示注入独立高
+        * prompt：提示注入/系统提示泄露独立高
+        * tool：越权调用/调用风暴独立高
+        * agentconfig：配置篡改/过度授权独立高
+    - methodology 参数实际生效（非 STRIDE 维度下隐私/合规/架构维度不偏离基准）
+    """
     props = properties or {}
     t = threat_type.strip().lower()
     tn = _norm(threat_type)
     e = (elem_type or "").strip().lower()
+    method = (methodology or "STRIDE").strip().upper()
 
+    # ---- kind 分类（按 AI 元素类型细分） ----
     if e in ("flow", "dataflow"):
         kind = "flow"
     elif e in ("datastore", "store", "db", "database"):
@@ -92,8 +106,20 @@ def score_severity(
         kind = "actor"
     elif e in ("trustboundary", "boundary"):
         kind = "trustboundary"
+    elif e == "vectorstore":
+        kind = "vectorstore"          # AI 专用：RAG 知识库
+    elif e == "trainingdata":
+        kind = "trainingdata"         # AI 专用：训练/微调数据
+    elif e == "model":
+        kind = "model"                # AI 专用：大模型/推理服务
+    elif e == "prompt":
+        kind = "prompt"               # AI 专用：提示词
+    elif e == "tool":
+        kind = "tool"                 # AI 专用：工具/Agent 能力
+    elif e == "agentconfig":
+        kind = "agentconfig"          # AI 专用：Agent 配置
     else:
-        kind = "process"  # process / model / prompt / tool 等 AI 元素按 process 基准
+        kind = "process"
 
     # ---- 基础矩阵 ----
     # STRIDE 六类（现有规则，保持既有稳定行为）
@@ -107,6 +133,7 @@ def score_severity(
     ai_dim = _AI_DIMS                # PLOT4ai
     eop = _EOP_DIMS                  # Cornucopia
 
+    # ---- 矩阵分支（按 kind） ----
     if kind == "datastore":
         if tn in (_norm("Tampering"), _norm("Spoofing")):
             base = "Critical"
@@ -120,6 +147,71 @@ def score_severity(
             base = "Medium"
         else:
             base = "Medium"  # Repudiation 等默认 Medium
+    elif kind == "vectorstore":
+        # RAG 知识库：投毒/泄露后果严重，等同甚至高于 datastore
+        if tn in (_norm("Tampering"),):                 # RAG 投毒
+            base = "Critical"
+        elif tn in (_norm("Information Disclosure"),):  # 向量库泄露
+            base = "High"
+        elif tn in (_norm("Denial of Service"),):       # 击穿
+            base = "High"
+        elif tn in (privacy | ai_dim | eop):
+            base = "High"
+        else:
+            base = "Medium"
+    elif kind == "trainingdata":
+        # 训练/微调数据：投毒/成员推断后果严重
+        if tn in (_norm("Tampering"),):                 # 数据投毒
+            base = "Critical"
+        elif tn in (_norm("Information Disclosure"),):  # 成员推断泄露
+            base = "High"
+        elif tn in (privacy | ai_dim | eop):
+            base = "High"
+        else:
+            base = "Medium"
+    elif kind == "model":
+        # 大模型：模型窃取 / 投毒 / 抵赖 全部高危
+        if tn in (_norm("Tampering"), _norm("Information Disclosure"),
+                  _norm("Spoofing"), _norm("Elevation of Privilege")):
+            base = "High"
+        elif tn in (_norm("Denial of Service"), _norm("Repudiation")):
+            base = "High"
+        elif tn in (privacy | ai_dim | eop):
+            base = "Medium"
+        else:
+            base = "Medium"
+    elif kind == "prompt":
+        # 提示词：注入与泄露最严重
+        if tn in (_norm("Tampering"),):                 # 提示注入
+            base = "Critical"
+        elif tn in (_norm("Information Disclosure"),):  # 系统提示/上下文泄露
+            base = "High"
+        elif tn in (privacy | ai_dim | eop):
+            base = "Medium"
+        else:
+            base = "Medium"
+    elif kind == "tool":
+        # 工具/Agent 能力：越权调用/调用风暴最严重
+        if tn in (_norm("Elevation of Privilege"),):    # 越权工具调用
+            base = "Critical"
+        elif tn in (_norm("Denial of Service"),):       # 工具调用风暴
+            base = "High"
+        elif tn in (_norm("Information Disclosure"),):  # 工具滥用泄露
+            base = "High"
+        elif tn in (privacy | ai_dim | eop):
+            base = "Medium"
+        else:
+            base = "Medium"
+    elif kind == "agentconfig":
+        # Agent 配置：配置篡改/过度授权最严重
+        if tn in (_norm("Tampering"),):                 # 配置篡改
+            base = "Critical"
+        elif tn in (_norm("Elevation of Privilege"),):  # 过度授权
+            base = "High"
+        elif tn in (privacy | ai_dim | eop):
+            base = "Medium"
+        else:
+            base = "Medium"
     elif kind == "flow":
         if tn in (_norm("Tampering"), _norm("Information Disclosure"), _norm("Denial of Service")):
             base = "High"
@@ -138,7 +230,7 @@ def score_severity(
             base = "Low"
     elif kind == "trustboundary":
         base = "Medium"
-    else:  # process / AI 元素
+    else:  # process
         if tn in stride_high:
             base = "High"
         elif tn in stride_med:
@@ -154,4 +246,88 @@ def score_severity(
     # ---- 属性修正 ----
     sev = _severity_by_data_sensitivity(props, base)
     sev = _severity_by_exposure(props, sev, threat_type)
+
+    # ---- 方法论相关：非 STRIDE 方法论下，对纯 STRIDE 维度（不在该方法论允许范围内）
+    #     的严重度做轻量化处理（不会比同方法论实际维度更高），避免越界夸大风**
+    sev = _adjust_for_methodology(sev, tn, kind, method)
     return sev
+
+
+# 各方法论下，该方法论实际关注的维度集合（用于避免越界夸大）
+def _methodology_dims(method: str) -> set[str]:
+    """返回某方法论实际关注的维度集合（归一化形式）。"""
+    if method == "STRIDE" or method == "STRIDE-AI":
+        return {
+            _norm("Spoofing"), _norm("Tampering"), _norm("Repudiation"),
+            _norm("Information Disclosure"), _norm("Denial of Service"),
+            _norm("Elevation of Privilege"),
+        }
+    if method == "CIA":
+        return {
+            _norm("Confidentiality"), _norm("Integrity"), _norm("Availability"),
+        }
+    if method == "CIADIE":
+        return {
+            _norm("Confidentiality"), _norm("Integrity"), _norm("Availability"),
+            _norm("Distributed"), _norm("Immutable"), _norm("Ephemeral"),
+        }
+    if method == "LINDDUN":
+        return {
+            _norm("Linkability"), _norm("Identifiability"), _norm("Non-Repudiation"),
+            _norm("Detectability"), _norm("Disclosure of Information"),
+            _norm("Unawareness"), _norm("Non-Compliance"),
+        }
+    if method == "PLOT4AI":
+        return {
+            _norm("Technique & Processes"), _norm("Accessibility"),
+            _norm("Identifiability & Linkability"), _norm("Security"),
+            _norm("Safety"), _norm("Unawareness"),
+            _norm("Ethics & Human Rights"), _norm("Non-Compliance"),
+        }
+    if method == "EOP":
+        return {
+            _norm("Authentication"), _norm("Authorization"), _norm("Cryptography"),
+            _norm("Data Validation & Encoding"), _norm("Session Management"),
+        }
+    # 兜底：所有维度都允许
+    return {
+        _norm("Spoofing"), _norm("Tampering"), _norm("Repudiation"),
+        _norm("Information Disclosure"), _norm("Denial of Service"),
+        _norm("Elevation of Privilege"),
+        _norm("Confidentiality"), _norm("Integrity"), _norm("Availability"),
+        _norm("Linkability"), _norm("Identifiability"), _norm("Non-Repudiation"),
+        _norm("Detectability"), _norm("Disclosure of Information"),
+        _norm("Unawareness"), _norm("Non-Compliance"),
+        _norm("Distributed"), _norm("Immutable"), _norm("Ephemeral"),
+        _norm("Technique & Processes"), _norm("Accessibility"),
+        _norm("Identifiability & Linkability"), _norm("Security"),
+        _norm("Safety"), _norm("Ethics & Human Rights"),
+        _norm("Authentication"), _norm("Authorization"), _norm("Cryptography"),
+        _norm("Data Validation & Encoding"), _norm("Session Management"),
+    }
+
+
+def _adjust_for_methodology(sev: str, tn: str, kind: str, method: str) -> str:
+    """方法论相关性微调。
+
+    设计：默认矩阵已对各维度有合理基础值；这里仅在"非 STRIDE 方法论下
+    出现了纯 STRIDE 维度威胁"时做一次轻量化（避免给 LINDDUN 用户看到
+    Spoofing=Critical 这种越界结果）。STRIDE 维度在 CIA/LINDDUN/PLOT4ai
+    等方法论下其实是次要的"附带"维度，不会比方法论主维度更显眼。
+    """
+    if method in ("STRIDE", "STRIDE-AI"):
+        return sev
+    # 纯 STRIDE 维度：在这类方法论下属"附带维度"，下调一档（不会下调到 Low 以下）
+    pure_stride = {
+        _norm("Spoofing"), _norm("Tampering"), _norm("Repudiation"),
+        _norm("Denial of Service"), _norm("Elevation of Privilege"),
+    }
+    if tn in pure_stride:
+        return _downgrade_one(sev)
+    return sev
+
+
+def _downgrade_one(sev: str) -> str:
+    """严重度下调一档（不会低于 Low）。"""
+    rank = _SEV_RANK.get(sev, 2)
+    return _SEV_ORDER[max(0, rank - 1)]

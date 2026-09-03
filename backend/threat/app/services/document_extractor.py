@@ -86,17 +86,38 @@ def extract_assets(filename: str, data: bytes) -> dict:
         data: 文件二进制内容。
 
     Returns:
-        {"text": str, "images": [data_uri, ...]}。images 仅对含内嵌图片的
-        PDF / DOCX 返回；纯文本文件 images 为空列表。
+        {
+            "text": str,
+            "images": [data_uri, ...],
+            "warnings": [str, ...],   # P1-5：抽取过程中的非阻塞告警（Pillow 缺失等）
+        }
+        images 仅对含内嵌图片的 PDF / DOCX 返回；纯文本文件 images 为空列表。
     """
     ext = _extension(filename)
     images: list[str] = []
     text = ""
+    warnings: list[str] = []   # P1-5
+
+    # P1-5：检查 Pillow 是否可用；PDF 图片抽取强依赖它
+    if ext == ".pdf":
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError:
+            warnings.append(
+                "服务器未安装 Pillow 库，PDF 中的架构图将无法抽取（仅返回文本）。"
+                "请在 backend/requirements.txt 中加上 Pillow 后重启服务。"
+            )
+
     try:
         if ext in (".txt", ".md", ".markdown", ".text"):
             text = _extract_plain(data)
         elif ext == ".pdf":
             text, images = _extract_pdf_assets(data)
+            # P1-5：如果原本该文档含图但一张都没抽出来，给个提示
+            if not images and _pdf_likely_has_images(data):
+                warnings.append(
+                    "PDF 中可能含图但未能抽取（可能是扫描版 PDF 或依赖库未安装 Pillow）。"
+                )
         elif ext == ".docx":
             text, images = _extract_docx_assets(data)
         else:
@@ -111,8 +132,18 @@ def extract_assets(filename: str, data: bytes) -> dict:
 
     return {
         "text": _clean(text),
-        "images": images[:12],  # 上限 12 张
+        "images": images[:24],  # P1-6：上限从 12 提到 24
+        "warnings": warnings,
     }
+
+
+def _pdf_likely_has_images(data: bytes) -> bool:
+    """启发式判断 PDF 是否含图（避免每次都解包整个文件做精确检查）。"""
+    if not data:
+        return False
+    # 关键标记：PDF 对象流里含 /Subtype /Image（按 KB 量级粗筛，避免全文件扫描）
+    head = data[:2 * 1024 * 1024]   # 头 2MB 足够
+    return b"/Subtype" in head and b"/Image" in head
 
 
 def _extension(filename: str) -> str:
@@ -200,7 +231,13 @@ def _extract_pdf_assets(data: bytes) -> tuple[str, list[str]]:
 
 
 def _extract_docx_assets(data: bytes) -> tuple[str, list[str]]:
-    """抽取 DOCX 文本与内嵌图片（data URI 列表）。"""
+    """抽取 DOCX 文本与内嵌图片（data URI 列表）。
+
+    P1-4：补充抽取"浮动图"（inline_shapes）—— 之前只抽 word/media/*，
+    但用户拖拽/Word 插入的浮动图（drawings）有时只有 image 引用而没有
+    独立 word/media/ 文件（取决于 Word 版本/图片大小/插入方式）。
+    使用 ``doc.inline_shapes`` + ``_get_image_bytes`` 获取其字节流。
+    """
     import zipfile
 
     parts: list[str] = []
@@ -222,8 +259,36 @@ def _extract_docx_assets(data: bytes) -> tuple[str, list[str]]:
             for row in table.rows:
                 cells = [c.text.strip() for c in row.cells]
                 parts.append(" | ".join(c for c in cells if c))
+
+        # P1-4：抽取段落中的内嵌浮动图（drawings/inline_shapes）
+        # 这类图的 binary 不一定落在 word/media/*，需通过 image_part 直接拿
+        for shape_idx, shape in enumerate(doc.inline_shapes or []):
+            try:
+                image_part = getattr(shape, "image", None)
+                if image_part is None:
+                    continue
+                # 新版 python-docx 的 InlineShape.image 返回 ImagePart，
+                # 其 .blob 是图片二进制；旧版可能为 None
+                blob = getattr(image_part, "blob", None)
+                if not blob:
+                    continue
+                # 扩展名用 image_part.content_type 推断
+                mime = getattr(image_part, "content_type", "image/png") or "image/png"
+                ext = {
+                    "image/png": ".png",
+                    "image/jpeg": ".jpg",
+                    "image/gif": ".gif",
+                    "image/bmp": ".bmp",
+                    "image/webp": ".webp",
+                }.get(mime.split(";")[0].strip(), ".png")
+                uri = _image_to_data_uri(blob, f"inline_{shape_idx}{ext}")
+                if uri:
+                    images.append(uri)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("DOCX inline shape %d 抽取失败: %s", shape_idx, exc)
+                continue
     except Exception as e:  # noqa: BLE001
-        logger.warning("DOCX 文本抽取失败，仅尝试提取图片: %s", e)
+        logger.warning("DOCX 文本/浮动图抽取失败，仅尝试 word/media/*: %s", e)
 
     # 抽取内嵌图片（word/media/*）
     try:
@@ -241,6 +306,19 @@ def _extract_docx_assets(data: bytes) -> tuple[str, list[str]]:
                     continue
     except Exception as e:  # noqa: BLE001
         logger.warning("DOCX 图片抽取失败: %s", e)
+
+    # 去重（同一张图可能既在 word/media/ 又在 inline_shapes 里被引用）
+    if images:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for u in images:
+            if u in seen:
+                continue
+            seen.add(u)
+            deduped.append(u)
+        if len(deduped) != len(images):
+            logger.info("DOCX 图片去重：%d → %d", len(images), len(deduped))
+        images = deduped
 
     return "\n".join(parts), images
 

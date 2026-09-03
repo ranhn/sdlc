@@ -54,7 +54,7 @@
               :percentage="analyzeProgress"
               :stroke-width="8"
               :color="'var(--primary)'"
-              :show-text="false"
+              :show-text="true"
             />
             <div class="progress-log">
               <div v-for="(log, i) in analyzeLogs" :key="i" class="log-row">
@@ -495,7 +495,23 @@ function startTaskPolling(taskId) {
         ElMessage.info('任务已取消')
       }
     } catch (err) {
-      console.warn('[poll]', err)
+      // P2-X-2：不要静默吞错误。404 = 后端 task 已不存在（reload / 过期清理 / 后端
+      // 内存被清），给用户清晰提示而不是让进度条永远卡在 0%。
+      const status = err?.response?.status
+      if (status === 404) {
+        store.interruptAnalysis('后端已无此任务（可能被清理或后端重启）')
+        ElMessage.error({
+          message: '任务已中断：后端找不到此任务（可能后端已重启）。请回到「建模输入」重新发起。',
+          duration: 6000,
+          showClose: true,
+        })
+        // 跳回输入页，让用户重新操作
+        if (activeTab.value !== 'input') router.push('/threat-modeling/input')
+      } else {
+        // 其他错误（网络抖动 / 5xx / 后端未启动）—— 静默 + console 即可，
+        // 下一次轮询会再试
+        console.warn('[poll]', err)
+      }
     }
   }, 1500)
 }
@@ -506,12 +522,17 @@ async function onAnalyzeRequest(payload) {
   store.startAnalysis('')
   router.push('/threat-modeling/analysis')
   try {
+    // P0-6：透传 InputPanel 算好的 input_fingerprint，后端做 in-flight 去重时用
+    // （后端会再用同样的算法自己算一遍交叉验证，**不**直接信任客户端传值）。
     const submitResp = await analyze(payload)
     const taskId = submitResp?.task_id || submitResp?.id
     if (!taskId) throw new Error('提交任务失败：未返回 task_id')
     store.currentTaskId = taskId
     store.updateProgress(0, '任务已提交，等待后端返回进度…')
     store.appendLog('任务已提交 (ID: ' + taskId.slice(0, 8) + ')')
+    if (submitResp?.deduped) {
+      store.appendLog('P0-1：同输入 5 秒内复用已注册任务（去重命中）')
+    }
     startTaskPolling(taskId)
   } catch (err) {
     store.failAnalysis(err?.response?.data?.detail || err?.message || err)
@@ -590,9 +611,18 @@ onMounted(() => {
   heartbeatTimer = setInterval(() => checkBackend(), 15000)
   restoreLatestResult()
 
-  // 若 store 中有正在进行的任务（用户切出去又切回来），恢复轮询
-  if (store.analyzing && store.currentTaskId) {
-    router.push('/threat-modeling/analysis')
+  // P2-X-1：F5 刷新恢复 — 不再依赖 store.analyzing（刷新后一定为 false），
+  // 直接从 sessionStorage 读 taskId（store 初始化时已自动读出）。
+  // 若有 taskId 就说明上次有过在途任务，**总是**跳到 analysis 并启动轮询。
+  // 后续行为：
+  //   - 后端 task 还在跑：轮询拿到 running，进度继续走
+  //   - 后端 task 已成功：finishAnalysis 自动跳到 results
+  //   - 后端 task 不存在（reload 等原因）：P2-X-2 兜底，显示清晰提示
+  if (store.currentTaskId) {
+    // 强制 analyzing=true，否则 mid-progress 块（v-if=analyzing）不显示。
+    // 这一步必须在 push /analysis 之前，否则首屏看不到进度面板。
+    store.analyzing = true
+    if (activeTab.value !== 'analysis') router.push('/threat-modeling/analysis')
     startTaskPolling(store.currentTaskId)
   }
 })

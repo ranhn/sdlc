@@ -21,6 +21,12 @@ PROTOCOL_ENUM = ["HTTPS", "HTTP", "gRPC", "MQTT", "DB", "Internal", "Other"]
 
 SEVERITY_ENUM = ["Low", "Medium", "High", "Critical"]
 
+# P0-1 软限制：DFD 元素数量上限
+# - 这是给 LLM 的目标量级（schema maxItems 也保持一致）
+# - 真正的兜底截断在 document_analyzer._validate 里执行（不报错、只截断 + 日志）
+DFD_MAX_COMPONENTS = 20
+DFD_MAX_FLOWS = 60
+
 BOOLEAN_PROPERTIES = [
     "isWebApplication", "isALog", "storesCredentials", "handlesCardPayment",
     "isEncrypted", "isPublicNetwork", "isTrustBoundary",

@@ -560,14 +560,36 @@ class DocumentAnalyzer:
 6. 所有字段 key 保持英文（与 Threat Dragon 兼容），值类字段（title/description/name、
    summary.title、summary.description、summary.owner 等自由文本）必须使用简体中文输出。
    专有名词、协议名（如 HTTPS/TLS/OAuth2/JWT）、CWE 编号可直接英文。
-7. **数据生命周期阶段（lifecycle）**：为每个非信任边界组件标注其在数据生命周期中的阶段，
-   便于数据流图按泳道分组展示，取值仅限：
-   - collect（数据收集）：外部实体/设备/入口采集数据，如用户 App、传感器、第三方回调入口
-   - store（数据存储）：存储数据，如数据库、缓存、对象存储、日志库
-   - use（数据使用）：消费/处理/展示数据，如业务服务、AI 分析、看板
-   - exchange（数据交换）：对外提供或共享数据，如开放 API、推送、数据同步、导出
-   - delete（数据删除）：清理/删除/归档数据，如清理任务、注销删除服务
-   trustboundary（信任边界）可不标注 lifecycle；每个组件只能标注一个阶段，若无明显归属可省略。
+7. **数据生命周期阶段（lifecycle）**【**必填**，每个组件必须标注 5 选 1】：
+   标错或漏标都会导致 DFD 泳道错位、节点飘出 swimlane。
+   严格按"该组件的**核心职责**"判断，而非"组件所在的网络位置"：
+   - collect（数据收集）：**数据从外部进入系统的入口**，包括
+     · 外部实体/用户/设备（actor / externalentity），
+     · 客户端 App / H5 / 小程序（接收用户输入），
+     · 采集网关 / 接入网关（设备/外部数据汇入点），
+     · 第三方回调入口（数据从外部推入）。
+   - store（数据存储）：**持久化**数据的位置，包括
+     · 数据库（MySQL / PostgreSQL / MongoDB / Elasticsearch），
+     · 缓存（Redis / Memcached），
+     · 对象存储（OSS / S3 / MinIO / Blob），
+     · 消息队列（Kafka / RabbitMQ / RocketMQ — 暂存型），
+     · 日志库 / 数据湖 / 数据仓库。
+   - use（数据使用）：**消费、加工、展示**数据的内部服务，包括
+     · 业务后端（订单 / 支付 / 用户 / 商品），
+     · AI 推理 / 分析 / 报表 / 看板，
+     · 同步 / ETL / 批处理 / 定时任务。
+   - exchange（数据交换）：**流出系统到外部**，包括
+     · 开放 API / Webhook / 数据推送，
+     · 数据同步 / 数据导出 / 报表分发。
+   - delete（数据删除）：**清理 / 删除 / 归档**，包括
+     · 清理任务 / 注销删除服务 / 归档服务。
+   ❌ 错配示例（**避免**）：
+     · MySQL / Redis / OSS 必须是 **store**，不是 use（"它存数据，不是处理数据"）
+     · 前端 App / 用户 App 应该是 **collect**，不是 use（"它从外部采集用户输入"）
+     · AI 推理服务是 **use**（消费数据做分析），不是 store
+   trustboundary（信任边界）也**应**标注 lifecycle：标其**所**包数据的阶段
+   （如「用户侧」包 collect，「服务侧」包 use + store）。
+   无明显归属时**必须**填 "use" 作为兜底，**不要**省略字段。
 
 DFD 建模规范（务必遵循，避免常见建模错误）：
 1. **CDN / 静态页面 / 静态资源 / 对象存储 / S3 / OSS / Bucket / Blob / 数据库 / MySQL /
@@ -686,7 +708,7 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
 """
 
         if progress:
-            progress("正在解析需求与架构文档…")
+            progress("正在解析需求与架构文档…", sub_progress=0.10)
         # 结构化输出：锁定 DFD 字段结构、元素类型枚举与数量上下界，抑制随机性
         from .output_schema import DFD_JSON_SCHEMA
 
@@ -700,7 +722,8 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
         if progress:
             progress(
                 f"文档解析完成：识别出 {len(validated['components'])} 个组件、"
-                f"{len(validated['flows'])} 条数据流"
+                f"{len(validated['flows'])} 条数据流",
+                sub_progress=0.45,
             )
 
         # 方案 A：两阶段提取 —— 基于结构自检结果让 LLM 补全/修正。
@@ -757,8 +780,40 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
                 return True
             return False
 
+        # P2-10：信任阈值——LLM 一次性返得很完整时，跳过自省补全（省 1 次 LLM 调用）
+        # 条件：组件数充足 + 骨架主干完整 + 数据流数 > 0
+        def _skeleton_rich_enough() -> bool:
+            types = {str(c.get("type", "")).lower() for c in comps}
+            if not (types & {"process"}):
+                return False
+            if not (types & {"datastore", "vectorstore", "trainingdata"}):
+                return False
+            if not (types & {"actor", "externalentity"}):
+                return False
+            if len(comps) < 5:           # 至少 5 个组件才视为"足够丰富"
+                return False
+            if len(flows) < 3:           # 至少 3 条数据流才视为有连通性
+                return False
+            return True
+
         if not defects and not _skeleton_too_thin():
             return None
+
+        # P2-10：骨架已很丰富时，即使有轻微 defects 也跳过（轻微缺陷在
+        # 后续 DFDReviewer / model_builder 里还会再次收敛；这里避免一次
+        # 不必要的 LLM 自省调用，整体提速 ~20s）
+        if _skeleton_rich_enough() and len(comps) >= 8 and len(flows) >= 5:
+            # 仅在 defects 数 ≤ 2 且都是低危（self_loop / duplicate）时跳过
+            light_defects = [
+                d for d in defects
+                if "自环" in d or "重复" in d or "shorter than" in d.lower()
+            ]
+            if len(light_defects) == len(defects):
+                logger.info(
+                    "P2-10：骨架丰富（%d 组件 %d 流），跳过 _refine_async",
+                    len(comps), len(flows),
+                )
+                return None
 
         # 供 LLM 参照的当前组件/流清单
         comp_list = "\n".join(
@@ -823,7 +878,7 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
             "请按上述要求输出需要补全/修正的组件与数据流。"
         )
         if progress:
-            progress("正在对 DFD 结构做自检与补全…")
+            progress("正在对 DFD 结构做自检与补全…", sub_progress=0.55)
         try:
             raw = await self.llm.complete_json(
                 sys_prompt, user_prompt, json_schema=DFD_REFINE_SCHEMA,
@@ -837,7 +892,8 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
         if progress:
             progress(
                 f"DFD 自检补全完成：{len(merged['components'])} 个组件、"
-                f"{len(merged['flows'])} 条数据流"
+                f"{len(merged['flows'])} 条数据流",
+                sub_progress=0.85,
             )
         return merged
     def _apply_refine(
@@ -1052,6 +1108,40 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
 
         if autofix_log:
             diagram["autofixLog"] = list(autofix_log)
+
+        # ------------------------------------------------------------------
+        # P0-1 软限制：超 DFD 元素数量上限时截断并告知（不报错拒绝）
+        # schema 的 maxItems=20/60 是给 LLM 的硬约束，但 LLM 偶尔超界；这里做
+        # 兜底截断，避免 422 失败整次分析。截断策略：保留前 N 条（按稳定 id
+        # 排序后，重要的在前），并在 autofixLog 留痕。
+        # ------------------------------------------------------------------
+        from .output_schema import DFD_MAX_COMPONENTS, DFD_MAX_FLOWS
+        truncated = False
+        if len(skeleton_comps) > DFD_MAX_COMPONENTS:
+            orig_n = len(skeleton_comps)
+            skeleton_comps = skeleton_comps[:DFD_MAX_COMPONENTS]
+            diagram.setdefault("autofixLog", []).append(
+                f"组件总数 {orig_n} 超过上限 {DFD_MAX_COMPONENTS}，已截断保留前 {DFD_MAX_COMPONENTS} 条"
+            )
+            truncated = True
+        if len(skeleton_flows) > DFD_MAX_FLOWS:
+            orig_n = len(skeleton_flows)
+            # 同步过滤悬空 flow：截断后必须确保 sourceId/targetId 都仍存在
+            comp_id_set = {c["id"] for c in skeleton_comps}
+            kept = []
+            for f in skeleton_flows[:DFD_MAX_FLOWS]:
+                if f.get("sourceId") in comp_id_set and f.get("targetId") in comp_id_set:
+                    kept.append(f)
+            skeleton_flows = kept
+            diagram.setdefault("autofixLog", []).append(
+                f"数据流总数 {orig_n} 超过上限 {DFD_MAX_FLOWS}，已截断保留前 {DFD_MAX_FLOWS} 条"
+            )
+            truncated = True
+        if truncated:
+            logger.warning(
+                "DFD 元素超上限已截断：comps=%d flows=%d",
+                len(skeleton_comps), len(skeleton_flows),
+            )
 
         return {
             "summary": data.get("summary", {}),
