@@ -64,7 +64,9 @@ _STORE_NAME = _re(
 )
 
 # 内部处理阶段（不应分配给「外部实体 / 前端」的 lifecycle）
-_INTERNAL_LIFECYCLES = {"use", "store", "delete"}
+# 7 阶段：transit/process/use/store/delete 都是"内网/内部"语义，
+# 外部实体/前端被误标到这些阶段时统一回退到 collect。
+_INTERNAL_LIFECYCLES = {"transit", "store", "process", "use", "delete"}
 # 外部实体 / 前端这类「端点型」组件应归属的阶段（交互起点）
 _ENDPOINT_LIFECYCLE = "collect"
 # 存储类组件应归属的阶段（缺省落到 store）
@@ -151,7 +153,8 @@ SYSTEM_PROMPT = (
     "   type 应为 datastore；含『API 网关/前端/服务』的应为 process；含『用户/浏览器/设备』"
     "   的应为 actor/externalentity。若明显错配，请在 fixed_components 里给出正确 type。\n"
     "2. component_lifecycle：lifecycle 是否与该组件的数据生命周期阶段匹配"
-    "   （collect 收集 / store 存储 / use 使用 / exchange 交换 / delete 删除）。"
+    "   （collect 采集 / transit 传输 / store 存储 / process 处理 / use 使用 /"
+    " exchange 交换 / delete 删除）。"
     "   明显不符的可修正，但不要对没有 lifecyclc 的组件凭空补。\n"
     "3. flow_self_loop：数据流的 sourceId == targetId（自环）应报告。\n"
     "4. flow_duplicate：多条流 sourceId+targetId+name 完全相同时应报告，仅保留一条。\n"
@@ -159,7 +162,7 @@ SYSTEM_PROMPT = (
     "6. missing_component：数据流两端明显应当存在的关键组件缺失时报告。典型情形：\n"
     "   - 有 datastore/vectorstore 存储组件，但没有任何 process 作为中间处理方，存储被"
     "     外部实体直接读写（存储必须经由一个内部 process 中转）；\n"
-    "   - 数据收集（collect）侧的外部实体与数据存储（store）之间缺少应有的内部 process。\n"
+    "   - 数据采集（collect）侧的外部实体与数据存储（store）之间缺少应有的内部 process。\n"
     "7. boundary_scope：信任边界（trustboundary）是其内部子系统/进程的容器。\n"
     "   - 不应把 actor/externalentity（用户、浏览器、第三方、设备等外部实体）放进任何"
     "     trustboundary —— 外部实体在信任边界之外；\n"

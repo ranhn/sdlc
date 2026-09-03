@@ -61,14 +61,17 @@ AI_ELEMENT_TYPE_TAG = {
 }
 
 # 数据生命周期泳道（与 output_schema.LIFECYCLE_ENUM 顺序一致）
-# 布局时按此顺序自上而下分泳道展示，使数据流图呈现"收集→存储→使用→交换→删除"的生命周期结构。
-LIFECYCLE_ORDER = ["collect", "store", "use", "exchange", "delete"]
+# 布局时按此顺序自上而下分泳道展示，使数据流图呈现
+# "采集 → 传输 → 存储 → 处理 → 使用 → 交换 → 删除"的生命周期结构。
+LIFECYCLE_ORDER = ["collect", "transit", "store", "process", "use", "exchange", "delete"]
 LIFECYCLE_LABELS = {
-    "collect": "数据收集",
-    "store": "数据存储",
-    "use": "数据使用",
+    "collect":  "数据采集",
+    "transit":  "数据传输",
+    "store":    "数据存储",
+    "process":  "数据处理",
+    "use":      "数据使用",
     "exchange": "数据交换",
-    "delete": "数据删除",
+    "delete":   "数据删除",
     # 兜底泳道：未标注生命周期的组件归入此泳道（排在最下方）
     "other": "其他 / 未标注",
 }
@@ -118,6 +121,16 @@ class ThreatModelBuilder:
         # 数据流去重：(sourceId, targetId, name) 完全相同的流只保留一条，
         # 避免 AI 重复生成同一条边导致连线与标签重叠
         flows = self._dedupe_flows(flows)
+
+        # P3 修复：自动添加外层"业务系统边界"兜底。
+        # 当模型没有任何 trustboundary 节点时，AI 偶尔会漏标，DFD 呈现
+        # "一堆节点散在画布上、没有承载它们的容器"，前端用户看到的就是
+        # "数据存储跑出框外"。此处自动补一个 outer trustboundary 包裹
+        # 所有非 actor 节点，落地"我们规定的框"这一产品语义。
+        if not any(c.get("type") == "trustboundary" for c in components):
+            outer = self._build_outer_boundary(components)
+            if outer is not None:
+                components = list(components) + [outer]
 
         # 为每个组件分配位置（自动布局）
         layout = self._layout(components, flows)
@@ -238,6 +251,34 @@ class ThreatModelBuilder:
             # 完全重复且无威胁 → 丢弃
         return merged
 
+    def _build_outer_boundary(
+        self, components: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """P3 兜底：自动生成一个外层「业务系统边界」trustboundary。
+
+        触发条件：components 里没有任何 trustboundary 节点。
+        行为：构造一个占位 trustboundary，让 _layout 走容器化逻辑自动
+        包裹所有非 actor 组件（process/datastore/AI 元素等），从而
+        解决「数据存储节点跑出框外」的产品体验问题。
+
+        返回的 boundary 不携带任何数据流（不与任何 component 直接相连），
+        仅在视觉上提供外层容器语义。
+        """
+        has_internal = any(
+            c.get("type") not in ("actor", "externalentity", "trustboundary", "text")
+            for c in components
+        )
+        if not has_internal:
+            return None
+        bid = f"outer-boundary-{uuid.uuid4().hex[:8]}"
+        return {
+            "id": bid,
+            "name": "业务系统边界",
+            "type": "trustboundary",
+            "description": "自动生成的外层业务系统边界，包裹所有内部组件（process/datastore/AI 元素等）",
+            "properties": {"isTrustBoundary": True},
+        }
+
     def _compute_boundary_membership(
         self,
         components: list[dict[str, Any]],
@@ -340,8 +381,17 @@ class ThreatModelBuilder:
            取拓扑中间层的 process；
         4. 用户侧（公网/用户/前端/接入…）→ 只含 actor + 最上游浅层 process；
         5. 无关键词命中 → 兜底含全部非 boundary 组件。
+        6. P3 兜底：outer boundary（id 以 'outer-boundary-' 开头）→ 包含所有
+           非 actor 非 boundary 组件，作为「业务系统边界」的最外层容器。
         这样能避免『公网边界』误吞所有节点，边界之间互不重叠。
         """
+        # P3 兜底：outer boundary 走全包分支，绕开关键词推断
+        if str(boundary_cid).startswith("outer-boundary-"):
+            return [
+                cid for cid, t in comp_type.items()
+                if t not in ("trustboundary", "actor", "externalentity", "text")
+            ]
+
         name = str(comp_by_id.get(boundary_cid, {}).get("name") or "")
         desc = str(comp_by_id.get(boundary_cid, {}).get("description") or "")
         text = (name + " " + desc).lower()
@@ -463,10 +513,10 @@ class ThreatModelBuilder:
             return {}
 
         # 生命周期泳道布局：当**至少一个非信任边界组件**带 lifecycle 字段（且值在白名单内）时启用。
-        # 组件按 数据收集→存储→使用→交换→删除 分组排布，使数据流图呈现生命周期结构。
+        # 组件按 数据采集→传输→存储→处理→使用→交换→删除 分组排布，使数据流图呈现生命周期结构。
         #
         # P2-1 兜底：若所有 lifecycle 字段都是 None / "" / 不在白名单内（LLM 漏标或全标 other），
-        # 则**回退**到主 Kahn 分层布局——避免 5+1 个 swimlane 中前 5 个全空、节点全挤 "other" lane。
+        # 则**回退**到主 Kahn 分层布局——避免 7+1 个 swimlane 中前 7 个全空、节点全挤 "other" lane。
         lifecycle_typed = [
             c for c in components
             if c.get("type") != "trustboundary"
@@ -673,14 +723,32 @@ class ThreatModelBuilder:
             overlap_x = min(px1, cx1) - max(px0, cx0) > 10
             if overlap_x and c_top < p_bottom + self.V_GAP * 0.5:
                 delta = (p_bottom + self.V_GAP * 0.5) - c_top
+                # P2-3：children 推 delta 时不能越出所属 swimlane。
+                # 取「所有 children 中最小剩余推幅」作为实际推幅，
+                # 让 trustboundary 容器跟着 children 平移同样距离；
+                # 若容器仍与 prev 重叠，由容器自身消化（children 永远留在 lane 内）。
+                bounded_delta = delta
                 for kid in boundary_inner.get(cur, []):
-                    if kid in positions and "edge_jitter" not in positions[kid]:
-                        positions[kid] = dict(positions[kid], y=positions[kid]["y"] + delta)
-                # 边界自身 y 及中心同步下移
-                cp["y"] += delta
+                    kp = positions.get(kid)
+                    if not kp or "edge_jitter" in kp:
+                        continue
+                    k_lc = kp.get("lifecycle")
+                    if k_lc in lane_top:
+                        k_lane_top = lane_top[k_lc]
+                        k_lane_bottom = k_lane_top + lane_h
+                        # 距所属 lane 下边界的最大可推距离（保留 NODE_HEIGHT 不越界）
+                        max_k = k_lane_bottom - kp["y"] - self.NODE_HEIGHT
+                        if max_k < bounded_delta:
+                            bounded_delta = max_k
+                for kid in boundary_inner.get(cur, []):
+                    kp = positions.get(kid)
+                    if kp and "edge_jitter" not in kp:
+                        positions[kid] = dict(kp, y=kp["y"] + bounded_delta)
+                # 边界自身 y 及中心同步下移（与 children 等量）
+                cp["y"] += bounded_delta
                 cc = cp.get("containerCenter")
                 if cc:
-                    cp["containerCenter"] = (cc[0], cc[1] + delta)
+                    cp["containerCenter"] = (cc[0], cc[1] + bounded_delta)
 
         # --- 跨层长边抖动：让斜线/折角线明显（可选，保持轻微错位） ---
         for f in flows:
@@ -708,14 +776,14 @@ class ThreatModelBuilder:
         components: list[dict[str, Any]],
         flows: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """生命周期泳道布局：组件按 数据收集→数据存储→数据使用→数据交换→数据删除 分泳道排布。
+        """生命周期泳道布局：组件按 数据采集→数据传输→数据存储→数据处理→数据使用→数据交换→数据删除 分泳道排布。
 
         当任一非信任边界组件带 lifecycle 字段时，由 _layout() 自动选用本布局
         替代 Kahn 分层拓扑，使 AI 生成的 DFD 呈现数据生命周期结构。
 
         设计要点：
-        A. 非信任边界组件按 lifecycle 分桶（collect/store/use/exchange/delete
-           及兜底 other），泳道按 LIFECYCLE_ORDER 自上而下排列；
+        A. 非信任边界组件按 lifecycle 分桶（collect/transit/store/process/use/
+           exchange/delete 及兜底 other），泳道按 LIFECYCLE_ORDER 自上而下排列；
         B. 每个泳道内的组件按参与流数降序 + 名字排序，单行横向居中铺开，
            同泳道组件共享同一 Y → 形成清晰的横向条带；
         C. 信任边界复用 _infer_boundary_children（把泳道序号当 layer 参与
@@ -757,6 +825,27 @@ class ThreatModelBuilder:
                 if e:
                     degree[e] = degree.get(e, 0) + 1
 
+        # --- B-pre. 跨泳道连接度：用于泳道内节点 y 错位（stagger） ---
+        # in_from_above[cid] = 从比 cid 所在泳道更上方的节点流入的边数
+        # out_to_below[cid]  = 从 cid 流出到比其所在泳道更下方的边数
+        # 两者决定 y 偏移方向：纯入流节点偏 lane 上半、纯出流偏下半、双向居中。
+        in_from_above: dict[str, int] = {}
+        out_to_below: dict[str, int] = {}
+        for f in flows:
+            src, tgt = f.get("sourceId"), f.get("targetId")
+            if not src or not tgt or src == tgt:
+                continue
+            s_lane = lane_of.get(src)
+            t_lane = lane_of.get(tgt)
+            if s_lane is None or t_lane is None or s_lane == t_lane:
+                continue
+            if s_lane < t_lane:  # src 在上、tgt 在下
+                in_from_above[tgt] = in_from_above.get(tgt, 0) + 1
+                out_to_below[src] = out_to_below.get(src, 0) + 1
+            else:  # s_lane > t_lane → src 在下、tgt 在上
+                in_from_above[src] = in_from_above.get(src, 0) + 1
+                out_to_below[tgt] = out_to_below.get(tgt, 0) + 1
+
         visible = [k for k in lane_keys if buckets[k]]
         col_width = self.NODE_WIDTH + self.H_GAP
         per_lane_max = max((len(buckets[k]) for k in visible), default=1)
@@ -779,6 +868,11 @@ class ThreatModelBuilder:
             y += lane_h + lane_gap
         canvas_h = y - lane_gap + self.MARGIN
 
+        # y 错位最大幅度 = (lane_h - NODE_HEIGHT) / 2 * 0.65
+        # 留 35% 缓冲，确保节点 y 始终落在所属 swimlane 矩形内，
+        # 既让线明显分散、又不会被 _layout_sanity_check 报警。
+        max_y_offset = (lane_h - self.NODE_HEIGHT) / 2 * 0.65
+
         positions: dict[str, Any] = {}
         for k in visible:
             ids = buckets[k]
@@ -794,11 +888,24 @@ class ThreatModelBuilder:
                 self.NODE_WIDTH + (self.H_GAP if i > 0 else 0) for i in range(n)
             )
             start_x = (canvas_width - total_w) / 2
-            node_y = lane_top[k] + (lane_h - self.NODE_HEIGHT) / 2
+            center_y = lane_top[k] + (lane_h - self.NODE_HEIGHT) / 2
+            # 同 swimlane 内仅在节点数 ≥ 2 时启用 stagger，避免单节点偏移后视觉割裂
             for col, cid in enumerate(ids):
+                if n >= 2:
+                    in_n = in_from_above.get(cid, 0)
+                    out_n = out_to_below.get(cid, 0)
+                    total = in_n + out_n
+                    if total > 0:
+                        # -1（纯入流→偏上）~ +1（纯出流→偏下），0 = 居中
+                        y_off = (out_n - in_n) / total * max_y_offset
+                    else:
+                        # 孤立节点仍居中，不偏移
+                        y_off = 0.0
+                else:
+                    y_off = 0.0
                 positions[cid] = {
                     "x": start_x + col * col_width,
-                    "y": node_y,
+                    "y": center_y + y_off,
                     "layer": lane_index[k],
                     "lifecycle": k,
                 }
@@ -910,16 +1017,31 @@ class ThreatModelBuilder:
             overlap_x = min(px1, cx1) - max(px0, cx0) > 10
             if overlap_x and c_top < p_bottom + self.V_GAP * 0.5:
                 delta = (p_bottom + self.V_GAP * 0.5) - c_top
+                # P2-3：children 推 delta 时不能越出所属 swimlane。
+                # 取「所有 children 中最小剩余推幅」作为实际推幅，
+                # 让 trustboundary 容器跟着 children 平移同样距离；
+                # 若容器仍与 prev 重叠，由容器自身消化（children 永远留在 lane 内）。
+                bounded_delta = delta
                 for kid in boundary_inner.get(cur, []):
-                    if kid in positions and "edge_jitter" not in positions[kid]:
-                        positions[kid] = dict(
-                            positions[kid], y=positions[kid]["y"] + delta
-                        )
-                # 边界自身 y 及中心同步下移
-                cp["y"] += delta
+                    kp = positions.get(kid)
+                    if not kp or "edge_jitter" in kp:
+                        continue
+                    k_lc = kp.get("lifecycle")
+                    if k_lc in lane_top:
+                        k_lane_top = lane_top[k_lc]
+                        k_lane_bottom = k_lane_top + lane_h
+                        max_k = k_lane_bottom - kp["y"] - self.NODE_HEIGHT
+                        if max_k < bounded_delta:
+                            bounded_delta = max_k
+                for kid in boundary_inner.get(cur, []):
+                    kp = positions.get(kid)
+                    if kp and "edge_jitter" not in kp:
+                        positions[kid] = dict(kp, y=kp["y"] + bounded_delta)
+                # 边界自身 y 及中心同步下移（与 children 等量）
+                cp["y"] += bounded_delta
                 cc = cp.get("containerCenter")
                 if cc:
-                    cp["containerCenter"] = (cc[0], cc[1] + delta)
+                    cp["containerCenter"] = (cc[0], cc[1] + bounded_delta)
 
         # --- E. 泳道元数据（供前端绘制泳道背景与标签） ---
         positions["_lanes"] = [

@@ -24,22 +24,41 @@ def _truthy(props: dict[str, Any], key: str) -> bool:
     return False
 
 
-def _severity_by_data_sensitivity(props: dict[str, Any], base: str) -> str:
-    """数据敏感度升级：含凭证/支付/PII 自动升档。"""
+def _severity_by_data_sensitivity(props: dict[str, Any], base: str, threat_type: str) -> str:
+    """数据敏感度升级：仅在『敏感属性 + 高破坏性威胁』叠加时才升档。
+
+    设计原则：默认不升档；只有 storesCredentials/handlesCardPayment/isALog
+    同时配对 Tampering/Spoofing/EoP 这类高破坏性维度时升一档。
+    避免一刀切地给所有 datastore 升到 Critical，导致严重度柱状图
+    「严重 100% / 高危 0%」的失衡。
+    """
+    t = _norm(threat_type)
+    high_impact = {t in {
+        _norm("Tampering"), _norm("Spoofing"), _norm("Elevation of Privilege"),
+        _norm("Information Disclosure"),
+    }}
     sev = base
-    if _truthy(props, "storesCredentials"):
-        sev = _bump(sev)
-    if _truthy(props, "handlesCardPayment"):
-        sev = _bump(sev)
-    if _truthy(props, "isALog"):
-        sev = _bump(sev)
+    if high_impact:
+        if _truthy(props, "storesCredentials"):
+            sev = _bump(sev)
+        if _truthy(props, "handlesCardPayment"):
+            sev = _bump(sev)
+        if _truthy(props, "isALog"):
+            sev = _bump(sev)
     return sev
 
 
 def _severity_by_exposure(props: dict[str, Any], sev: str, threat_type: str) -> str:
-    """暴露面升级：公网可达 + 破坏性威胁类型自动升档。"""
-    t = threat_type.strip().lower()
-    if _truthy(props, "isPublicNetwork") and t in ("tampering", "elevation of privilege", "spoofing"):
+    """暴露面升级：仅在公网 + 强破坏性威胁（Tampering/EoP）时升一档。
+
+    原本对 tampering/EoP/spoofing 三类都升档过于激进，spooﬁng
+    经常出现在内部认证场景，并不算最严重；改为只对真正能从公网
+    触达数据/权限的 Tampering/EoP 升档。
+    """
+    t = _norm(threat_type)
+    if _truthy(props, "isPublicNetwork") and t in {
+        _norm("Tampering"), _norm("Elevation of Privilege"),
+    }:
         sev = _bump(sev)
     return sev
 
@@ -134,117 +153,119 @@ def score_severity(
     eop = _EOP_DIMS                  # Cornucopia
 
     # ---- 矩阵分支（按 kind） ----
+    # P3 修复：基础矩阵降一档。Critical 仅留给「显式高破坏+敏感属性」组合；
+    # 默认 datastore 维度落到 Medium/High，再由 _severity_by_data_sensitivity
+    # 在同时有 storesCredentials/handlesCardPayment/isALog 时升档。
     if kind == "datastore":
         if tn in (_norm("Tampering"), _norm("Spoofing")):
-            base = "Critical"
+            base = "High"  # 原 Critical → 需叠加 storesCredentials 才升 Critical
         elif tn in (_norm("Information Disclosure"), _norm("Denial of Service"),
                     _norm("Elevation of Privilege")):
-            base = "High"
+            base = "Medium"  # 原 High → 需属性修正才升 High
         elif tn in (privacy | ai_dim | eop):
-            # 数据存储上的机密性/隐私/合规/密码学维度为高
-            base = "High"
+            # 数据存储上的机密性/隐私/合规/密码学维度默认中危
+            base = "Medium"
         elif tn in arch:
-            base = "Medium"
+            base = "Low"
         else:
-            base = "Medium"  # Repudiation 等默认 Medium
+            base = "Low"  # Repudiation 等默认低
     elif kind == "vectorstore":
-        # RAG 知识库：投毒/泄露后果严重，等同甚至高于 datastore
+        # RAG 知识库：投毒/泄露比 datastore 略高，但也不再无差别 Critical
         if tn in (_norm("Tampering"),):                 # RAG 投毒
-            base = "Critical"
+            base = "High"
         elif tn in (_norm("Information Disclosure"),):  # 向量库泄露
-            base = "High"
+            base = "Medium"
         elif tn in (_norm("Denial of Service"),):       # 击穿
-            base = "High"
-        elif tn in (privacy | ai_dim | eop):
-            base = "High"
-        else:
             base = "Medium"
+        elif tn in (privacy | ai_dim | eop):
+            base = "Medium"
+        else:
+            base = "Low"
     elif kind == "trainingdata":
-        # 训练/微调数据：投毒/成员推断后果严重
+        # 训练/微调数据
         if tn in (_norm("Tampering"),):                 # 数据投毒
-            base = "Critical"
+            base = "High"
         elif tn in (_norm("Information Disclosure"),):  # 成员推断泄露
-            base = "High"
-        elif tn in (privacy | ai_dim | eop):
-            base = "High"
-        else:
             base = "Medium"
+        elif tn in (privacy | ai_dim | eop):
+            base = "Medium"
+        else:
+            base = "Low"
     elif kind == "model":
-        # 大模型：模型窃取 / 投毒 / 抵赖 全部高危
+        # 大模型：默认中危，破坏性维度升一档
         if tn in (_norm("Tampering"), _norm("Information Disclosure"),
                   _norm("Spoofing"), _norm("Elevation of Privilege")):
-            base = "High"
+            base = "Medium"
         elif tn in (_norm("Denial of Service"), _norm("Repudiation")):
-            base = "High"
+            base = "Medium"
         elif tn in (privacy | ai_dim | eop):
-            base = "Medium"
+            base = "Low"
         else:
-            base = "Medium"
+            base = "Low"
     elif kind == "prompt":
-        # 提示词：注入与泄露最严重
+        # 提示词：注入/泄露为中危（不再默认 Critical）
         if tn in (_norm("Tampering"),):                 # 提示注入
-            base = "Critical"
+            base = "High"
         elif tn in (_norm("Information Disclosure"),):  # 系统提示/上下文泄露
-            base = "High"
+            base = "Medium"
         elif tn in (privacy | ai_dim | eop):
             base = "Medium"
         else:
-            base = "Medium"
+            base = "Low"
     elif kind == "tool":
-        # 工具/Agent 能力：越权调用/调用风暴最严重
+        # 工具/Agent 能力
         if tn in (_norm("Elevation of Privilege"),):    # 越权工具调用
-            base = "Critical"
+            base = "High"
         elif tn in (_norm("Denial of Service"),):       # 工具调用风暴
-            base = "High"
+            base = "Medium"
         elif tn in (_norm("Information Disclosure"),):  # 工具滥用泄露
-            base = "High"
+            base = "Medium"
         elif tn in (privacy | ai_dim | eop):
-            base = "Medium"
+            base = "Low"
         else:
-            base = "Medium"
+            base = "Low"
     elif kind == "agentconfig":
-        # Agent 配置：配置篡改/过度授权最严重
+        # Agent 配置
         if tn in (_norm("Tampering"),):                 # 配置篡改
-            base = "Critical"
-        elif tn in (_norm("Elevation of Privilege"),):  # 过度授权
             base = "High"
+        elif tn in (_norm("Elevation of Privilege"),):  # 过度授权
+            base = "Medium"
         elif tn in (privacy | ai_dim | eop):
-            base = "Medium"
+            base = "Low"
         else:
-            base = "Medium"
+            base = "Low"
     elif kind == "flow":
         if tn in (_norm("Tampering"), _norm("Information Disclosure"), _norm("Denial of Service")):
-            base = "High"
+            base = "Medium"  # 原 High → Medium
         elif tn in (_norm("Spoofing"), _norm("Elevation of Privilege")):
-            base = "Medium"
+            base = "Low"  # 原 Medium → Low
         elif tn in (privacy | ai_dim | eop | arch):
-            base = "Medium"
+            base = "Low"
         else:
             base = "Low"
     elif kind == "actor":
         if tn in stride_high:
-            base = "Medium"
+            base = "Low"
         elif tn in (privacy | eop | ai_dim | arch):
-            base = "Medium"
+            base = "Low"
         else:
             base = "Low"
     elif kind == "trustboundary":
-        base = "Medium"
+        base = "Low"
     else:  # process
         if tn in stride_high:
-            base = "High"
+            base = "Medium"  # 原 High → Medium
         elif tn in stride_med:
-            base = "Medium"
+            base = "Low"  # 原 Medium → Low
         elif tn == stride_repudiation:
-            # 普通 process 无审计诉求时抵赖为 Low；含日志(isALog)会在属性修正中升档
             base = "Low"
         elif tn in (privacy | ai_dim | eop | arch):
-            base = "Medium"
+            base = "Low"
         else:
             base = "Low"
 
     # ---- 属性修正 ----
-    sev = _severity_by_data_sensitivity(props, base)
+    sev = _severity_by_data_sensitivity(props, base, threat_type)
     sev = _severity_by_exposure(props, sev, threat_type)
 
     # ---- 方法论相关：非 STRIDE 方法论下，对纯 STRIDE 维度（不在该方法论允许范围内）

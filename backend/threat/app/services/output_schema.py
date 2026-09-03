@@ -13,9 +13,17 @@ COMPONENT_TYPE_ENUM = [
     "model", "prompt", "vectorstore", "tool", "trainingdata", "agentconfig",
 ]
 
-# 数据生命周期阶段（数据收集 → 数据存储 → 数据使用 → 数据交换 → 数据删除）
+# 数据生命周期阶段（7 阶段：采集 → 传输 → 存储 → 处理 → 使用 → 交换 → 删除）
 # DFD 组件可标注生命周期阶段，布局时按泳道分组展示，使数据流向更清晰。
-LIFECYCLE_ENUM = ["collect", "store", "use", "exchange", "delete"]
+# 各阶段语义：
+#   collect  数据采集：外部/前端/采集网关汇入点
+#   transit  数据传输：网络链路上移动（API 网关/VPN/专线/消息中间件）
+#   store    数据存储：数据库/缓存/对象存储/消息队列（持久化）
+#   process  数据处理：加工/转换/分析/脱敏/匿名化/加密
+#   use      数据使用：业务消费（业务后端/AI 推理/报表查询）
+#   exchange 数据交换：开放 API/Webhook/数据同步/数据推送
+#   delete   数据删除：清理/归档/硬销毁
+LIFECYCLE_ENUM = ["collect", "transit", "store", "process", "use", "exchange", "delete"]
 
 PROTOCOL_ENUM = ["HTTPS", "HTTP", "gRPC", "MQTT", "DB", "Internal", "Other"]
 
@@ -87,7 +95,7 @@ DFD_JSON_SCHEMA: dict[str, Any] = {
                     "lifecycle": {
                         "type": "string",
                         "enum": LIFECYCLE_ENUM,
-                        "description": "数据生命周期阶段：collect 数据收集 / store 数据存储 / use 数据使用 / exchange 数据交换 / delete 数据删除",
+                        "description": "数据生命周期阶段：collect 数据采集 / transit 数据传输 / store 数据存储 / process 数据处理 / use 数据使用 / exchange 数据交换 / delete 数据删除",
                     },
                     "properties": COMPONENT_PROPERTIES_SCHEMA,
                 },

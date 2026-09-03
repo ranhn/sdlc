@@ -23,8 +23,8 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
-# 数据生命周期阶段（与 output_schema.LIFECYCLE_ENUM 保持一致）
-_LIFECYCLE_SET = {"collect", "store", "use", "exchange", "delete"}
+# 数据生命周期阶段（与 output_schema.LIFECYCLE_ENUM 保持一致，7 阶段）
+_LIFECYCLE_SET = {"collect", "transit", "store", "process", "use", "exchange", "delete"}
 
 # 允许的元素类型，与 Threat Dragon 保持一致
 ALLOWED_TYPES = {
@@ -301,7 +301,9 @@ def _structural_defects(
                 f"存储组件「{cname.get(str(c.get('id'))) or c.get('id')}」"
                 f"生命周期为 {lc},应为 store/delete"
             )
-        if t in _ENDPOINT_TYPES and lc in ("use", "store", "delete"):
+        if t in _ENDPOINT_TYPES and lc in (
+            "transit", "process", "use", "store", "delete"
+        ):
             defects.append(
                 f"外部实体「{cname.get(str(c.get('id'))) or c.get('id')}」"
                 f"生命周期为 {lc},应为 collect/exchange"
@@ -520,7 +522,7 @@ class DocumentAnalyzer:
       "type": "actor|process|datastore|externalentity|trustboundary",
       "name": "组件名称（英文或中文）",
       "description": "组件职责说明",
-      "lifecycle": "collect|store|use|exchange|delete（数据生命周期阶段，可选，见规范第 7 条）",
+      "lifecycle": "collect|transit|store|process|use|exchange|delete（数据生命周期阶段，7 选 1，见规范第 7 条）",
       "properties": {
         "isWebApplication": true/false,
         "isALog": true/false,
@@ -560,33 +562,50 @@ class DocumentAnalyzer:
 6. 所有字段 key 保持英文（与 Threat Dragon 兼容），值类字段（title/description/name、
    summary.title、summary.description、summary.owner 等自由文本）必须使用简体中文输出。
    专有名词、协议名（如 HTTPS/TLS/OAuth2/JWT）、CWE 编号可直接英文。
-7. **数据生命周期阶段（lifecycle）**【**必填**，每个组件必须标注 5 选 1】：
+7. **数据生命周期阶段（lifecycle）**【**必填**，每个组件必须标注 7 选 1】：
    标错或漏标都会导致 DFD 泳道错位、节点飘出 swimlane。
    严格按"该组件的**核心职责**"判断，而非"组件所在的网络位置"：
-   - collect（数据收集）：**数据从外部进入系统的入口**，包括
+   - collect（数据采集）：**数据从外部进入系统的入口**，包括
      · 外部实体/用户/设备（actor / externalentity），
      · 客户端 App / H5 / 小程序（接收用户输入），
      · 采集网关 / 接入网关（设备/外部数据汇入点），
      · 第三方回调入口（数据从外部推入）。
+   - transit（数据传输）：**数据在网络链路上移动**的中转环节，包括
+     · API 网关 / 负载均衡（南北向入口），
+     · 消息中间件（Kafka / RabbitMQ — 中转型，非持久化），
+     · VPN 隧道 / 专线 / VPC 对等连接 / CDN 边缘节点，
+     · 服务网格 Sidecar / API 代理。
+     ⚠️ 区分 store 中的消息队列：若该队列**只用于暂存**未持久化（消费者立即拉走）→ transit；
+     若有**长期持久化**（用于回溯/重放）→ store。
    - store（数据存储）：**持久化**数据的位置，包括
      · 数据库（MySQL / PostgreSQL / MongoDB / Elasticsearch），
      · 缓存（Redis / Memcached），
      · 对象存储（OSS / S3 / MinIO / Blob），
-     · 消息队列（Kafka / RabbitMQ / RocketMQ — 暂存型），
+     · 消息队列（Kafka / RabbitMQ / RocketMQ — 持久化型），
      · 日志库 / 数据湖 / 数据仓库。
-   - use（数据使用）：**消费、加工、展示**数据的内部服务，包括
+   - process（数据处理）：**加工/转换/脱敏/匿名化/加密**数据的中间服务，包括
+     · ETL 任务 / 数据转换管道，
+     · 数据脱敏服务 / 匿名化服务（个保法 / GDPR 关注的去标识化处理），
+     · 加密/解密服务 / 密钥管理服务（KMS），
+     · 特征工程服务 / 数据标注服务。
+   - use（数据使用）：**消费、展示**数据的内部业务服务，包括
      · 业务后端（订单 / 支付 / 用户 / 商品），
      · AI 推理 / 分析 / 报表 / 看板，
-     · 同步 / ETL / 批处理 / 定时任务。
+     · 同步查询 / 实时计算服务。
    - exchange（数据交换）：**流出系统到外部**，包括
      · 开放 API / Webhook / 数据推送，
-     · 数据同步 / 数据导出 / 报表分发。
-   - delete（数据删除）：**清理 / 删除 / 归档**，包括
-     · 清理任务 / 注销删除服务 / 归档服务。
+     · 数据同步 / 数据导出 / 报表分发，
+     · 第三方系统对接（支付/物流/政务）。
+   - delete（数据删除）：**清理 / 删除 / 归档 / 硬销毁**，包括
+     · 清理任务 / 注销删除服务，
+     · 归档服务（冷存储、合规留存），
+     · 物理介质消磁 / 密钥撤销。
    ❌ 错配示例（**避免**）：
      · MySQL / Redis / OSS 必须是 **store**，不是 use（"它存数据，不是处理数据"）
      · 前端 App / 用户 App 应该是 **collect**，不是 use（"它从外部采集用户输入"）
      · AI 推理服务是 **use**（消费数据做分析），不是 store
+     · 数据脱敏/加密服务是 **process**，不是 use（"它加工数据"）
+     · API 网关是 **transit**，不是 use（"它只做转发，不消费数据"）
    trustboundary（信任边界）也**应**标注 lifecycle：标其**所**包数据的阶段
    （如「用户侧」包 collect，「服务侧」包 use + store）。
    无明显归属时**必须**填 "use" 作为兜底，**不要**省略字段。
