@@ -24,8 +24,15 @@ class Settings(BaseModel):
     # LLM 配置
     llm_api_key: Optional[str] = os.getenv("LLM_API_KEY", "")
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    llm_model: str = os.getenv("LLM_MODEL", "gpt-4o")
-    llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+    # 默认 model 改为 gpt-5.6-sol：reasoning 系列（gpt-5 / o-series）不支持
+    # 自定义 temperature（只允许默认值 1），因此把默认 temperature 设为 None
+    # 表示不传该参数，让模型走 API 默认值。
+    # llm_client.py 的 _is_temperature_unsupported 降级仍然保留，作为
+    # 用户在 .env 误设 temperature 时的兜底。
+    llm_model: str = os.getenv("LLM_MODEL", "gpt-5.6-sol")
+    llm_temperature: Optional[float] = (
+        float(os.getenv("LLM_TEMPERATURE")) if os.getenv("LLM_TEMPERATURE") else None
+    )
     # LLM 网络请求重试次数（openai SDK 的 max_retries）
     llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "2"))
     # 生成稳定性：固定随机种子（同一模型+seed 下结果可复现）。
