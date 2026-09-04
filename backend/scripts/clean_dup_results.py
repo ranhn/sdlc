@@ -25,6 +25,7 @@ from pathlib import Path
 # 与 backend/threat/app/services/result_store.py 的 _RESULT_ID_RE 保持一致
 import re
 
+from app.utils import network_clock as nc
 _RESULT_ID_RE = re.compile(r"^[0-9A-Za-z-]{16,40}$")
 
 # 结果文件目录（与 result_store.RESULTS_DIR 一致）
@@ -68,7 +69,7 @@ def main() -> int:
         print(f"❌ 结果目录不存在: {RESULTS_DIR}")
         return 1
 
-    cutoff = time.time() - args.window
+    cutoff = nc.epoch() - args.window
     records: list[dict] = []
     for p in sorted(RESULTS_DIR.glob("*.json")):
         if p.name.startswith("."):

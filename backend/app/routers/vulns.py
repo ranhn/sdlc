@@ -163,7 +163,7 @@ def _export_docx(rows: list[VulnOut]):
     style.font.name = "Microsoft YaHei"
     style.font.size = Pt(10)
     doc.add_heading("漏洞清单", level=1)
-    doc.add_paragraph(f"导出时间：{__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条")
+    doc.add_paragraph(f"导出时间：{nc.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条")
     table = doc.add_table(rows=1, cols=8)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
@@ -285,9 +285,9 @@ def vuln_action(vuln_id: int, action: str, data: VulnStatusAction,
     v.status = to_status
 
     if action == "close":
-        v.closed_at = __import__("datetime").datetime.utcnow()
+        v.closed_at = __import__("datetime").nc.utcnow()
     if action == "finish_fix":
-        v.fixed_at = __import__("datetime").datetime.utcnow()
+        v.fixed_at = __import__("datetime").nc.utcnow()
         v.reviewer_id = current.id
     if action == "pass_retest":
         v.reviewer_id = current.id

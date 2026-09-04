@@ -19,6 +19,8 @@ from app.models import (
 )
 from app.security import hash_password
 
+from app.utils import network_clock as nc
+
 ROLES = [
     ("超级管理员", "admin", "平台全部权限"),
     ("安全专家", "secops", "漏洞审核/流转/复测、资产维护"),
@@ -145,7 +147,7 @@ def init():
 
     # 示例漏洞（仅当漏洞表为空时）
     if db.query(Vuln).count() == 0:
-        now = datetime.utcnow()
+        now = nc.utcnow()
         # 示例漏洞的 reporter 全部用 admin，assignee 全部用 _other_user（首个非 admin 现有用户）
         samples = [
             ("官网门户SQL注入漏洞", "登录接口存在SQL注入，可绕过认证", "官网门户",

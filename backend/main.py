@@ -7,6 +7,11 @@
 
 生产部署：只需运行本文件，即可对外提供单端口完整的前后端服务。
 """
+# 网络时钟：必须最先 import（启动时立即 NTP 校准）。
+# 业务侧用 from app.utils import network_clock as nc
+# 调 nc.now() / nc.utcnow() / nc.epoch() 即得真实网络时间。
+from app.utils import network_clock  # noqa: F401
+
 import os
 
 from fastapi.responses import FileResponse
@@ -16,6 +21,7 @@ from app.app_entry import app as sdlc_app  # 业务子应用（含建表、播�
 from threat.app.api.router import app as threat_app
 
 # 复用 SDLC 宿主应用
+from app.utils import network_clock as nc
 app = sdlc_app
 
 # 移除宿主 app 上已挂载的旧原生前端静态目录（避免与 Vue3 前端冲突）

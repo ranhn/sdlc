@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from .models import CVEInfo, SBOMComponent, ScanResult, ScanTask
 
+from app.utils import network_clock as nc
+
 
 def _parse_version(version: str):
     """将版本字符串解析为可比较的数值元组，如 "1.2.3" -> (1, 2, 3)。"""
@@ -61,7 +63,7 @@ def run_scan(db: Session, system_id: int, engine: str = "builtin", trigger: str 
         task.status = "failed"
         task.log = f"扫描失败: {str(e)}"
 
-    task.finished_at = datetime.utcnow()
+    task.finished_at = nc.utcnow()
     db.commit()
     db.refresh(task)
     return task

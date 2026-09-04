@@ -23,6 +23,7 @@ from ..database import get_db
 from ..models import Department, Role, User
 from ..security import get_current_user, hash_password, write_operation_log
 
+from app.utils import network_clock as nc
 router = APIRouter(prefix="/api/admin/feishu", tags=["飞书同步"])
 
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
@@ -215,7 +216,7 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
                 username = _gen_username("fs", open_id)
 
                 existing = db.query(User).filter(User.feishu_open_id == open_id).first()
-                now = datetime.utcnow()
+                now = nc.utcnow()
                 if existing:
                     existing.full_name = name
                     existing.email = email or existing.email

@@ -20,6 +20,8 @@ from ..schemas import (
 )
 from ..security import get_current_user, write_operation_log
 
+from app.utils import network_clock as nc
+
 UPLOAD_BASE = Path(__file__).resolve().parent.parent.parent / "uploads" / "training"
 UPLOAD_BASE.mkdir(parents=True, exist_ok=True)
 
@@ -209,7 +211,7 @@ def complete_course(course_id: int, data: CourseComplete | None = None,
         db.add(p)
         db.flush()
     from datetime import datetime
-    p.completed_at = datetime.utcnow()
+    p.completed_at = nc.utcnow()
     if data and data.score is not None:
         p.score = data.score
     db.commit()
@@ -361,7 +363,7 @@ def submit_exam(exam_id: int, data: QuizSubmit, db: Session = Depends(get_db),
     exam.answers = json.dumps({str(k): v for k, v in data.answers.items()})
     exam.total_score = score
     from datetime import datetime
-    exam.submitted_at = datetime.utcnow()
+    exam.submitted_at = nc.utcnow()
     exam.status = "passed" if score >= exam.pass_score else "failed"
     db.commit()
     # 同步课程学习进度得分
@@ -375,7 +377,7 @@ def submit_exam(exam_id: int, data: QuizSubmit, db: Session = Depends(get_db),
             db.add(p)
         p.score = score
         if not p.completed_at:
-            p.completed_at = datetime.utcnow()
+            p.completed_at = nc.utcnow()
         db.commit()
     write_operation_log(db, current, "submit_exam", "training",
                         f"测验#{exam.id} 得分{score}/100")

@@ -10,6 +10,7 @@ from ..database import get_db
 from ..models import CVEInfo, CourseProgress, QuizExam, ScanResult, SBOMComponent, TrainingCourse, User, Vuln
 from ..security import get_current_user
 
+from app.utils import network_clock as nc
 router = APIRouter(prefix="/api/dashboard", tags=["数据大盘"])
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -39,7 +40,7 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
         avg_fix_hours = round(total_hours / len(fixed_vulns) / 3600, 1)
 
     # 本月新增
-    now = datetime.utcnow()
+    now = nc.utcnow()
     month_start = datetime(now.year, now.month, 1)
     month_new = sum(1 for v in vulns if v.created_at >= month_start)
 
@@ -78,7 +79,7 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
 @router.get("/trend")
 def trend(days: int = 30, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     """近 N 天新增与修复趋势。"""
-    now = datetime.utcnow().date()
+    now = nc.utcnow().date()
     result = []
     for offset in range(days - 1, -1, -1):
         day = now - timedelta(days=offset)

@@ -22,6 +22,7 @@ from ..schemas import (
 )
 from ..security import get_current_user, write_operation_log
 
+from app.utils import network_clock as nc
 router = APIRouter(prefix="/api/baseline", tags=["安全基线"])
 
 
@@ -156,7 +157,7 @@ def update_system_item(system_id: int, item_id: int, data: BaselineResultUpdate,
     result.status = data.status
     result.evidence = data.evidence
     result.checker_id = current.id
-    result.checked_at = datetime.utcnow()
+    result.checked_at = nc.utcnow()
     db.commit()
     db.refresh(result)
 

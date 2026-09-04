@@ -28,6 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.utils import network_clock as nc
 logger = logging.getLogger(__name__)
 
 # 结果目录：backend/data/results/
@@ -152,7 +153,7 @@ class ResultStore:
             "id": result_id,
             "title": title.strip() if title else self._safe_title(source_text),
             "methodology": methodology,
-            "created_at": time.time(),
+            "created_at": nc.epoch(),
             "model": model,
             "summary": summary,
             "stats": stats,
@@ -185,7 +186,7 @@ class ResultStore:
         """
         if not (owner_username and fingerprint):
             return None
-        cutoff = time.time() - max(1, int(window_sec))
+        cutoff = nc.epoch() - max(1, int(window_sec))
         with self._lock:
             for p in self._dir.glob("*.json"):
                 if p.name.startswith("."):

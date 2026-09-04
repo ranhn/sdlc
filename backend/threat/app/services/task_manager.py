@@ -15,6 +15,7 @@ import time
 import uuid
 from typing import Any, Optional
 
+from app.utils import network_clock as nc
 logger = logging.getLogger(__name__)
 
 # 任务完成后结果保留时长（秒）
@@ -59,7 +60,7 @@ class TaskManager:
             "result": None,
             "error": None,
             "cancelled": False,  # 取消标志，供长任务在各步骤间检查
-            "created_at": time.time(),
+            "created_at": nc.epoch(),
             "finished_at": None,
         }
         self._ensure_cleanup()
@@ -77,11 +78,11 @@ class TaskManager:
         if task["status"] in (TaskStatus.SUCCESS, TaskStatus.ERROR, TaskStatus.CANCELLED):
             return False
         task["cancelled"] = True
-        task["log"].append({"time": time.time(), "message": "收到取消请求"})
+        task["log"].append({"time": nc.epoch(), "message": "收到取消请求"})
         # 若任务尚未真正运行（pending），直接置为 cancelled
         if task["status"] == TaskStatus.PENDING:
             task["status"] = TaskStatus.CANCELLED
-            task["finished_at"] = time.time()
+            task["finished_at"] = nc.epoch()
             task["error"] = "任务已取消"
         return True
 
@@ -119,12 +120,12 @@ class TaskManager:
             (task["step_index"] + sub) / steps_n * 100
         )
         if message:
-            task["log"].append({"time": time.time(), "message": message})
+            task["log"].append({"time": nc.epoch(), "message": message})
 
     def add_log(self, task_id: str, message: str) -> None:
         task = self._tasks.get(task_id)
         if task:
-            task["log"].append({"time": time.time(), "message": message})
+            task["log"].append({"time": nc.epoch(), "message": message})
 
     def complete(self, task_id: str, result: Any) -> None:
         task = self._tasks.get(task_id)
@@ -133,7 +134,7 @@ class TaskManager:
         task["status"] = TaskStatus.SUCCESS
         task["result"] = result
         task["progress"] = 100
-        task["finished_at"] = time.time()
+        task["finished_at"] = nc.epoch()
 
     def mark_cancelled(self, task_id: str) -> None:
         """供任务协程在各步骤边界调用，正式标记为已取消。"""
@@ -142,7 +143,7 @@ class TaskManager:
             return
         task["status"] = TaskStatus.CANCELLED
         task["cancelled"] = True
-        task["finished_at"] = time.time()
+        task["finished_at"] = nc.epoch()
         task["error"] = "任务已取消"
 
     def fail(self, task_id: str, error: str, status_code: int = 500) -> None:
@@ -152,7 +153,7 @@ class TaskManager:
         task["status"] = TaskStatus.ERROR
         task["error"] = error
         task["status_code"] = status_code
-        task["finished_at"] = time.time()
+        task["finished_at"] = nc.epoch()
 
     def get(self, task_id: str) -> dict[str, Any]:
         """获取任务快照。不存在则抛 TaskNotFoundError。"""
@@ -184,7 +185,7 @@ class TaskManager:
                 logger.exception("task cleanup failed")
 
     def _sweep(self) -> None:
-        now = time.time()
+        now = nc.epoch()
         expired = []
         for tid, task in self._tasks.items():
             finished = task.get("finished_at")

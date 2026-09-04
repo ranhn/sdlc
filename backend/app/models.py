@@ -22,6 +22,7 @@ from .database import Base
 
 # ============ 用户权限域 ============
 
+from app.utils import network_clock as nc
 class Department(Base):
     """部门/组织架构。"""
     __tablename__ = "sys_department"
@@ -57,7 +58,7 @@ class User(Base):
     feishu_open_id = Column(String(100), nullable=True, index=True)  # 飞书 open_id，用于同步去重
     last_synced_at = Column(DateTime, nullable=True)                 # 最近一次飞书同步时间
     must_change_password = Column(Boolean, default=False)            # 强制改密标记（飞书同步用户首次登录）
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
     role = relationship("Role")
 
@@ -72,7 +73,7 @@ class OperationLog(Base):
     action = Column(String(100), nullable=False)      # 如 create_vuln / confirm_vuln
     module = Column(String(50), nullable=True)         # 如 vuln / auth
     detail = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=nc.utcnow, index=True)
 
 
 # ============ 漏洞域 ============
@@ -87,7 +88,7 @@ class AssetSystem(Base):
     owner_id = Column(Integer, ForeignKey("sys_user.id"), nullable=True)  # 系统负责人
     department_id = Column(Integer, ForeignKey("sys_department.id"), nullable=True)
     status = Column(String(20), default="running")  # running/dev/offline
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
 
 class Vuln(Base):
@@ -121,8 +122,8 @@ class Vuln(Base):
     sla_deadline = Column(DateTime, nullable=True)
     fixed_at = Column(DateTime, nullable=True)
     closed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow, index=True)
+    updated_at = Column(DateTime, default=nc.utcnow, onupdate=nc.utcnow)
 
     system = relationship("AssetSystem")
 
@@ -138,7 +139,7 @@ class VulnFlow(Base):
     operator_id = Column(Integer, nullable=True)
     operator_name = Column(String(50), nullable=True)
     comment = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
 
 class VulnAttachment(Base):
@@ -150,7 +151,7 @@ class VulnAttachment(Base):
     filename = Column(String(255), nullable=False)
     filepath = Column(String(500), nullable=False)
     uploader_id = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
 
 class VulnComment(Base):
@@ -162,7 +163,7 @@ class VulnComment(Base):
     user_id = Column(Integer, nullable=False)
     username = Column(String(50), nullable=False)
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
 
 # ============ 组件扫描域（预留，P1 实现） ============
@@ -176,7 +177,7 @@ class SBOMComponent(Base):
     name = Column(String(100), nullable=False)
     version = Column(String(50), nullable=False)
     license = Column(String(100), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
     __table_args__ = (UniqueConstraint("system_id", "name", "version", name="uq_component"),)
 
     system = relationship("AssetSystem")
@@ -193,7 +194,7 @@ class CVEInfo(Base):
     severity = Column(String(20), default="medium")                       # critical/high/medium/low
     cvss = Column(String(10), nullable=True)
     description = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
 
 class ScanTask(Base):
@@ -208,7 +209,7 @@ class ScanTask(Base):
     component_count = Column(Integer, default=0)
     vuln_count = Column(Integer, default=0)
     log = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=nc.utcnow, index=True)
     finished_at = Column(DateTime, nullable=True)
 
     system = relationship("AssetSystem")
@@ -231,7 +232,7 @@ class ScanResult(Base):
     description = Column(Text, nullable=True)
     is_false_positive = Column(Boolean, default=False)
     linked_vuln_id = Column(Integer, nullable=True)   # 关联到漏洞管理模块的漏洞单
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
 
 # ============ 安全培训域（P2 实现） ============
@@ -251,8 +252,8 @@ class TrainingCourse(Base):
     duration_min = Column(Integer, default=30)         # 预计时长(分钟)
     is_required = Column(Boolean, default=False)       # 是否必修
     is_published = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
+    updated_at = Column(DateTime, default=nc.utcnow, onupdate=nc.utcnow)
 
     instructor = relationship("User", foreign_keys=[instructor_id])
 
@@ -264,7 +265,7 @@ class CourseProgress(Base):
     id = Column(Integer, primary_key=True, index=True)
     course_id = Column(Integer, ForeignKey("training_course.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("sys_user.id"), nullable=False, index=True)
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=nc.utcnow)
     completed_at = Column(DateTime, nullable=True)     # 非空即视为已完成
     score = Column(Integer, nullable=True)             # 关联测验得分(0-100)
     __table_args__ = (UniqueConstraint("course_id", "user_id", name="uq_progress"),)
@@ -284,7 +285,7 @@ class QuizQuestion(Base):
     options = Column(Text, nullable=True)              # 选项，| 分隔，如 A.xxx|B.xxx
     answer = Column(String(10), nullable=False)        # 标准答案
     analysis = Column(Text, nullable=True)             # 答案解析
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
     course = relationship("TrainingCourse")
 
@@ -301,7 +302,7 @@ class QuizExam(Base):
     answers = Column(Text, nullable=True)              # 用户答案(JSON {qid: answer})
     total_score = Column(Integer, default=0)
     pass_score = Column(Integer, default=60)
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=nc.utcnow)
     submitted_at = Column(DateTime, nullable=True)
     status = Column(String(20), default="in_progress") # in_progress / submitted / passed / failed
 
@@ -341,7 +342,7 @@ class BaselineItem(Base):
     severity = Column(String(20), default="medium")    # critical/high/medium/low
     is_required = Column(Boolean, default=True)        # 是否强制要求
     sort = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=nc.utcnow)
 
     category = relationship("BaselineCategory", back_populates="items")
 
@@ -357,7 +358,7 @@ class BaselineResult(Base):
     evidence = Column(Text, nullable=True)             # 合规证据/备注
     checker_id = Column(Integer, ForeignKey("sys_user.id"), nullable=True)
     checked_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=nc.utcnow, onupdate=nc.utcnow)
     __table_args__ = (UniqueConstraint("system_id", "item_id", name="uq_baseline_result"),)
 
     system = relationship("AssetSystem")

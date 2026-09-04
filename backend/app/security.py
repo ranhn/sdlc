@@ -12,6 +12,7 @@ from .database import get_db
 from .models import User, OperationLog
 
 # 生产环境必须通过环境变量注入强随机 SECRET_KEY
+from app.utils import network_clock as nc
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 720))
@@ -34,7 +35,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     if not SECRET_KEY:
         raise RuntimeError("SECRET_KEY 环境变量未设置，生产环境禁止使用默认密钥")
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = nc.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

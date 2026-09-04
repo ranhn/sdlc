@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..config import settings
 
+from app.utils import network_clock as nc
 _LOCAL = threading.local()
 
 # 收集"当前建模 run"产生的缓存键，用于删除结果时精准失效对应缓存。
@@ -95,7 +96,7 @@ class LLMCache:
             return None
         if not row:
             return None
-        if time.time() - row["ts"] > settings.llm_cache_ttl_seconds:
+        if nc.epoch() - row["ts"] > settings.llm_cache_ttl_seconds:
             return None
         try:
             return json.loads(row["v"])
@@ -111,7 +112,7 @@ class LLMCache:
             with self._lock:
                 self._conn().execute(
                     "INSERT OR REPLACE INTO llm_cache(k, v, ts) VALUES (?,?,?)",
-                    (key, payload, time.time()),
+                    (key, payload, nc.epoch()),
                 )
                 self._conn().commit()
         except sqlite3.Error:

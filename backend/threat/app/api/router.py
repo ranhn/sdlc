@@ -95,7 +95,7 @@ def _compute_fingerprint(req: AnalyzeRequest) -> str:
 
 def _register_inflight(owner: str, fp: str, task_id: str) -> None:
     """登记一个正在跑的任务，TTL 内同 owner+fp 的请求会复用。"""
-    now = time.time()
+    now = nc.epoch()
     # 顺手清理过期键，避免长时间运行后 dict 膨胀
     for k, (ts, _) in list(_INFLIGHT.items()):
         if now - ts > _INFLIGHT_TTL_SEC:
@@ -316,10 +316,10 @@ async def analyze(
         existing = _INFLIGHT.get((owner_username, fingerprint))
         if existing:
             ts, existing_tid = existing
-            if time.time() - ts <= _INFLIGHT_TTL_SEC:
+            if nc.epoch() - ts <= _INFLIGHT_TTL_SEC:
                 logger.info(
                     "P0-1 in-flight 去重：复用 task_id=%s（owner=%s, fp=%s, age=%.2fs）",
-                    existing_tid, owner_username, fingerprint, time.time() - ts,
+                    existing_tid, owner_username, fingerprint, nc.epoch() - ts,
                 )
                 return AnalyzeResponse(
                     task_id=existing_tid,
@@ -1002,7 +1002,7 @@ async def export_result(
     # ASCII-only safe title for HTTP header (Python 3 str.isalnum() 接受 Unicode，需要 .isascii() 限制)
     ascii_title = "".join(c if c.isascii() and c.isalnum() else "_" for c in title)
     ascii_title = "".join(c for c in ascii_title if c.isalnum() or c in "_-").strip("_-_") or "export"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = nc.now().strftime("%Y%m%d_%H%M%S")
     ascii_filename = f"{ascii_title}_{ts}.{format}"
     # RFC 5987: 中文/Unicode 文件名用 filename* (UTF-8''percent-encoded) + ASCII fallback
     content_disp = (
@@ -1201,6 +1201,7 @@ async def upload_document(
 # ----------------------------------------------------------------------
 from fastapi import FastAPI
 
+from app.utils import network_clock as nc
 app = FastAPI(
     title="AI Threat Dragon",
     description="从需求文档和产品架构文档自动生成 DFD 数据流图并识别 STRIDE 威胁",
