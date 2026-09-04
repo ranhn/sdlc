@@ -442,13 +442,17 @@ function closeFlowDetail() {
 }
 
 let visibilityObserver = null
+let resizeObserver = null
 
 // 重试渲染工具：当容器尚未挂载时（如 v-if/v-else 切换、路由恢复）延迟重试
 function tryRender(model, attempt = 0) {
   if (!model) return
   if (!containerRef.value) {
-    if (attempt < 10) {
+    if (attempt < 30) {
       setTimeout(() => tryRender(model, attempt + 1), 80)
+    } else {
+      // 兜底：刷新后 v-show 父级 layout 回流可能慢，把重试拉到约 2.4s
+      console.warn('[DfdGraph] containerRef 始终为空，放弃渲染', { attempt })
     }
     return
   }
@@ -481,12 +485,29 @@ onMounted(() => {
       visibilityObserver.observe(containerRef.value)
     }
   })
+  // ResizeObserver 兜底：容器尺寸从 0 变 > 0 时主动 fitView
+  // 覆盖刷新场景下 threat-page 多层 flex + v-show 父级回流慢导致 fitView 算错尺寸
+  if (containerRef.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect
+        if (width > 0 && height > 0 && graph) {
+          setTimeout(() => fitView(), 50)
+        }
+      }
+    })
+    resizeObserver.observe(containerRef.value)
+  }
 })
 
 function initGraph() {
   if (graph || !containerRef.value) return
+  const c = containerRef.value
+  const cw = c.clientWidth
+  const ch = c.clientHeight
+  console.log('[DfdGraph] initGraph start', { cw, ch, containerClass: c.className })
   graph = new Graph({
-    container: containerRef.value,
+    container: c,
     grid: { visible: true, size: 20, type: 'dot' },
     background: { color: 'transparent' },
     panning: { enabled: true },
@@ -494,6 +515,14 @@ function initGraph() {
     selecting: { enabled: true, rubberband: false, showNodeSelectionBox: true },
     interacting: { edgeLabelMovable: false },
   })
+  // 关键：X6 创建时不知道容器真实尺寸，需同步 resize 一次
+  // 否则首次 zoomToFit 可能基于 0 viewport 算出 scale=0/NaN，图"看不见"
+  if (cw > 0 && ch > 0) {
+    graph.resize(cw, ch)
+    console.log('[DfdGraph] initGraph resized', { cw, ch })
+  } else {
+    console.warn('[DfdGraph] initGraph 容器 0 尺寸,等 ResizeObserver 兜底', { cw, ch })
+  }
 
   graph.on('node:click', ({ node }) => {
     if (isLaneNode(node)) return
@@ -562,6 +591,10 @@ onBeforeUnmount(() => {
     visibilityObserver.disconnect()
     visibilityObserver = null
   }
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
 })
 
 watch(
@@ -575,7 +608,9 @@ watch(
     // model 清空时仅清理图内容
     if (graph) graph.clearCells()
   },
-  { immediate: false }
+  // flush:'post' 让 callback 在 DOM 更新（v-if/v-else 切换）完成后再执行，
+  // 避免刷新场景下 v-else 还没渲染时 containerRef 还是 null
+  { immediate: false, flush: 'post' }
 )
 
 watch(
@@ -587,14 +622,25 @@ watch(
 )
 
 function render(model) {
-  if (!graph) return
+  if (!graph) {
+    console.warn('[DfdGraph] render: graph is null,跳过')
+    return
+  }
   graph.clearCells()
   if (!model) return
   const diagram = model.detail?.diagrams?.[0]
-  if (!diagram) return
+  if (!diagram) {
+    console.warn('[DfdGraph] render: model.detail.diagrams[0] 缺失', { hasModel: !!model })
+    return
+  }
   const cells = diagram.cells || []
   // 供 addNode 内"空 trust boundary 判定"使用
   allCellsRef = cells
+  console.log('[DfdGraph] render start', {
+    cellsCount: cells.length,
+    lanesCount: (diagram.lanes || []).length,
+    firstCell: cells[0] ? { id: cells[0].id, pos: cells[0].position, size: cells[0].size, shape: cells[0].shape } : null,
+  })
   try {
     // 生命周期泳道背景（后端在生命周期泳道布局时输出 diagram.lanes）
     for (const lane of diagram.lanes || []) {
@@ -609,8 +655,9 @@ function render(model) {
         addNode(cell)
       }
     }
+    console.log('[DfdGraph] render done, cells in graph:', graph.getCells().length)
   } catch (e) {
-    console.error('[DfdGraph] render error:', e)
+    console.error('[DfdGraph] render error:', e, e.stack)
   }
   // 延迟 fitView，确保容器已完成布局（el-tabs 切换时容器可能刚从 display:none 恢复）
   requestAnimationFrame(() => {
@@ -982,13 +1029,20 @@ function wrapLabel(text, maxChars) {
   return lines.slice(0, 2).join('\n')
 }
 
-function fitView(retry = 3) {
-  if (!graph) return
+function fitView(retry = 10) {
+  if (!graph) {
+    console.warn('[DfdGraph] fitView: graph is null,跳过')
+    return
+  }
   // 容器尺寸为 0 时（如 el-tabs 切换前组件处于 display:none），延迟重试
   const rect = containerRef.value?.getBoundingClientRect()
   if (!rect || rect.width === 0 || rect.height === 0) {
     if (retry > 0) {
       setTimeout(() => fitView(retry - 1), 150)
+    } else {
+      // 兜底：刷新场景下 threat-page 多层 flex + v-show 父级回流可能慢，
+      // 拉到 10 次（约 1.5s）覆盖布局稳定窗口
+      console.warn('[DfdGraph] fitView 容器 0 尺寸超时放弃', { rect })
     }
     return
   }
@@ -1009,7 +1063,11 @@ function fitView(retry = 3) {
     const d = c.getData ? c.getData() : c.data
     return !(d && d.lane === true)
   })
-  if (cells.length === 0) return
+  if (cells.length === 0) {
+    console.warn('[DfdGraph] fitView: 0 非 lane cells,图空')
+    return
+  }
+  console.log('[DfdGraph] fitView start', { retry, rect: { w: rect.width, h: rect.height }, cellsCount: cells.length })
   // 优先用 X6 v2 内置 zoomToFit（内部用 graph 自己的 view area + cell bbox，
   // 不依赖外部 viewport，避免容器布局未完成时算错尺寸导致首次 fit 把图压成一小块）
   if (typeof graph.zoomToFit === 'function') {
@@ -1019,15 +1077,25 @@ function fitView(retry = 3) {
         minScale: 0.3,
         maxScale: 1.2,
       })
+      try {
+        const t = graph.translate()
+        const s = graph.zoom()
+        console.log('[DfdGraph] fitView done', { zoom: s, translate: { tx: t.tx, ty: t.ty } })
+      } catch (_) { /* 读取 transform 失败不影响图 */ }
       return
     } catch (e) {
       // 某些 X6 版本对空 cell 列表或边界异常会抛错,回退到 zoomTo
+      console.error('[DfdGraph] zoomToFit failed, fallback', e)
     }
   }
   // 回退：手动算 bbox + zoomTo
   const bbox = graph.getContentBBox(cells)
-  if (!bbox) return
+  if (!bbox) {
+    console.warn('[DfdGraph] fitView fallback: getContentBBox 失败')
+    return
+  }
   graph.zoomTo(bbox, { padding: 40, minScale: 0.3, maxScale: 1.2 })
+  console.log('[DfdGraph] fitView (fallback) done', { bbox })
 }
 
 defineExpose({ fitView })

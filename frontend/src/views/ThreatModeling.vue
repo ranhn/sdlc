@@ -636,7 +636,8 @@ onUnmounted(() => {
 <style scoped>
 .threat-page {
   /* 不要固定 calc(100vh - N px) —— 当 header/视口变化时算错会让 .rp-list 高度=0 滑不动 */
-  flex: 1;
+  /* 用 height:100% 而不是 flex:1 —— 父级 el-main 是 block 不是 flex 容器,flex:1 无效会让整页按内容自然高度堆叠成数千 px */
+  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -709,6 +710,8 @@ onUnmounted(() => {
 .analysis-grid {
   display: grid;
   grid-template-columns: 1fr 380px;
+  /* 关键: 显式 grid-template-rows,否则 track 高度=内容高度,grid item 会被撑成几千 px */
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   height: 100%;
   min-height: 0;
