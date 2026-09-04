@@ -635,8 +635,9 @@ onUnmounted(() => {
 
 <style scoped>
 .threat-page {
-  height: calc(100vh - 100px);
-  min-height: 600px;
+  /* 不要固定 calc(100vh - N px) —— 当 header/视口变化时算错会让 .rp-list 高度=0 滑不动 */
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;

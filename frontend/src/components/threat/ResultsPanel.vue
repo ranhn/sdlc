@@ -249,8 +249,8 @@
       </div>
     </div>
 
-    <!-- 分页 -->
-    <div v-if="pages > 1" class="rp-pagination">
+    <!-- 分页：常驻底部，1 页时按钮置灰 -->
+    <div v-if="pages >= 1" class="rp-pagination">
       <button
         class="btn btn-sm"
         :disabled="page <= 1"
@@ -364,7 +364,8 @@ function ownerTitle(item) {
 
 // 列表分页 / 筛选 / 搜索
 const page = ref(1)
-const pageSize = ref(20)
+// 每页 7 条
+const pageSize = ref(7)
 const pages = ref(0)
 const total = ref(0)
 const keyword = ref('')
