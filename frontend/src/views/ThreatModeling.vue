@@ -101,7 +101,14 @@
 
     <!-- Tab 3: 建模结果 -->
     <div v-show="activeTab === 'results'" class="threat-tab threat-results-tab">
+      <ResultDetail
+        v-if="route.params.id"
+        :result-id="route.params.id"
+        @back="onBackFromDetail"
+        @open-result="onOpenHistoryResult"
+      />
       <ResultsPanel
+        v-else
         :result="lastSummary"
         :model="model"
         @remodel="onRemodel"
@@ -189,6 +196,7 @@ import InputPanel from '../components/threat/InputPanel.vue'
 import DfdGraph from '../components/threat/DfdGraph.vue'
 import ThreatPanel from '../components/threat/ThreatPanel.vue'
 import ResultsPanel from '../components/threat/ResultsPanel.vue'
+import ResultDetail from '../components/threat/ResultDetail.vue'
 import Toast from '../components/threat/Toast.vue'
 import {
   http,
@@ -588,6 +596,11 @@ function onOpenHistoryResult(detail) {
   store.setResult(detail)
 }
 
+// 详情页返回：去掉 :id 触发 v-else 切回 ResultsPanel 列表
+function onBackFromDetail() {
+  router.push('/threat-modeling/results')
+}
+
 async function restoreLatestResult() {
   try {
     const list = await listResults({ page: 1, pageSize: 1 })
@@ -706,6 +719,17 @@ onUnmounted(() => {
 /* Tab 2: 数据流图与威胁分析 */
 .threat-analysis-tab {
   height: 100%;
+}
+
+/* Tab 3: 建模结果列表 / 详情
+   .threat-tab 是 block（不是 flex 容器），子项 .rd-panel 的 flex: 1 在 block 父级里无效。
+   必须 height: 100% 撑满 .threat-tab 的受限高度，
+   display: flex column 让 .rd-panel 的 flex: 1 真正生效（高度 = 父 - .rd-head）。
+   对称参考 .threat-analysis-tab / .analysis-grid。 */
+.threat-results-tab {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .analysis-grid {
   display: grid;

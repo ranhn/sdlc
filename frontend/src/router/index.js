@@ -59,6 +59,9 @@ const routes = [
           { path: 'input', name: 'threat-input', component: () => import('../views/ThreatModeling.vue'), meta: { title: '建模输入' } },
           { path: 'analysis', name: 'threat-analysis', component: () => import('../views/ThreatModeling.vue'), meta: { title: '数据流图与威胁分析' } },
           { path: 'results', name: 'threat-results', component: () => import('../views/ThreatModeling.vue'), meta: { title: '建模结果' } },
+          // 嵌套详情路由：列表项点击 → /threat-modeling/results/:id，渲染同一个 ThreatModeling 组件，
+          // 由 v-if="route.params.id" 切换为 ResultDetail 详情视图
+          { path: 'results/:id', name: 'threat-result-detail', component: () => import('../views/ThreatModeling.vue'), meta: { title: '建模结果详情' } },
         ]
       },
     ],
