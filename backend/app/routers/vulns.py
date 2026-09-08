@@ -249,6 +249,7 @@ def create_vuln(data: VulnCreate, db: Session = Depends(get_db), current: User =
         is_external=data.is_external,
         external_source=data.external_source,
         api_endpoint=data.api_endpoint,
+        fix_suggestion=data.fix_suggestion,
     )
     db.add(v)
     db.commit()

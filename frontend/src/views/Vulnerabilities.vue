@@ -175,6 +175,9 @@
         <el-form-item label="影响范围">
           <el-input v-model="createForm.impact" type="textarea" :rows="2" placeholder="可能造成的影响" />
         </el-form-item>
+        <el-form-item label="修复建议">
+          <el-input v-model="createForm.fix_suggestion" type="textarea" :rows="3" placeholder="给出修复方向、改造方案、参考链接或代码示例，便于研发直接采纳" maxlength="2000" show-word-limit />
+        </el-form-item>
       </el-form>
       <el-image-viewer v-if="previewVisible" :url-list="previewList" :initial-index="previewIndex" @close="previewVisible = false" />
       <template #footer>
@@ -320,7 +323,12 @@ const statusNames = {
 const statusType = { draft: 'info', pending: 'warning', confirmed: 'primary', fixing: 'warning', retest: 'warning', fixed: 'success', closed: 'success', rejected: 'danger', ignored: 'info' }
 const severityName = { critical: '严重', high: '高危', medium: '中危', low: '低危' }
 const severityType = { critical: 'danger', high: 'warning', medium: '', low: 'info' }
-const vulnTypes = ['SQL注入', 'XSS', '越权', '信息泄露', '弱口令', '扫号', '组件漏洞', '命令执行', '文件上传', '反序列化', 'SSRF', 'CSRF', '逻辑漏洞', '其他']
+const vulnTypes = [
+  'SQL注入', 'XSS', '越权', '信息泄露', '弱口令', '扫号', '组件漏洞', '命令执行',
+  '文件上传', '反序列化', 'SSRF', 'CSRF', '逻辑漏洞',
+  '密码学/加密缺陷', '硬编码凭据', '路径遍历/任意文件', 'XXE', '开放重定向', '会话管理缺陷', '点击劫持',
+  '其他',
+]
 const actionRoles = {
   confirm: ['admin', 'secops'], reject: ['admin', 'secops'], ignore: ['admin', 'secops'],
   start_fix: ['admin', 'secops', 'dev'], finish_fix: ['admin', 'secops', 'dev', 'tester'],
@@ -366,6 +374,7 @@ const createForm = reactive({
   description: '', impact: '', assignee_id: null,
   is_external: false, external_source: '',
   api_endpoint: '',
+  fix_suggestion: '',
   steps: [{ id: 's1', desc: '', img: null }],
 })
 const createRules = {
@@ -403,6 +412,7 @@ function openCreate() {
     description: '', impact: '', assignee_id: null,
     is_external: false, external_source: '',
     api_endpoint: '',
+    fix_suggestion: '',
   })
   createForm.steps = [newStep()]
   createVisible.value = true
@@ -428,6 +438,7 @@ async function openEdit(row) {
       is_external: !!v.is_external,
       external_source: v.external_source || '',
       api_endpoint: v.api_endpoint || '',
+      fix_suggestion: v.fix_suggestion || '',
     })
     // 反解步骤：按 reproduce_steps 的非空行数还原；按 step_no 匹配图片
     const lines = (v.reproduce_steps || '').split('\n').map((l) => l.trim()).filter(Boolean)
@@ -491,6 +502,7 @@ async function submitCreate() {
     is_external: createForm.is_external,
     external_source: createForm.is_external ? (createForm.external_source || null) : null,
     api_endpoint: createForm.api_endpoint.trim(),
+    fix_suggestion: createForm.fix_suggestion?.trim() || null,
   }
   try {
     if (editingId.value) {

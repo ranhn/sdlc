@@ -100,6 +100,8 @@ class VulnCreate(BaseModel):
     external_source: Optional[str] = None
     # 接口地址：受漏洞影响的 API 路径（开发人员直接定位修复）
     api_endpoint: str = Field(..., min_length=1, max_length=500)
+    # 修复建议：方向/改造方案/参考链接等，可空
+    fix_suggestion: Optional[str] = None
 
 
 class VulnAssign(BaseModel):
@@ -125,6 +127,7 @@ class VulnUpdate(BaseModel):
     is_external: Optional[bool] = None
     external_source: Optional[str] = None
     api_endpoint: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    fix_suggestion: Optional[str] = None
 
 
 class VulnStatusAction(BaseModel):
@@ -159,6 +162,7 @@ class VulnOut(BaseModel):
     is_external: bool = False
     external_source: Optional[str] = None
     api_endpoint: Optional[str] = None
+    fix_suggestion: Optional[str] = None
     rejection_reason: Optional[str] = None
     sla_deadline: Optional[AwareDT] = None
     created_at: AwareDT

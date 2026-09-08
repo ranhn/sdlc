@@ -44,6 +44,8 @@ def _run_lightweight_migrations():
         ("vuln", "is_external", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("vuln", "external_source", "VARCHAR(100)"),
         ("vuln", "api_endpoint", "VARCHAR(500)"),
+        ("vuln", "step_screenshots", "TEXT"),
+        ("vuln", "fix_suggestion", "TEXT"),
     ]
     with engine.begin() as conn:
         for table, column, col_type in migrations:

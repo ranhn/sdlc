@@ -120,6 +120,8 @@ class Vuln(Base):
     external_source = Column(String(100), nullable=True)  # 外部来源描述，如 CNVD编号/渗透测试/SRC平台
     # 接口地址：受漏洞影响的 API 路径（如 /api/v1/users/:id），便于研发直接定位修复
     api_endpoint = Column(String(500), nullable=True)
+    # 修复建议：提交方/安全专家给出的修复方向、代码改造方案、参考链接等，便于研发直接采纳
+    fix_suggestion = Column(Text, nullable=True)
     rejection_reason = Column(Text, nullable=True)
     sla_deadline = Column(DateTime, nullable=True)
     fixed_at = Column(DateTime, nullable=True)
