@@ -253,6 +253,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Upload, Document, SuccessFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { trainingApi } from '../api'
 import { useUserStore } from '../store/user'
+import { fmtDateTime } from '../utils/time'
 
 const route = useRoute()
 const store = useUserStore()
@@ -295,7 +296,7 @@ const myExams = ref([])
 const courseStats = ref([])
 const submittingExam = ref(false)
 
-function fmt(d) { return d ? d.replace('T', ' ').slice(0, 16) : '' }
+function fmt(d) { return fmtDateTime(d) }
 function courseName(id) { return allCourses.value.find((c) => c.id === id)?.title || '通用' }
 function parseOptions(str) {
   if (!str) return []

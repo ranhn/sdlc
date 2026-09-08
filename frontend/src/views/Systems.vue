@@ -56,6 +56,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
+import { fmtDateTime } from '../utils/time'
 
 const store = useUserStore()
 const canEdit = computed(() => ['admin', 'secops'].includes(store.role))
@@ -67,7 +68,7 @@ const form = reactive({ id: null, name: '', description: '', owner_id: null, sta
 
 const statusName = { running: '运行中', dev: '开发中', offline: '已下线' }
 const statusType = { running: 'success', dev: 'warning', offline: 'info' }
-function fmt(d) { return d ? d.replace('T', ' ').slice(0, 16) : '' }
+function fmt(d) { return fmtDateTime(d) }
 
 async function load() { loading.value = true; try { list.value = (await systemApi.list()).data } finally { loading.value = false } }
 function openForm(row) {

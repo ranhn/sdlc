@@ -18,9 +18,22 @@ from ..schemas import (
     VulnOut,
     VulnReject,
     VulnStatusAction,
+    VulnUpdate,
 )
 from ..security import get_current_user, write_operation_log
 from ..state_machine import TRANSITIONS, validate_action
+from ..utils import network_clock as nc
+
+# 导出文件与页面展示一致：DB 存 naive UTC，展示统一转东八区(北京时间)
+from zoneinfo import ZoneInfo
+_LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _cn_strftime(dt) -> str:
+    """naive UTC -> 东八区 -> 'YYYY-MM-DD HH:MM'，供 CSV/DOCX 导出使用。"""
+    if dt is None:
+        return ""
+    return nc.to_utc_aware(dt).astimezone(_LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
 
 router = APIRouter(prefix="/api/vulns", tags=["漏洞管理"])
 
@@ -133,7 +146,7 @@ def export_vulns(
 
 
 def _export_csv(rows: list[VulnOut]):
-    headers = ["ID", "标题", "所属系统", "等级", "类型", "状态", "提交人", "负责人", "复测人", "创建时间"]
+    headers = ["ID", "标题", "所属系统", "接口地址", "等级", "类型", "状态", "提交人", "负责人", "复测人", "创建时间"]
     buf = io.StringIO()
     # 写入 BOM 让 Excel 正确识别 UTF-8
     buf.write("\ufeff")
@@ -141,11 +154,11 @@ def _export_csv(rows: list[VulnOut]):
     writer.writerow(headers)
     for r in rows:
         writer.writerow([
-            r.id, r.title, r.system_name or "",
+            r.id, r.title, r.system_name or "", r.api_endpoint or "",
             {"critical": "严重", "high": "高危", "medium": "中危", "low": "低危"}.get(r.severity, r.severity),
             r.vuln_type or "", STATUS_NAMES.get(r.status, r.status),
             r.reporter_name or "", r.assignee_name or "未指派", r.reviewer_name or "",
-            r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "",
+            _cn_strftime(r.created_at),
         ])
     data = buf.getvalue().encode("utf-8")
     return StreamingResponse(
@@ -164,10 +177,10 @@ def _export_docx(rows: list[VulnOut]):
     style.font.size = Pt(10)
     doc.add_heading("漏洞清单", level=1)
     doc.add_paragraph(f"导出时间：{nc.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条")
-    table = doc.add_table(rows=1, cols=8)
+    table = doc.add_table(rows=1, cols=9)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
-    for i, h in enumerate(["ID", "标题", "系统", "等级", "类型", "状态", "负责人", "创建时间"]):
+    for i, h in enumerate(["ID", "标题", "系统", "接口地址", "等级", "类型", "状态", "负责人", "创建时间"]):
         hdr[i].text = h
     sev_map = {"critical": "严重", "high": "高危", "medium": "中危", "low": "低危"}
     for r in rows:
@@ -175,18 +188,19 @@ def _export_docx(rows: list[VulnOut]):
         cells[0].text = str(r.id)
         cells[1].text = r.title or ""
         cells[2].text = r.system_name or ""
-        cells[3].text = sev_map.get(r.severity, r.severity or "")
-        cells[4].text = r.vuln_type or ""
-        cells[5].text = STATUS_NAMES.get(r.status, r.status or "")
-        cells[6].text = r.assignee_name or "未指派"
-        cells[7].text = r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else ""
+        cells[3].text = r.api_endpoint or ""
+        cells[4].text = sev_map.get(r.severity, r.severity or "")
+        cells[5].text = r.vuln_type or ""
+        cells[6].text = STATUS_NAMES.get(r.status, r.status or "")
+        cells[7].text = r.assignee_name or "未指派"
+        cells[8].text = _cn_strftime(r.created_at)
     # 详情段落
     if rows:
         doc.add_paragraph()
         doc.add_heading("漏洞详情", level=2)
         for r in rows:
             doc.add_heading(f"#{r.id} {r.title}", level=3)
-            doc.add_paragraph(f"所属系统：{r.system_name or '—'}    等级：{sev_map.get(r.severity, r.severity or '')}    状态：{STATUS_NAMES.get(r.status, r.status or '')}")
+            doc.add_paragraph(f"所属系统：{r.system_name or '—'}    接口地址：{r.api_endpoint or '—'}    等级：{sev_map.get(r.severity, r.severity or '')}    状态：{STATUS_NAMES.get(r.status, r.status or '')}")
             doc.add_paragraph(f"提交人：{r.reporter_name or '—'}    负责人：{r.assignee_name or '未指派'}    复测人：{r.reviewer_name or '—'}")
             if r.description:
                 doc.add_paragraph(f"【漏洞描述】{r.description}")
@@ -234,12 +248,51 @@ def create_vuln(data: VulnCreate, db: Session = Depends(get_db), current: User =
         source="manual",
         is_external=data.is_external,
         external_source=data.external_source,
+        api_endpoint=data.api_endpoint,
     )
     db.add(v)
     db.commit()
     db.refresh(v)
     _record_flow(db, v.id, "draft", "pending", current, "漏洞提交")
     write_operation_log(db, current, "create_vuln", "vuln", f"提交漏洞 #{v.id} {v.title}")
+    return _to_out(v, db)
+
+
+@router.patch("/{vuln_id}", response_model=VulnOut)
+def update_vuln(vuln_id: int, data: VulnUpdate, db: Session = Depends(get_db),
+                current: User = Depends(get_current_user)):
+    """编辑漏洞字段。权限：提交人本人 / 管理员 / 安全专家。
+
+    closed 状态下不可编辑（避免审计期改记录）；其他状态允许补充修正。
+    只覆盖请求里实际携带的字段（schema 已全部 Optional）。
+    """
+    v = db.query(Vuln).filter(Vuln.id == vuln_id).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="漏洞不存在")
+    role_code = current.role.code if current.role else "user"
+    is_owner = v.reporter_id == current.id
+    is_admin_or_secops = role_code in ("admin", "secops")
+    if not (is_owner or is_admin_or_secops):
+        raise HTTPException(status_code=403, detail="仅提交人本人或管理员/安全专家可编辑")
+    if v.status == "closed":
+        raise HTTPException(status_code=400, detail="已关闭的漏洞不可编辑")
+
+    # 仅应用显式提供的字段，避免把未传的字段（如 assignee_id=None）误清空。
+    updates = data.model_dump(exclude_unset=True)
+    # list/dict 字段单独序列化
+    if "screenshots" in updates:
+        v.screenshots = json.dumps(updates.pop("screenshots"), ensure_ascii=False) if updates["screenshots"] is not None else None
+    if "step_screenshots" in updates:
+        v.step_screenshots = json.dumps(updates.pop("step_screenshots"), ensure_ascii=False) if updates["step_screenshots"] is not None else None
+    for key, val in updates.items():
+        setattr(v, key, val)
+
+    db.commit()
+    db.refresh(v)
+    write_operation_log(
+        db, current, "update_vuln", "vuln",
+        f"编辑漏洞 #{v.id}「{v.title}」（{role_code}）",
+    )
     return _to_out(v, db)
 
 

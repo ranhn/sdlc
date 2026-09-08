@@ -43,6 +43,7 @@ def _run_lightweight_migrations():
         ("sys_user", "must_change_password", "BOOLEAN DEFAULT 0"),
         ("vuln", "is_external", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("vuln", "external_source", "VARCHAR(100)"),
+        ("vuln", "api_endpoint", "VARCHAR(500)"),
     ]
     with engine.begin() as conn:
         for table, column, col_type in migrations:

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import OperationLog, User, Vuln
 from ..security import get_current_user
+from ..utils import network_clock as nc
 
 router = APIRouter(prefix="/api/logs", tags=["审计日志"])
 
@@ -131,7 +132,7 @@ def list_logs(
                 "action": l.action,
                 "module": l.module,
                 "detail": detail,
-                "created_at": l.created_at,
+                "created_at": nc.to_utc_aware(l.created_at),
             }
         )
     return {

@@ -241,8 +241,8 @@ def course_progress(course_id: int, db: Session = Depends(get_db),
         data.append({
             "user_id": p.user_id,
             "user_name": p.user.full_name if p.user else None,
-            "started_at": p.started_at.isoformat() if p.started_at else None,
-            "completed_at": p.completed_at.isoformat() if p.completed_at else None,
+            "started_at": nc.to_utc_aware(p.started_at).isoformat() if p.started_at else None,
+            "completed_at": nc.to_utc_aware(p.completed_at).isoformat() if p.completed_at else None,
             "score": p.score,
         })
     return data

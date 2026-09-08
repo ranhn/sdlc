@@ -15,7 +15,7 @@ import logging
 import socket
 import struct
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("network_clock")
 
@@ -110,6 +110,20 @@ def utcnow() -> datetime:
 def epoch() -> float:
     """等价 time.time()，但用的是网络 epoch 秒。"""
     return _orig_time() + offset_seconds()
+
+
+def to_utc_aware(dt):
+    """把（可能 naive 的）datetime 规范为 aware UTC。
+
+    本项目 DB 以 naive UTC 存储。序列化给前端前调用本函数补上 tzinfo，
+    使输出带 +00:00/Z，前端可按用户本地时区正确换算（naive 串会被 JS
+    误当作本地时间，导致东八区页面少 8 小时）。业务比较不受影响。
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # 模块导入即启动

@@ -15,19 +15,31 @@ warn() { echo -e "${YELLOW}[$(date +%H:%M:%S)] ⚠️  $*${NC}"; }
 
 # ---- 1. 拉取最新代码 ----
 log "拉取远端最新代码..."
-git fetch origin
+
+# 自动解析远端名（origin / github / gitlab 都可能）+ 默认分支（master / main / 自定义都支持）
+REMOTE="${REMOTE:-origin}"
+if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
+  warn "未配置远端 '$REMOTE'，回退为 'github'"
+  REMOTE="github"
+fi
+DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/"${REMOTE}"/HEAD 2>/dev/null \
+                 | sed "s|^${REMOTE}/||" \
+                 || git remote show "$REMOTE" 2>/dev/null | awk -F': ' '/HEAD branch/ {print $2}' \
+                 || echo "master")
+log "远端: ${REMOTE}/${DEFAULT_BRANCH}"
+git fetch "$REMOTE" "$DEFAULT_BRANCH"
 
 # 提示新提交
-NEW=$(git log --oneline HEAD..origin/main 2>/dev/null | wc -l)
+NEW=$(git log --oneline HEAD.."${REMOTE}/${DEFAULT_BRANCH}" 2>/dev/null | wc -l)
 if [ "$NEW" -gt 0 ]; then
   log "发现 $NEW 个新提交："
-  git log --oneline HEAD..origin/main | sed 's/^/    /'
+  git log --oneline HEAD.."${REMOTE}/${DEFAULT_BRANCH}" | sed 's/^/    /'
 else
-  log "无新提交（HEAD 已对齐 origin/main）"
+  log "无新提交（HEAD 已对齐 ${REMOTE}/${DEFAULT_BRANCH}）"
 fi
 
 # 强制对齐到远端（保留 .env / backups / data 等运行时文件）
-git reset --hard origin/main
+git reset --hard "${REMOTE}/${DEFAULT_BRANCH}"
 
 # ---- 2. 重新构建并启动 ----
 log "重新构建并启动服务..."

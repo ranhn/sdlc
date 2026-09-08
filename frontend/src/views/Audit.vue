@@ -73,6 +73,7 @@
 import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { http } from '../api'
+import { fmtDateTimeFull } from '../utils/time'
 
 const router = useRouter()
 const list = ref([])
@@ -80,7 +81,7 @@ const total = ref(0)
 const loading = ref(false)
 const filters = reactive({ operator: '', action: '', page: 1, page_size: 20 })
 
-function fmt(d) { return d ? String(d).replace('T', ' ').slice(0, 19) : '' }
+function fmt(d) { return fmtDateTimeFull(d) }
 
 /** 转义后保留换行；防止 detail 里的 < > 被 XSS 误解析。 */
 function escapeHtml(s) {

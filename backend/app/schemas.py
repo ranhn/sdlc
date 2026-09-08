@@ -1,8 +1,26 @@
 """Pydantic 请求/响应模型。"""
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Annotated, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PlainSerializer
+
+
+def _ensure_utc_iso(dt: datetime) -> str:
+    """把时间统一按 UTC 语义序列化为带时区后缀的 ISO 字符串。
+
+    本项目数据库以 naive UTC 存储（datetime.utcnow），此前响应不标注时区，
+    前端误把 UTC 时刻当成浏览器本地时间显示，导致国内(东八区)看到的时间
+    比实际少 8 小时。这里统一补上 UTC 偏移(+00:00)，前端按用户本地时区换算。
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat()
+
+
+# 仅影响 JSON 序列化输出；模型校验/比较仍用原始 datetime，不影响既有逻辑。
+AwareDT = Annotated[datetime, PlainSerializer(_ensure_utc_iso, return_type=str, when_used="json")]
 
 
 # ============ 认证 ============
@@ -80,10 +98,33 @@ class VulnCreate(BaseModel):
     # 漏洞来源：False=内部提交（默认），True=外部报告
     is_external: bool = False
     external_source: Optional[str] = None
+    # 接口地址：受漏洞影响的 API 路径（开发人员直接定位修复）
+    api_endpoint: str = Field(..., min_length=1, max_length=500)
 
 
 class VulnAssign(BaseModel):
     assignee_id: int
+
+
+class VulnUpdate(BaseModel):
+    """编辑漏洞字段。提交人/管理员/安全专家可在「非 closed」状态下补充修改。
+
+    所有字段可选——前端按用户实际改动提交，避免覆盖空值。
+    """
+    title: Optional[str] = Field(default=None, min_length=2, max_length=200)
+    description: Optional[str] = None
+    reproduce_steps: Optional[str] = None
+    impact: Optional[str] = None
+    screenshots: Optional[list[str]] = None
+    step_screenshots: Optional[list[dict]] = None
+    system_id: Optional[int] = None
+    severity: Optional[str] = None
+    vuln_type: Optional[str] = None
+    cvss: Optional[str] = None
+    assignee_id: Optional[int] = None
+    is_external: Optional[bool] = None
+    external_source: Optional[str] = None
+    api_endpoint: Optional[str] = Field(default=None, min_length=1, max_length=500)
 
 
 class VulnStatusAction(BaseModel):
@@ -117,10 +158,11 @@ class VulnOut(BaseModel):
     source: str
     is_external: bool = False
     external_source: Optional[str] = None
+    api_endpoint: Optional[str] = None
     rejection_reason: Optional[str] = None
-    sla_deadline: Optional[datetime] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
+    sla_deadline: Optional[AwareDT] = None
+    created_at: AwareDT
+    updated_at: Optional[AwareDT] = None
 
     class Config:
         from_attributes = True
@@ -132,7 +174,7 @@ class VulnFlowOut(BaseModel):
     to_status: str
     operator_name: Optional[str] = None
     comment: Optional[str] = None
-    created_at: datetime
+    created_at: AwareDT
 
     class Config:
         from_attributes = True
@@ -142,7 +184,7 @@ class VulnCommentOut(BaseModel):
     id: int
     username: str
     content: str
-    created_at: datetime
+    created_at: AwareDT
 
     class Config:
         from_attributes = True
@@ -172,7 +214,7 @@ class AssetSystemOut(BaseModel):
     owner_id: Optional[int] = None
     owner_name: Optional[str] = None
     status: str
-    created_at: datetime
+    created_at: AwareDT
 
     class Config:
         from_attributes = True
@@ -193,7 +235,7 @@ class ComponentOut(BaseModel):
     name: str
     version: str
     license: Optional[str] = None
-    created_at: datetime
+    created_at: AwareDT
 
     class Config:
         from_attributes = True
@@ -230,8 +272,8 @@ class ScanTaskOut(BaseModel):
     trigger: str
     component_count: int
     vuln_count: int
-    created_at: datetime
-    finished_at: Optional[datetime] = None
+    created_at: AwareDT
+    finished_at: Optional[AwareDT] = None
 
     class Config:
         from_attributes = True
@@ -283,7 +325,7 @@ class TrainingCourseOut(BaseModel):
     duration_min: int
     is_required: bool
     is_published: bool
-    created_at: datetime
+    created_at: AwareDT
     # 扩展字段：当前用户完成状态/参与人数
     completed: Optional[bool] = None
     enroll_count: Optional[int] = None
@@ -298,8 +340,8 @@ class CourseProgressOut(BaseModel):
     course_title: Optional[str] = None
     category: Optional[str] = None
     user_id: int
-    started_at: datetime
-    completed_at: Optional[datetime] = None
+    started_at: AwareDT
+    completed_at: Optional[AwareDT] = None
     score: Optional[int] = None
     is_completed: Optional[bool] = None
 
@@ -328,7 +370,7 @@ class QuizQuestionOut(BaseModel):
     options: Optional[str] = None
     answer: Optional[str] = None     # 仅对出题人/阅卷可见，答题时脱敏
     analysis: Optional[str] = None
-    created_at: datetime
+    created_at: AwareDT
 
     class Config:
         from_attributes = True
@@ -359,8 +401,8 @@ class QuizExamOut(BaseModel):
     title: str
     total_score: Optional[int] = None
     pass_score: Optional[int] = None
-    started_at: datetime
-    submitted_at: Optional[datetime] = None
+    started_at: AwareDT
+    submitted_at: Optional[AwareDT] = None
     status: str
 
     class Config:
@@ -408,7 +450,7 @@ class BaselineItemOut(BaseModel):
     severity: str
     is_required: bool
     sort: int
-    created_at: datetime
+    created_at: AwareDT
 
     class Config:
         from_attributes = True
@@ -425,7 +467,7 @@ class BaselineResultOut(BaseModel):
     item_id: int
     status: str
     evidence: Optional[str] = None
-    checked_at: Optional[datetime] = None
+    checked_at: Optional[AwareDT] = None
     system_name: Optional[str] = None
     item_name: Optional[str] = None
     category_id: Optional[int] = None

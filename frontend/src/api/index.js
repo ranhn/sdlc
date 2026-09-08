@@ -101,6 +101,7 @@ export const vulnApi = {
   list: (params) => http.get('/vulns', { params }),
   detail: (id) => http.get(`/vulns/${id}`),
   create: (data) => http.post('/vulns', data),
+  update: (id, data) => http.patch(`/vulns/${id}`, data),
   assign: (id, data) => http.post(`/vulns/${id}/assign`, data),
   action: (id, action, data) => http.post(`/vulns/${id}/action/${action}`, data || {}),
   reject: (id, data) => http.post(`/vulns/${id}/reject`, data),

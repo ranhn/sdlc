@@ -158,6 +158,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { scanApi, systemApi } from '../api'
 import { useUserStore } from '../store/user'
+import { fmtDateTime } from '../utils/time'
 
 const route = useRoute()
 const router = useRouter()
@@ -200,7 +201,7 @@ const scanVisible = ref(false)
 const scanSystemId = ref(null)
 const scanning = ref(false)
 
-function fmt(d) { return d ? d.replace('T', ' ').slice(0, 16) : '' }
+function fmt(d) { return fmtDateTime(d) }
 
 async function loadComponents() {
   loadingComp.value = true

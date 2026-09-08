@@ -67,6 +67,14 @@
         </template>
       </el-table-column>
       <el-table-column prop="system_name" label="所属系统" min-width="100" align="center" />
+      <el-table-column label="接口地址" min-width="220" align="center">
+        <template #default="{ row }">
+          <el-tooltip v-if="row.api_endpoint" :content="row.api_endpoint" placement="top" :show-after="300">
+            <el-link type="primary" :underline="false" @click.stop="openDetail(row)">{{ clip(row.api_endpoint) }}</el-link>
+          </el-tooltip>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="等级" width="70" align="center">
         <template #default="{ row }">
           <el-tag :type="severityType[row.severity]" effect="dark" size="small">{{ severityName[row.severity] }}</el-tag>
@@ -90,18 +98,22 @@
       <el-table-column prop="created_at" label="提交时间" width="150" align="center">
         <template #default="{ row }">{{ fmt(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="70" align="center" fixed="right">
+      <el-table-column label="操作" width="120" align="center" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+          <el-button v-if="canEdit(row)" link type="warning" size="small" @click="openEdit(row)">编辑</el-button>
         </template>
       </el-table-column>
     </el-table>
 
-    <!-- 新建漏洞弹窗 -->
-    <el-dialog v-model="createVisible" title="提交漏洞" width="640px" :close-on-click-modal="false">
+    <!-- 新建/编辑漏洞弹窗（编辑时 title 改为"编辑漏洞"，submitCreate 按 editingId 走 PATCH） -->
+    <el-dialog v-model="createVisible" :title="editingId ? '编辑漏洞' : '提交漏洞'" width="640px" :close-on-click-modal="false">
       <el-form ref="createRef" :model="createForm" :rules="createRules" label-width="90px" @paste="onPaste">
         <el-form-item label="漏洞标题" prop="title">
           <el-input v-model="createForm.title" placeholder="请输入漏洞标题" />
+        </el-form-item>
+        <el-form-item label="接口地址" prop="api_endpoint">
+          <el-input v-model="createForm.api_endpoint" placeholder="如：GET /api/v1/users/:id（便于开发直接定位修复）" maxlength="500" show-word-limit />
         </el-form-item>
         <el-form-item label="所属系统" prop="system_id">
           <el-select v-model="createForm.system_id" clearable filterable placeholder="选择系统">
@@ -110,9 +122,9 @@
         </el-form-item>
         <el-form-item label="修复负责人">
           <el-select v-model="createForm.assignee_id" clearable filterable placeholder="可留空，由安全专家指派" style="width: 100%">
-            <el-option v-for="u in users" :key="u.id" :value="u.id">
-              <span style="display: inline-block; width: 160px">{{ u.username }}</span>
-              <span>{{ u.full_name || '—' }}</span>
+            <el-option v-for="u in users" :key="u.id" :value="u.id" :label="u.full_name || u.username">
+              <span style="display: inline-block; width: 160px">{{ u.full_name || u.username }}</span>
+              <span style="color: #909399; font-size: 12px">{{ u.username }}</span>
             </el-option>
           </el-select>
         </el-form-item>
@@ -167,12 +179,17 @@
       <el-image-viewer v-if="previewVisible" :url-list="previewList" :initial-index="previewIndex" @close="previewVisible = false" />
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitCreate">提交</el-button>
+        <el-button type="primary" :loading="submitting" @click="submitCreate">{{ editingId ? '保存修改' : '提交' }}</el-button>
       </template>
     </el-dialog>
 
     <!-- 详情抽屉 -->
-    <el-drawer v-model="detailVisible" size="620px" :title="`漏洞 #${current?.id} · ${current?.title}`">
+    <el-drawer v-model="detailVisible" size="620px">
+      <template #header>
+        <el-tooltip :content="current?.title" placement="top" :show-after="300" :disabled="!needTip(current?.title)">
+          <span class="drawer-title">漏洞 #{{ current?.id }} · {{ clip(current?.title) }}</span>
+        </el-tooltip>
+      </template>
       <template v-if="current">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="等级">
@@ -182,6 +199,12 @@
             <el-tag :type="statusType[current.status]">{{ statusNames[current.status] }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="所属系统">{{ current.system_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="接口地址">
+            <el-tooltip v-if="current.api_endpoint" :content="current.api_endpoint" placement="top" :show-after="300" :disabled="!needTip(current.api_endpoint)">
+              <el-link type="primary" :underline="false" :href="current.api_endpoint" target="_blank" rel="noopener" class="wrap-link">{{ clip(current.api_endpoint) }}</el-link>
+            </el-tooltip>
+            <span v-else>—</span>
+          </el-descriptions-item>
           <el-descriptions-item label="类型">{{ current.vuln_type || '—' }}</el-descriptions-item>
           <el-descriptions-item label="来源">
             <el-tag v-if="current.is_external" type="danger" size="small">外部</el-tag>
@@ -218,6 +241,7 @@
         <!-- 操作区 -->
         <div class="sec-title">状态操作</div>
         <div class="actions">
+          <el-button v-if="canEdit(current)" type="warning" size="small" @click="openEdit(current)">编辑漏洞</el-button>
           <el-button v-if="can('confirm')" type="success" size="small" @click="doAction('confirm')">确认</el-button>
           <el-button v-if="can('start_fix')" type="warning" size="small" @click="doAction('start_fix')">开始修复</el-button>
           <el-button v-if="can('finish_fix')" type="warning" size="small" @click="doAction('finish_fix')">修复完成</el-button>
@@ -277,10 +301,12 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElImageViewer } from 'element-plus'
 import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
+import { fmtDateTime } from '../utils/time'
 
 const store = useUserStore()
 const route = useRoute()
 const canExport = computed(() => store.role === 'admin' || store.role === 'secops')
+const currentUserId = computed(() => store.user?.id ?? null)
 const list = ref([])
 const systems = ref([])
 const users = ref([])
@@ -320,19 +346,31 @@ function can(action) {
   if (actionFrom[action] && !actionFrom[action].includes(current.value.status)) return false
   return true
 }
+// 编辑权限：提交人本人 / 管理员 / 安全专家；且漏洞非 closed（closed 不可改）
+function canEdit(row) {
+  if (!row) return false
+  if (row.status === 'closed') return false
+  const role = store.role
+  if (role === 'admin' || role === 'secops') return true
+  if (currentUserId.value != null && row.reporter_id === currentUserId.value) return true
+  return false
+}
 
-// 新建
+// 新建/编辑
 const createVisible = ref(false)
 const submitting = ref(false)
 const createRef = ref()
+const editingId = ref(null)  // null=新建；数字=编辑该 id 的漏洞
 const createForm = reactive({
   title: '', system_id: null, severity: 'medium', vuln_type: '',
   description: '', impact: '', assignee_id: null,
   is_external: false, external_source: '',
+  api_endpoint: '',
   steps: [{ id: 's1', desc: '', img: null }],
 })
 const createRules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
+  api_endpoint: [{ required: true, message: '请输入接口地址', trigger: 'blur' }],
   system_id: [{ required: true, message: '请选择所属系统', trigger: 'change' }],
   severity: [{ required: true, message: '请选择等级', trigger: 'change' }],
   vuln_type: [{ required: true, message: '请输入漏洞类型', trigger: 'blur' }],
@@ -359,13 +397,51 @@ function onStepFile(idx, file) {
 }
 const stepImgList = computed(() => createForm.steps.map((s) => s.img).filter(Boolean))
 function openCreate() {
+  editingId.value = null
   Object.assign(createForm, {
     title: '', system_id: null, severity: 'medium', vuln_type: '',
     description: '', impact: '', assignee_id: null,
     is_external: false, external_source: '',
+    api_endpoint: '',
   })
   createForm.steps = [newStep()]
   createVisible.value = true
+}
+
+// 编辑：先把 row 现有数据填回表单。
+// 由于现有 step 编辑器以「每步独立 desc + img」建模，需要把后端的
+// reproduce_steps 多行字符串 + step_screenshots 列表 还原成 steps 数组。
+async function openEdit(row) {
+  if (!canEdit(row)) return ElMessage.warning('当前状态或角色不可编辑')
+  try {
+    const res = await vulnApi.detail(row.id)
+    const v = res.data
+    editingId.value = v.id
+    Object.assign(createForm, {
+      title: v.title || '',
+      system_id: v.system_id ?? null,
+      severity: v.severity || 'medium',
+      vuln_type: v.vuln_type || '',
+      description: v.description || '',
+      impact: v.impact || '',
+      assignee_id: v.assignee_id ?? null,
+      is_external: !!v.is_external,
+      external_source: v.external_source || '',
+      api_endpoint: v.api_endpoint || '',
+    })
+    // 反解步骤：按 reproduce_steps 的非空行数还原；按 step_no 匹配图片
+    const lines = (v.reproduce_steps || '').split('\n').map((l) => l.trim()).filter(Boolean)
+    const shotsByNo = {}
+    ;(v.step_screenshots || []).forEach((ss) => { shotsByNo[ss.step_no] = ss.data_url })
+    const restored = lines.length
+      ? lines.map((desc, i) => ({ id: 's' + (++_stepSeq), desc, img: shotsByNo[i + 1] || null }))
+      : [newStep()]
+    // 编辑时如果只有 1 个空步骤（用户原表单空），保留一个空白 step 便于编辑
+    createForm.steps = restored.length ? restored : [newStep()]
+    createVisible.value = true
+  } catch (e) {
+    ElMessage.error(extractErrorMsg(e, '加载漏洞失败'))
+  }
 }
 function onPaste(e) {
   if (!createVisible.value) return
@@ -401,26 +477,42 @@ async function submitCreate() {
     .map((s, i) => s.img ? { step_no: i + 1, data_url: s.img } : null)
     .filter(Boolean)
   const screenshots = step_screenshots.map((s) => s.data_url)
+  const payload = {
+    title: createForm.title,
+    system_id: createForm.system_id,
+    severity: createForm.severity,
+    vuln_type: createForm.vuln_type,
+    description: createForm.description,
+    impact: createForm.impact,
+    assignee_id: createForm.assignee_id,
+    reproduce_steps,
+    screenshots,
+    step_screenshots,
+    is_external: createForm.is_external,
+    external_source: createForm.is_external ? (createForm.external_source || null) : null,
+    api_endpoint: createForm.api_endpoint.trim(),
+  }
   try {
-    await vulnApi.create({
-      title: createForm.title,
-      system_id: createForm.system_id,
-      severity: createForm.severity,
-      vuln_type: createForm.vuln_type,
-      description: createForm.description,
-      impact: createForm.impact,
-      assignee_id: createForm.assignee_id,
-      reproduce_steps,
-      screenshots,
-      step_screenshots,
-      is_external: createForm.is_external,
-      external_source: createForm.is_external ? (createForm.external_source || null) : null,
-    })
-    ElMessage.success('漏洞提交成功')
-    createVisible.value = false
-    load()
+    if (editingId.value) {
+      // 编辑模式：PATCH。后端使用 exclude_unset，只覆盖请求里的字段，
+      // 但前端一次性把可见字段全发，便于交互直观。
+      await vulnApi.update(editingId.value, payload)
+      ElMessage.success('已保存修改')
+      createVisible.value = false
+      // 若详情抽屉当前打开的是同一条，刷新详情 + 列表
+      if (current.value?.id === editingId.value) {
+        openDetail(current.value)
+      } else {
+        load()
+      }
+    } else {
+      await vulnApi.create(payload)
+      ElMessage.success('漏洞提交成功')
+      createVisible.value = false
+      load()
+    }
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '提交失败')
+    ElMessage.error(extractErrorMsg(e, editingId.value ? '保存失败' : '提交失败'))
   } finally { submitting.value = false }
 }
 
@@ -504,7 +596,19 @@ function openAssign() {
   assignVisible.value = true
 }
 
-function fmt(d) { return d ? d.replace('T', ' ').slice(0, 16) : '' }
+// 时间格式化：后端返回的是 UTC（naive 或带 +00:00/Z），这里统一按浏览器本地时区显示
+function fmt(d) { return fmtDateTime(d) }
+
+// 长文本（如接口 URL）截断显示，超出即省略
+const CLIP_LEN = 40
+function clip(text) {
+  if (!text) return text
+  const s = String(text)
+  return s.length > CLIP_LEN ? s.slice(0, CLIP_LEN) + '…' : s
+}
+function needTip(text) {
+  return !!text && String(text).length > CLIP_LEN
+}
 
 async function doExport(fmt) {
   if (!canExport.value) return ElMessage.warning('仅管理员/安全专家可导出')
@@ -595,4 +699,6 @@ onMounted(async () => {
 .detail-step-desc { white-space: pre-wrap; margin-bottom: 6px; color: #0f172a; }
 .comment { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; }
 .comment-input { display: flex; gap: 8px; }
+.drawer-title { font-weight: 600; font-size: 16px; color: #0f172a; word-break: break-all; }
+.wrap-link { word-break: break-all; white-space: normal; }
 </style>
