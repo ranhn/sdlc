@@ -435,12 +435,17 @@ const rejectVisible = ref(false)
 const rejectReason = ref('')
 const flowActive = computed(() => (current.value ? flowMap[current.value.status] || 0 : 0))
 function renderSteps(v) {
-  if (!v || !v.step_screenshots || !v.step_screenshots.length) return []
-  const lines = (v.reproduce_steps || '').split('\n')
-  return v.step_screenshots.map((ss) => ({
-    step_no: ss.step_no,
-    desc: lines[ss.step_no - 1] || `步骤 ${ss.step_no}`,
-    img: ss.data_url,
+  if (!v) return []
+  // 改: 之前只遍历 v.step_screenshots,导致没截图的步骤直接丢失(用户反馈步骤 3 文字在但截图没有时就整步消失)。
+  // 现在按 reproduce_steps 的所有非空行遍历,按行号匹配 step_screenshots 里是否有截图;
+  // 没有截图的步骤也保留,只把 img 留空(template 里 <el-image v-if="s.img"> 自动隐藏)。
+  const lines = (v.reproduce_steps || '').split('\n').map((l) => l.trim()).filter(Boolean)
+  const shotsByNo = {}
+  ;(v.step_screenshots || []).forEach((ss) => { shotsByNo[ss.step_no] = ss.data_url })
+  return lines.map((desc, i) => ({
+    step_no: i + 1,
+    desc,
+    img: shotsByNo[i + 1] || null,
   }))
 }
 const detailImgs = computed(() => renderSteps(current.value).map((s) => s.img).filter(Boolean))
