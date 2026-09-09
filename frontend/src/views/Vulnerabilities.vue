@@ -3,15 +3,16 @@
     <div class="page-header">
       <span class="page-title">提交漏洞</span>
       <div class="header-actions">
-        <el-dropdown v-if="canExport" @command="doExport" trigger="click">
+        <el-dropdown v-if="canExport" @command="(fmt) => doExport(fmt)" trigger="click">
           <el-button>
-            <el-icon><Download /></el-icon>&nbsp;批量导出
+            <el-icon><Download /></el-icon>&nbsp;{{ selectedIds.length > 0 ? `批量导出已选 ${selectedIds.length} 条` : '批量导出' }}
             <el-icon class="el-icon--right"><ArrowDown /></el-icon>
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="csv">导出为 CSV</el-dropdown-item>
-              <el-dropdown-item command="docx">导出为 Word（.docx）</el-dropdown-item>
+              <el-dropdown-item command="csv">{{ selectedIds.length > 0 ? `导出已选 ${selectedIds.length} 条为 CSV` : '导出全部筛选结果为 CSV' }}</el-dropdown-item>
+              <el-dropdown-item command="docx">{{ selectedIds.length > 0 ? `导出已选 ${selectedIds.length} 条为 Word` : '导出全部筛选结果为 Word' }}</el-dropdown-item>
+              <el-dropdown-item v-if="selectedIds.length > 0" divided command="clear">清空选择</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -59,7 +60,16 @@
     </el-card>
 
     <!-- 列表 -->
-    <el-table :data="list" v-loading="loading" stripe class="vuln-table" :show-overflow-tooltip="true">
+    <el-table
+      :data="list"
+      v-loading="loading"
+      stripe
+      class="vuln-table"
+      :show-overflow-tooltip="true"
+      ref="tableRef"
+      @selection-change="onSelectionChange"
+    >
+      <el-table-column v-if="canExport" type="selection" width="44" align="center" />
       <el-table-column type="index" :index="(idx) => list.length - idx" width="48" align="center" />
       <el-table-column label="标题" min-width="260" show-overflow-tooltip>
         <template #default="{ row }">
@@ -101,7 +111,15 @@
       <el-table-column label="操作" width="120" align="center" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
-          <el-button v-if="canEdit(row)" link type="warning" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-tooltip
+            v-if="!canEdit(row)"
+            :content="row.status === 'closed' ? '已关闭漏洞不可编辑' : '当前角色/身份不可编辑'"
+            placement="top"
+            :show-after="200"
+          >
+            <el-button link type="warning" size="small" disabled>编辑</el-button>
+          </el-tooltip>
+          <el-button v-else link type="warning" size="small" @click="openEdit(row)">编辑</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -237,6 +255,11 @@
         <div class="sec-title">影响范围</div>
         <el-text>{{ current.impact || '无' }}</el-text>
 
+        <template v-if="current.fix_suggestion">
+          <div class="sec-title">修复建议</div>
+          <el-text><pre class="pre">{{ current.fix_suggestion }}</pre></el-text>
+        </template>
+
         <div v-if="!renderSteps(current).length && current.screenshots && current.screenshots.length" class="sec-title">截图证据</div>
         <el-image v-if="!renderSteps(current).length" v-for="(img, i) in current.screenshots" :key="i" :src="img" :preview-src-list="current.screenshots"
           fit="cover" class="shot" />
@@ -315,6 +338,13 @@ const systems = ref([])
 const users = ref([])
 const loading = ref(false)
 const filters = reactive({ status: '', severity: '', system_id: null, is_external: '', mine: false })
+// 表格多选状态:用于批量导出已选漏洞
+const tableRef = ref()
+const selectedIds = ref([])
+
+function onSelectionChange(rows) {
+  selectedIds.value = rows.map((r) => r.id)
+}
 
 const statusNames = {
   draft: '草稿', pending: '待确认', confirmed: '已确认', fixing: '修复中', retest: '待复测',
@@ -622,13 +652,25 @@ function needTip(text) {
   return !!text && String(text).length > CLIP_LEN
 }
 
-async function doExport(fmt) {
+async function doExport(fmt, idsOverride) {
   if (!canExport.value) return ElMessage.warning('仅管理员/安全专家可导出')
+  // "清空选择" 指令
+  if (fmt === 'clear') {
+    tableRef.value?.clearSelection()
+    selectedIds.value = []
+    ElMessage.info('已清空选择')
+    return
+  }
+  // 优先用调用方传入的 ids（单条导出走这里），其次用表格当前已选
+  const ids = Array.isArray(idsOverride) && idsOverride.length
+    ? idsOverride
+    : (selectedIds.value.length ? selectedIds.value.slice() : null)
   const params = {}
   if (filters.status) params.status = filters.status
   if (filters.severity) params.severity = filters.severity
   if (filters.system_id) params.system_id = filters.system_id
   if (filters.mine) params.mine = true
+  if (ids && ids.length) params.ids = ids.join(',')
   try {
     const res = await vulnApi.export(fmt, params)
     const ext = fmt === 'csv' ? 'csv' : 'docx'
@@ -637,10 +679,14 @@ async function doExport(fmt) {
     const a = document.createElement('a')
     a.href = url
     const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
-    a.download = `vulns_${ts}.${ext}`
+    const tag = ids && ids.length ? `selected${ids.length}` : 'all'
+    a.download = `vulns_${tag}_${ts}.${ext}`
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
     URL.revokeObjectURL(url)
-    ElMessage.success(`已导出 ${fmt === 'csv' ? 'CSV' : 'Word'} 文件`)
+    const tip = ids && ids.length
+      ? `已导出 ${ids.length} 条为 ${fmt === 'csv' ? 'CSV' : 'Word'}`
+      : `已导出当前筛选的全部结果为 ${fmt === 'csv' ? 'CSV' : 'Word'}`
+    ElMessage.success(tip)
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '导出失败')
   }
@@ -690,6 +736,8 @@ onMounted(async () => {
 .vuln-table { background: #fff; border-radius: 10px; }
 .vuln-table :deep(.el-table__cell) { padding: 6px 0 !important; }
 .vuln-table :deep(.el-table .cell) { padding-left: 8px; padding-right: 8px; word-break: keep-all; white-space: nowrap; }
+/* 操作列三个按钮(详情/编辑/导出)水平+垂直对齐,统一行高 */
+.vuln-table :deep(.cell) .el-button.is-link { line-height: 1; padding: 4px 6px; vertical-align: middle; }
 .tip { font-size: 12px; color: #94a3b8; margin-top: 6px; }
 .sec-title { font-weight: 600; margin: 16px 0 8px; color: #0f172a; }
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }

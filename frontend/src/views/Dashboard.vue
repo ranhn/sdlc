@@ -159,17 +159,33 @@ async function loadAndRender(t, top, sev, ty, st) {
 
     renderTrend(t, trend.data)
 
-    // 系统风险排行（横向柱状 TOP5）
+    // 系统风险排行（横向柱状 TOP5，柱长=漏洞数，更直观；风险分放 tooltip）
     const sys = topR.data.top_systems.slice(0, 5).reverse()
     top.setOption({
-      tooltip: {},
-      grid: { left: 70, right: 30, top: 10, bottom: 10 },
-      xAxis: { type: 'value' },
-      yAxis: { type: 'category', data: sys.map((s) => s.name) },
+      tooltip: {
+        trigger: 'item',
+        formatter: (p) => `${p.name}<br/>漏洞数：${p.value}<br/>风险分：${p.data.risk}`,
+      },
+      grid: { left: 18, right: 30, top: 10, bottom: 10, containLabel: true },
+      xAxis: { type: 'value', max: (v) => Math.ceil(v.max * 1.15) || 1, minInterval: 1 },
+      yAxis: {
+        type: 'category',
+        data: sys.map((s) => s.name),
+        // left:0 + containLabel 让 yAxis 区按内容自动分配宽度,业务系统名展示完整不被截断
+        axisLabel: { overflow: 'truncate', width: 110, ellipsis: '…', align: 'right' },
+      },
       series: [{
-        type: 'bar', data: sys.map((s) => s.risk),
+        type: 'bar',
+        data: sys.map((s) => ({ value: s.count, risk: s.risk, name: s.name })),
         itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [{ offset: 0, color: '#3b82f6' }, { offset: 1, color: '#8b5cf6' }]) },
-        label: { show: true, position: 'right' },
+        label: {
+          show: true,
+          position: 'insideRight',
+          distance: 8,
+          color: '#fff',
+          fontWeight: 600,
+          formatter: '{c}',
+        },
       }],
     })
 

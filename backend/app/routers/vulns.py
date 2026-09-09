@@ -120,6 +120,7 @@ def export_vulns(
     system_id: int | None = Query(default=None),
     mine: bool = Query(default=False),
     assigned_to_me: bool = Query(default=False),
+    ids: str | None = Query(default=None, description="可选,逗号分隔的漏洞 ID 列表；传了则只导出这些条(与其它筛选条件取交集)"),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
@@ -137,6 +138,15 @@ def export_vulns(
         query = query.filter((Vuln.reporter_id == current.id) | (Vuln.assignee_id == current.id))
     if assigned_to_me:
         query = query.filter(Vuln.assignee_id == current.id)
+    if ids:
+        # 解析逗号分隔的 ID 列表,过滤非法值
+        try:
+            id_list = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="ids 参数格式错误,应为逗号分隔的整数")
+        if not id_list:
+            raise HTTPException(status_code=400, detail="ids 参数不能为空")
+        query = query.filter(Vuln.id.in_(id_list))
     vulns = query.order_by(Vuln.created_at.desc()).all()
     rows = [_to_out(v, db) for v in vulns]
 
@@ -170,47 +180,166 @@ def _export_csv(rows: list[VulnOut]):
 
 def _export_docx(rows: list[VulnOut]):
     from docx import Document
-    from docx.shared import Pt
+    from docx.shared import Pt, Inches
+    from docx.oxml.ns import qn
+
+    def _set_cn_font(run, font_name="Microsoft YaHei", size=None):
+        """同时设置 ascii / hAnsi / eastAsia 三个字体族,避免中文显示为方块。"""
+        run.font.name = font_name
+        rPr = run._element.get_or_add_rPr()
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is None:
+            rFonts = rPr.makeelement(qn("w:rFonts"), {})
+            rPr.insert(0, rFonts)
+        rFonts.set(qn("w:eastAsia"), font_name)
+        rFonts.set(qn("w:ascii"), font_name)
+        rFonts.set(qn("w:hAnsi"), font_name)
+        rFonts.set(qn("w:cs"), font_name)
+        if size is not None:
+            run.font.size = Pt(size)
+
+    def _add_cn_paragraph(doc, text, size=10, bold=False):
+        p = doc.add_paragraph()
+        run = p.add_run(text)
+        _set_cn_font(run, size=size)
+        run.bold = bold
+        return p
+
+    def _data_url_to_bytes(data_url: str) -> bytes | None:
+        """把 data:image/png;base64,xxx 还原成图片字节。"""
+        if not data_url or not isinstance(data_url, str):
+            return None
+        if data_url.startswith("data:"):
+            comma = data_url.find(",")
+            if comma < 0:
+                return None
+            head = data_url[:comma]
+            payload = data_url[comma + 1 :]
+            if "base64" in head:
+                import base64
+                try:
+                    return base64.b64decode(payload)
+                except Exception:
+                    return None
+            # 非 base64,按 utf-8 解码后当文本
+            return payload.encode("utf-8", errors="ignore")
+        # 已是裸 url 或本地路径,暂不下载(避免依赖网络)
+        return None
+
+    def _add_image(doc, data_url: str, width_inches: float = 4.5):
+        img_bytes = _data_url_to_bytes(data_url)
+        if not img_bytes:
+            return False
+        try:
+            doc.add_picture(io.BytesIO(img_bytes), width=Inches(width_inches))
+            return True
+        except Exception:
+            return False
+
     doc = Document()
+    # 全局 Normal 样式:把 ascii/hAnsi/eastAsia 都设为中文字体
     style = doc.styles["Normal"]
     style.font.name = "Microsoft YaHei"
     style.font.size = Pt(10)
-    doc.add_heading("漏洞清单", level=1)
-    doc.add_paragraph(f"导出时间：{nc.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条")
+    rpr = style.element.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = rpr.makeelement(qn("w:rFonts"), {})
+        rpr.insert(0, rfonts)
+    rfonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+    rfonts.set(qn("w:ascii"), "Microsoft YaHei")
+    rfonts.set(qn("w:hAnsi"), "Microsoft YaHei")
+    rfonts.set(qn("w:cs"), "Microsoft YaHei")
+
+    # 标题:用 heading 样式(本身可能用 Calibri),再覆盖中文字体
+    title = doc.add_heading("漏洞清单", level=1)
+    for run in title.runs:
+        _set_cn_font(run, size=20, font_name="Microsoft YaHei")
+    _add_cn_paragraph(doc, f"导出时间：{nc.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条", size=10)
+
     table = doc.add_table(rows=1, cols=9)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
     for i, h in enumerate(["ID", "标题", "系统", "接口地址", "等级", "类型", "状态", "负责人", "创建时间"]):
-        hdr[i].text = h
+        hdr[i].text = ""  # 先清空,再用 run 写入并设置中文字体
+        run = hdr[i].paragraphs[0].add_run(h)
+        _set_cn_font(run, size=10)
+        run.bold = True
     sev_map = {"critical": "严重", "high": "高危", "medium": "中危", "low": "低危"}
     for r in rows:
         cells = table.add_row().cells
-        cells[0].text = str(r.id)
-        cells[1].text = r.title or ""
-        cells[2].text = r.system_name or ""
-        cells[3].text = r.api_endpoint or ""
-        cells[4].text = sev_map.get(r.severity, r.severity or "")
-        cells[5].text = r.vuln_type or ""
-        cells[6].text = STATUS_NAMES.get(r.status, r.status or "")
-        cells[7].text = r.assignee_name or "未指派"
-        cells[8].text = _cn_strftime(r.created_at)
-    # 详情段落
+        values = [
+            str(r.id),
+            r.title or "",
+            r.system_name or "",
+            r.api_endpoint or "",
+            sev_map.get(r.severity, r.severity or ""),
+            r.vuln_type or "",
+            STATUS_NAMES.get(r.status, r.status or ""),
+            r.assignee_name or "未指派",
+            _cn_strftime(r.created_at),
+        ]
+        for i, v in enumerate(values):
+            cells[i].text = ""
+            run = cells[i].paragraphs[0].add_run(str(v))
+            _set_cn_font(run, size=10)
+
+    # 详情段落(含截图嵌入)
     if rows:
         doc.add_paragraph()
-        doc.add_heading("漏洞详情", level=2)
+        h2 = doc.add_heading("漏洞详情", level=2)
+        for run in h2.runs:
+            _set_cn_font(run, size=14)
         for r in rows:
-            doc.add_heading(f"#{r.id} {r.title}", level=3)
-            doc.add_paragraph(f"所属系统：{r.system_name or '—'}    接口地址：{r.api_endpoint or '—'}    等级：{sev_map.get(r.severity, r.severity or '')}    状态：{STATUS_NAMES.get(r.status, r.status or '')}")
-            doc.add_paragraph(f"提交人：{r.reporter_name or '—'}    负责人：{r.assignee_name or '未指派'}    复测人：{r.reviewer_name or '—'}")
+            h3 = doc.add_heading(f"#{r.id} {r.title}", level=3)
+            for run in h3.runs:
+                _set_cn_font(run, size=12)
+            _add_cn_paragraph(
+                doc,
+                f"所属系统：{r.system_name or '—'}    接口地址：{r.api_endpoint or '—'}    等级：{sev_map.get(r.severity, r.severity or '')}    状态：{STATUS_NAMES.get(r.status, r.status or '')}",
+                size=10,
+            )
+            _add_cn_paragraph(
+                doc,
+                f"提交人：{r.reporter_name or '—'}    负责人：{r.assignee_name or '未指派'}    复测人：{r.reviewer_name or '—'}",
+                size=10,
+            )
             if r.description:
-                doc.add_paragraph(f"【漏洞描述】{r.description}")
+                _add_cn_paragraph(doc, f"【漏洞描述】{r.description}", size=10)
             if r.reproduce_steps:
-                doc.add_paragraph(f"【复现步骤】{r.reproduce_steps}")
+                _add_cn_paragraph(doc, f"【复现步骤】{r.reproduce_steps}", size=10)
             if r.impact:
-                doc.add_paragraph(f"【影响范围】{r.impact}")
+                _add_cn_paragraph(doc, f"【影响范围】{r.impact}", size=10)
+            if r.fix_suggestion:
+                _add_cn_paragraph(doc, f"【修复建议】{r.fix_suggestion}", size=10)
+
+            # 复现步骤截图(每步配图)
             if r.step_screenshots:
-                doc.add_paragraph(f"【步骤截图】共 {len(r.step_screenshots)} 张（图片需通过系统查看）")
+                _add_cn_paragraph(doc, f"【复现步骤截图】共 {len(r.step_screenshots)} 张", size=10, bold=True)
+                ok = 0
+                for shot in r.step_screenshots:
+                    data_url = (shot or {}).get("data_url") if isinstance(shot, dict) else None
+                    step_no = (shot or {}).get("step_no") if isinstance(shot, dict) else None
+                    if step_no is not None:
+                        _add_cn_paragraph(doc, f"步骤 {step_no}:", size=10)
+                    if data_url and _add_image(doc, data_url):
+                        ok += 1
+                    else:
+                        _add_cn_paragraph(doc, "  (图片数据无法解析,略)", size=10)
+                if ok == 0:
+                    _add_cn_paragraph(doc, "  (所有步骤截图均无法解析,需通过系统查看)", size=10)
+
+            # 兼容旧字段:全局截图列表
+            if r.screenshots:
+                _add_cn_paragraph(doc, f"【截图证据】共 {len(r.screenshots)} 张", size=10, bold=True)
+                ok = 0
+                for url in r.screenshots:
+                    if _add_image(doc, url):
+                        ok += 1
+                if ok == 0:
+                    _add_cn_paragraph(doc, "  (截图数据无法解析,需通过系统查看)", size=10)
             doc.add_paragraph("")
+
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)

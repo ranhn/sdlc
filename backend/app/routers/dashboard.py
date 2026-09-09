@@ -122,15 +122,17 @@ def top_systems(db: Session = Depends(get_db), current: User = Depends(get_curre
     vulns = db.query(Vuln).all()
     active = [v for v in vulns if v.status not in CLOSED_STATUSES]
 
-    # Top 系统
+    # Top 系统（按风险分排序；含漏洞数便于直观展示）
     system_risk = {}
+    system_count = {}
     for v in active:
         name = v.system.name if v.system else "未关联"
         score = 10 if v.severity == "critical" else 7 if v.severity == "high" else 4 if v.severity == "medium" else 1
         system_risk[name] = system_risk.get(name, 0) + score
+        system_count[name] = system_count.get(name, 0) + 1
 
     top_systems = sorted(system_risk.items(), key=lambda x: x[1], reverse=True)[:10]
-    top_systems = [{"name": k, "risk": v} for k, v in top_systems]
+    top_systems = [{"name": k, "risk": v, "count": system_count[k]} for k, v in top_systems]
 
     # 待修复（未关闭）漏洞 Top 类型
     return {"top_systems": top_systems}
