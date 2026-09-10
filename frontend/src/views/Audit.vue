@@ -25,11 +25,11 @@
       </div>
       <el-table :data="list" v-loading="loading" stripe row-key="id">
         <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column label="操作人" width="180">
+        <el-table-column label="操作人" width="200">
           <template #default="{ row }">
             <div class="audit-operator">
               <span class="audit-username">{{ row.username || '-' }}</span>
-              <span v-if="row.full_name" class="audit-fullname">· {{ row.full_name }}</span>
+              <span v-if="row.full_name" class="audit-fullname">{{ row.full_name }}</span>
               <span v-else class="audit-fullname audit-fullname-empty">（已删除）</span>
             </div>
           </template>
@@ -183,16 +183,21 @@ onBeforeUnmount(() => {
 }
 .audit-operator {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono, monospace);
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.4;
+  word-break: keep-all;
+  white-space: nowrap;
 }
 .audit-username {
   font-weight: 600;
   color: var(--text-primary, #303133);
+  font-size: 13px;
 }
 .audit-fullname {
   color: var(--text-regular, #606266);
+  font-size: 12px;
+  margin-top: 1px;
 }
 .audit-fullname-empty {
   color: var(--text-placeholder, #c0c4cc);

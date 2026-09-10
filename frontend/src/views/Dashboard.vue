@@ -191,16 +191,15 @@ async function loadAndRender(t, top, sev, ty, st) {
 
     const sevData = dist.data.by_severity.map((i) => ({ name: i.name, value: i.value, itemStyle: { color: severityColor[i.name] || '#94a3b8' } }))
     sev.setOption(pieOption(sevData, '等级'))
-    // 漏洞类型分布：TOP5 + 其他
-    const sortedTypes = [...dist.data.by_type].sort((a, b) => b.value - a.value)
-    const top5 = sortedTypes.slice(0, 5)
-    const others = sortedTypes.slice(5)
-    const typeData = top5.map((i, idx) => ({ name: i.name, value: i.value, itemStyle: { color: palette[idx % palette.length] } }))
-    if (others.length > 0) {
-      const othersValue = others.reduce((sum, o) => sum + o.value, 0)
-      typeData.push({ name: '其他', value: othersValue, itemStyle: { color: '#94a3b8' } })
-    }
-    ty.setOption(pieOption(typeData, '类型'))
+    // 漏洞类型分布：按一级大类统计（10 类固定，无需聚合兜底）
+    // 注意：不能再用 TOP5+「其他」聚合 —— 分类体系里已存在真实的「其他」大类，会与之撞名导致扇区重复
+    const sortedCats = [...(dist.data.by_category || [])].sort((a, b) => b.value - a.value)
+    const typeData = sortedCats.map((i, idx) => ({
+      name: i.name,
+      value: i.value,
+      itemStyle: { color: i.name === '其他' ? '#94a3b8' : palette[idx % palette.length] },
+    }))
+    ty.setOption(pieOption(typeData, '大类'))
     // 安全基线整体合规率（仪表盘）
     const blData = bl.data || {}
     const overall = blData.overall ?? 0

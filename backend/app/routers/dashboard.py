@@ -116,7 +116,8 @@ def distribution(db: Session = Depends(get_db), current: User = Depends(get_curr
 
     return {
         "by_severity": [{"name": k, "value": v} for k, v in severity_counter.most_common()],
-        "by_category": [{"name": k, "value": v} for k, v in category_counter.most_common(10)],
+        # 一级大类共 10 项，不截断以保证饼图各扇区之和等于漏洞总数（历史脏数据可能产生"未分类"）
+        "by_category": [{"name": k, "value": v} for k, v in category_counter.most_common()],
         "by_type": [{"name": k, "value": v} for k, v in type_counter.most_common(10)],
         "by_status": [{"name": k, "value": v} for k, v in status_counter.most_common()],
         "by_system": [{"name": k, "value": v} for k, v in system_counter.most_common(10)],

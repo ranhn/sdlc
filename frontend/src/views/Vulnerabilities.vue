@@ -259,17 +259,11 @@
         <pre v-else class="pre">{{ current.reproduce_steps || '无' }}</pre>
 
         <div class="sec-title">影响范围</div>
-        <ol v-if="renderLines(current.impact).length > 1" class="detail-list">
-          <li v-for="(line, i) in renderLines(current.impact)" :key="i">{{ line }}</li>
-        </ol>
-        <pre v-else class="pre">{{ current.impact || '无' }}</pre>
+        <pre class="pre">{{ current.impact || '无' }}</pre>
 
         <template v-if="current.fix_suggestion">
           <div class="sec-title">修复建议</div>
-          <ol v-if="renderLines(current.fix_suggestion).length > 1" class="detail-list">
-            <li v-for="(line, i) in renderLines(current.fix_suggestion)" :key="i">{{ line }}</li>
-          </ol>
-          <pre v-else class="pre">{{ current.fix_suggestion }}</pre>
+          <pre class="pre">{{ current.fix_suggestion }}</pre>
         </template>
 
         <div v-if="!renderSteps(current).length && current.screenshots && current.screenshots.length" class="sec-title">截图证据</div>
@@ -672,15 +666,6 @@ function renderSteps(v) {
 }
 const detailImgs = computed(() => renderSteps(current.value).map((s) => s.img).filter(Boolean))
 
-// 把文本按 \n 切成非空行;多行用于 ol 列表渲染,单行回退到 pre
-function renderLines(text) {
-  if (!text) return []
-  return String(text)
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
 async function openDetail(row) {
   const res = await vulnApi.detail(row.id)
   current.value = res.data
@@ -838,9 +823,6 @@ onMounted(async () => {
 .tip { font-size: 12px; color: #94a3b8; margin-top: 6px; }
 .sec-title { font-weight: 600; margin: 16px 0 8px; color: #0f172a; }
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
-/* 多行文本段落(影响范围/修复建议)按列表渲染的样式:左 padding 让序号清晰 */
-.detail-list { margin: 0; padding-left: 22px; }
-.detail-list li { line-height: 1.7; margin-bottom: 4px; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .steps-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }
