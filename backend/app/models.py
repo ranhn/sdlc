@@ -113,7 +113,8 @@ class Vuln(Base):
     assignee_id = Column(Integer, ForeignKey("sys_user.id"), nullable=True)   # 修复负责人
     reviewer_id = Column(Integer, ForeignKey("sys_user.id"), nullable=True)   # 复测人
     cvss = Column(String(10), nullable=True)
-    vuln_type = Column(String(50), nullable=True)     # 如 SQL注入 / XSS / 越权
+    vuln_type = Column(String(50), nullable=True)     # 二级分类：如 SQL注入 / XSS / 水平越权(IDOR)
+    vuln_category = Column(String(50), nullable=True)  # 一级大类：如 注入类 / 访问控制 / 信息泄露
     source = Column(String(20), default="manual")     # manual/manual_scan/ci_scan
     # 漏洞来源：False=内部提交（默认），True=外部报告
     is_external = Column(Boolean, default=False, nullable=False)

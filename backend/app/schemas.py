@@ -92,7 +92,8 @@ class VulnCreate(BaseModel):
     step_screenshots: Optional[list[dict]] = None  # [{"step_no": 1, "data_url": "data:image/png;base64,..."}]
     system_id: Optional[int] = None
     severity: str = "medium"
-    vuln_type: Optional[str] = None
+    vuln_category: Optional[str] = None   # 一级大类：注入类 / 访问控制 / 信息泄露 等
+    vuln_type: Optional[str] = None       # 二级子类：SQL注入 / 水平越权(IDOR) 等
     cvss: Optional[str] = None
     assignee_id: Optional[int] = None
     # 漏洞来源：False=内部提交（默认），True=外部报告
@@ -121,7 +122,8 @@ class VulnUpdate(BaseModel):
     step_screenshots: Optional[list[dict]] = None
     system_id: Optional[int] = None
     severity: Optional[str] = None
-    vuln_type: Optional[str] = None
+    vuln_category: Optional[str] = None   # 一级大类
+    vuln_type: Optional[str] = None       # 二级子类
     cvss: Optional[str] = None
     assignee_id: Optional[int] = None
     is_external: Optional[bool] = None
@@ -157,7 +159,8 @@ class VulnOut(BaseModel):
     reviewer_id: Optional[int] = None
     reviewer_name: Optional[str] = None
     cvss: Optional[str] = None
-    vuln_type: Optional[str] = None
+    vuln_category: Optional[str] = None   # 一级大类
+    vuln_type: Optional[str] = None       # 二级子类
     source: str
     is_external: bool = False
     external_source: Optional[str] = None

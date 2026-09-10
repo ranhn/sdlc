@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import CVEInfo, CourseProgress, QuizExam, ScanResult, SBOMComponent, TrainingCourse, User, Vuln
 from ..security import get_current_user
+from ..vuln_taxonomy import TYPE_TO_CATEGORY
 
 from app.utils import network_clock as nc
 router = APIRouter(prefix="/api/dashboard", tags=["数据大盘"])
@@ -104,6 +105,10 @@ def distribution(db: Session = Depends(get_db), current: User = Depends(get_curr
 
     severity_counter = Counter(v.severity for v in active)
     type_counter = Counter(v.vuln_type or "未分类" for v in active)
+    # 一级大类分布：历史数据无大类时按子类反查补全,避免出现"未分类"堆积
+    category_counter = Counter(
+        v.vuln_category or TYPE_TO_CATEGORY.get(v.vuln_type, "未分类") for v in active
+    )
     status_counter = Counter(v.status for v in vulns)
 
     # 系统分布
@@ -111,6 +116,7 @@ def distribution(db: Session = Depends(get_db), current: User = Depends(get_curr
 
     return {
         "by_severity": [{"name": k, "value": v} for k, v in severity_counter.most_common()],
+        "by_category": [{"name": k, "value": v} for k, v in category_counter.most_common(10)],
         "by_type": [{"name": k, "value": v} for k, v in type_counter.most_common(10)],
         "by_status": [{"name": k, "value": v} for k, v in status_counter.most_common()],
         "by_system": [{"name": k, "value": v} for k, v in system_counter.most_common(10)],

@@ -89,6 +89,8 @@ def list_vulns(
     status: str | None = Query(default=None),
     severity: str | None = Query(default=None),
     system_id: int | None = Query(default=None),
+    vuln_category: str | None = Query(default=None, description="一级大类过滤,如 注入类 / 访问控制"),
+    vuln_type: str | None = Query(default=None, description="二级子类过滤,如 SQL注入"),
     mine: bool = Query(default=False),
     assigned_to_me: bool = Query(default=False),
     is_external: bool | None = Query(default=None, description="漏洞来源过滤：None=全部, True=外部, False=内部"),
@@ -102,6 +104,10 @@ def list_vulns(
         query = query.filter(Vuln.severity == severity)
     if system_id:
         query = query.filter(Vuln.system_id == system_id)
+    if vuln_category:
+        query = query.filter(Vuln.vuln_category == vuln_category)
+    if vuln_type:
+        query = query.filter(Vuln.vuln_type == vuln_type)
     if is_external is not None:
         query = query.filter(Vuln.is_external == is_external)
     if mine:
@@ -156,7 +162,7 @@ def export_vulns(
 
 
 def _export_csv(rows: list[VulnOut]):
-    headers = ["ID", "标题", "所属系统", "接口地址", "等级", "类型", "状态", "提交人", "负责人", "复测人", "创建时间"]
+    headers = ["ID", "标题", "所属系统", "接口地址", "等级", "大类", "类型", "状态", "提交人", "负责人", "复测人", "创建时间"]
     buf = io.StringIO()
     # 写入 BOM 让 Excel 正确识别 UTF-8
     buf.write("\ufeff")
@@ -166,7 +172,7 @@ def _export_csv(rows: list[VulnOut]):
         writer.writerow([
             r.id, r.title, r.system_name or "", r.api_endpoint or "",
             {"critical": "严重", "high": "高危", "medium": "中危", "low": "低危"}.get(r.severity, r.severity),
-            r.vuln_type or "", STATUS_NAMES.get(r.status, r.status),
+            r.vuln_category or "", r.vuln_type or "", STATUS_NAMES.get(r.status, r.status),
             r.reporter_name or "", r.assignee_name or "未指派", r.reviewer_name or "",
             _cn_strftime(r.created_at),
         ])
@@ -257,10 +263,10 @@ def _export_docx(rows: list[VulnOut]):
         _set_cn_font(run, size=20, font_name="Microsoft YaHei")
     _add_cn_paragraph(doc, f"导出时间：{nc.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条", size=10)
 
-    table = doc.add_table(rows=1, cols=9)
+    table = doc.add_table(rows=1, cols=10)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
-    for i, h in enumerate(["ID", "标题", "系统", "接口地址", "等级", "类型", "状态", "负责人", "创建时间"]):
+    for i, h in enumerate(["ID", "标题", "系统", "接口地址", "等级", "大类", "类型", "状态", "负责人", "创建时间"]):
         hdr[i].text = ""  # 先清空,再用 run 写入并设置中文字体
         run = hdr[i].paragraphs[0].add_run(h)
         _set_cn_font(run, size=10)
@@ -274,6 +280,7 @@ def _export_docx(rows: list[VulnOut]):
             r.system_name or "",
             r.api_endpoint or "",
             sev_map.get(r.severity, r.severity or ""),
+            r.vuln_category or "",
             r.vuln_type or "",
             STATUS_NAMES.get(r.status, r.status or ""),
             r.assignee_name or "未指派",
@@ -297,6 +304,11 @@ def _export_docx(rows: list[VulnOut]):
             _add_cn_paragraph(
                 doc,
                 f"所属系统：{r.system_name or '—'}    接口地址：{r.api_endpoint or '—'}    等级：{sev_map.get(r.severity, r.severity or '')}    状态：{STATUS_NAMES.get(r.status, r.status or '')}",
+                size=10,
+            )
+            _add_cn_paragraph(
+                doc,
+                f"漏洞类型：{r.vuln_category or '—'} / {r.vuln_type or '—'}",
                 size=10,
             )
             _add_cn_paragraph(
@@ -369,6 +381,7 @@ def create_vuln(data: VulnCreate, db: Session = Depends(get_db), current: User =
         step_screenshots=json.dumps(data.step_screenshots, ensure_ascii=False) if data.step_screenshots else None,
         system_id=data.system_id,
         severity=data.severity,
+        vuln_category=data.vuln_category,
         vuln_type=data.vuln_type,
         cvss=data.cvss,
         reporter_id=current.id,

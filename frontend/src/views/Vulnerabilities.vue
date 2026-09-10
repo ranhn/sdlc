@@ -90,7 +90,7 @@
           <el-tag :type="severityType[row.severity]" effect="dark" size="small">{{ severityName[row.severity] }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="vuln_type" label="类型" min-width="90" align="center" />
+      <el-table-column prop="vuln_type" label="类型" min-width="120" align="center" />
       <el-table-column label="来源" width="80" align="center">
         <template #default="{ row }">
           <el-tag v-if="row.is_external" type="danger" size="small">外部</el-tag>
@@ -154,10 +154,16 @@
             <el-radio-button value="low">低危</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="漏洞类型" prop="vuln_type">
-          <el-select v-model="createForm.vuln_type" placeholder="请选择漏洞类型" style="width: 100%" filterable allow-create>
-            <el-option v-for="t in vulnTypes" :key="t" :label="t" :value="t" />
-          </el-select>
+        <el-form-item label="漏洞类型" prop="vuln_path">
+          <el-cascader
+            v-model="createForm.vuln_path"
+            :options="vulnTypeOptions"
+            :props="{ expandTrigger: 'hover' }"
+            placeholder="先选大类，再选具体类型"
+            filterable
+            clearable
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item label="漏洞来源">
           <el-radio-group v-model="createForm.is_external" @change="onSourceChange">
@@ -238,7 +244,7 @@
         </el-descriptions>
 
         <div class="sec-title">漏洞描述</div>
-        <el-text>{{ current.description || '无' }}</el-text>
+        <pre class="pre">{{ current.description || '无' }}</pre>
 
         <div class="sec-title">复现步骤</div>
         <div v-if="renderSteps(current).length" class="detail-steps">
@@ -250,14 +256,20 @@
             </div>
           </div>
         </div>
-        <el-text v-else><pre class="pre">{{ current.reproduce_steps || '无' }}</pre></el-text>
+        <pre v-else class="pre">{{ current.reproduce_steps || '无' }}</pre>
 
         <div class="sec-title">影响范围</div>
-        <el-text>{{ current.impact || '无' }}</el-text>
+        <ol v-if="renderLines(current.impact).length > 1" class="detail-list">
+          <li v-for="(line, i) in renderLines(current.impact)" :key="i">{{ line }}</li>
+        </ol>
+        <pre v-else class="pre">{{ current.impact || '无' }}</pre>
 
         <template v-if="current.fix_suggestion">
           <div class="sec-title">修复建议</div>
-          <el-text><pre class="pre">{{ current.fix_suggestion }}</pre></el-text>
+          <ol v-if="renderLines(current.fix_suggestion).length > 1" class="detail-list">
+            <li v-for="(line, i) in renderLines(current.fix_suggestion)" :key="i">{{ line }}</li>
+          </ol>
+          <pre v-else class="pre">{{ current.fix_suggestion }}</pre>
         </template>
 
         <div v-if="!renderSteps(current).length && current.screenshots && current.screenshots.length" class="sec-title">截图证据</div>
@@ -353,12 +365,84 @@ const statusNames = {
 const statusType = { draft: 'info', pending: 'warning', confirmed: 'primary', fixing: 'warning', retest: 'warning', fixed: 'success', closed: 'success', rejected: 'danger', ignored: 'info' }
 const severityName = { critical: '严重', high: '高危', medium: '中危', low: '低危' }
 const severityType = { critical: 'danger', high: 'warning', medium: '', low: 'info' }
-const vulnTypes = [
-  'SQL注入', 'XSS', '越权', '信息泄露', '弱口令', '扫号', '组件漏洞', '命令执行',
-  '文件上传', '反序列化', 'SSRF', 'CSRF', '逻辑漏洞',
-  '密码学/加密缺陷', '硬编码凭据', '路径遍历/任意文件', 'XXE', '开放重定向', '会话管理缺陷', '点击劫持',
-  '其他',
+// 漏洞类型分类(按根因维度归类,共 10 大类 60 项)
+// 设计原则:每条唯一可判定(一个漏洞只能选一项)、指向修复动作、可统计
+// 载体/位置类信息(如"日志泄露""源码泄露""中间件")不单列为类型,写入漏洞标题/详情
+const vulnTypeGroups = [
+  {
+    label: '注入类',
+    options: [
+      'SQL注入', 'NoSQL注入', '命令注入', '模板注入(SSTI)', '表达式注入(SpEL/OGNL)',
+      'LDAP注入', 'XPath注入', 'CRLF注入', 'XXE', '反序列化',
+    ],
+  },
+  {
+    label: '跨站与客户端',
+    options: ['XSS', 'CSRF', '点击劫持', '原型链污染', 'CORS配置不当'],
+  },
+  {
+    label: '访问控制',
+    options: [
+      '未授权访问', '越权', '水平越权(IDOR)', '垂直越权/提权',
+      '权限缺失', '目录遍历/任意文件读取', '任意文件写入',
+    ],
+  },
+  {
+    label: '认证与会话',
+    options: [
+      '认证绕过', '弱口令', '扫号/撞库', '验证码缺陷', 'JWT缺陷',
+      '会话固定', '会话管理缺陷', '密码重置逻辑缺陷', 'MFA绕过',
+    ],
+  },
+  {
+    label: '信息泄露',
+    options: ['信息泄露', '敏感数据明文传输', '敏感数据明文存储'],
+  },
+  {
+    label: '业务逻辑与并发',
+    options: ['业务逻辑缺陷', '支付/金额篡改', '竞态条件', '重放攻击'],
+  },
+  {
+    label: '服务端与配置',
+    options: [
+      'SSRF', '文件上传', '拒绝服务(DoS)', '安全配置错误', '开放重定向',
+      '组件漏洞', '容器/K8s配置缺陷', '子域名接管', '供应链投毒',
+    ],
+  },
+  {
+    label: '密码学与凭据',
+    options: ['密码学/加密缺陷', '硬编码凭据', '密钥管理缺陷', '证书校验缺失', '不安全随机数'],
+  },
+  {
+    label: 'AI/LLM安全',
+    options: [
+      '提示注入', '系统提示泄露', '模型越权调用', 'RAG知识库投毒',
+      '训练数据投毒', 'Agent过度代理', '无限Token消耗',
+    ],
+  },
+  {
+    label: '其他',
+    options: ['其他'],
+  },
 ]
+// cascader 选项:一级大类为父节点,二级子类为叶子节点(严格两级联动)
+const vulnTypeOptions = vulnTypeGroups.map((g) => ({
+  value: g.label,
+  label: g.label,
+  children: g.options.map((t) => ({ value: t, label: t })),
+}))
+// 二级子类 -> 一级大类 反查表(含历史值兜底,用于编辑旧漏洞时补全大类)
+const typeToCategory = {
+  // 历史值兜底(已通过后端迁移回填 vuln_category,此处仅作前端保险)
+  '扫号': '认证与会话',
+  '逻辑漏洞': '业务逻辑与并发',
+  '路径遍历/任意文件': '访问控制',
+  '命令执行': '注入类',
+}
+vulnTypeGroups.forEach((g) => g.options.forEach((t) => { typeToCategory[t] = g.label }))
+function categoryOfType(t) {
+  return t ? (typeToCategory[t] || '') : ''
+}
 const actionRoles = {
   confirm: ['admin', 'secops'], reject: ['admin', 'secops'], ignore: ['admin', 'secops'],
   start_fix: ['admin', 'secops', 'dev'], finish_fix: ['admin', 'secops', 'dev', 'tester'],
@@ -400,7 +484,7 @@ const submitting = ref(false)
 const createRef = ref()
 const editingId = ref(null)  // null=新建；数字=编辑该 id 的漏洞
 const createForm = reactive({
-  title: '', system_id: null, severity: 'medium', vuln_type: '',
+  title: '', system_id: null, severity: 'medium', vuln_path: [],
   description: '', impact: '', assignee_id: null,
   is_external: false, external_source: '',
   api_endpoint: '',
@@ -412,7 +496,7 @@ const createRules = {
   api_endpoint: [{ required: true, message: '请输入接口地址', trigger: 'blur' }],
   system_id: [{ required: true, message: '请选择所属系统', trigger: 'change' }],
   severity: [{ required: true, message: '请选择等级', trigger: 'change' }],
-  vuln_type: [{ required: true, message: '请输入漏洞类型', trigger: 'blur' }],
+  vuln_path: [{ required: true, message: '请选择漏洞类型', trigger: 'change' }],
 }
 let _stepSeq = 1
 function newStep() { return { id: 's' + (++_stepSeq), desc: '', img: null } }
@@ -438,12 +522,13 @@ const stepImgList = computed(() => createForm.steps.map((s) => s.img).filter(Boo
 function openCreate() {
   editingId.value = null
   Object.assign(createForm, {
-    title: '', system_id: null, severity: 'medium', vuln_type: '',
+    title: '', system_id: null, severity: 'medium',
     description: '', impact: '', assignee_id: null,
     is_external: false, external_source: '',
     api_endpoint: '',
     fix_suggestion: '',
   })
+  createForm.vuln_path = []
   createForm.steps = [newStep()]
   createVisible.value = true
 }
@@ -461,7 +546,6 @@ async function openEdit(row) {
       title: v.title || '',
       system_id: v.system_id ?? null,
       severity: v.severity || 'medium',
-      vuln_type: v.vuln_type || '',
       description: v.description || '',
       impact: v.impact || '',
       assignee_id: v.assignee_id ?? null,
@@ -470,6 +554,9 @@ async function openEdit(row) {
       api_endpoint: v.api_endpoint || '',
       fix_suggestion: v.fix_suggestion || '',
     })
+    // 两级类型回填：优先用后端返回的大类；历史数据无大类时按子类反查所属大类
+    const cat = v.vuln_category || categoryOfType(v.vuln_type)
+    createForm.vuln_path = cat && v.vuln_type ? [cat, v.vuln_type] : []
     // 反解步骤：按 reproduce_steps 的非空行数还原；按 step_no 匹配图片
     const lines = (v.reproduce_steps || '').split('\n').map((l) => l.trim()).filter(Boolean)
     const shotsByNo = {}
@@ -522,7 +609,8 @@ async function submitCreate() {
     title: createForm.title,
     system_id: createForm.system_id,
     severity: createForm.severity,
-    vuln_type: createForm.vuln_type,
+    vuln_category: createForm.vuln_path?.[0] || null,
+    vuln_type: createForm.vuln_path?.[1] || null,
     description: createForm.description,
     impact: createForm.impact,
     assignee_id: createForm.assignee_id,
@@ -583,6 +671,15 @@ function renderSteps(v) {
   }))
 }
 const detailImgs = computed(() => renderSteps(current.value).map((s) => s.img).filter(Boolean))
+
+// 把文本按 \n 切成非空行;多行用于 ol 列表渲染,单行回退到 pre
+function renderLines(text) {
+  if (!text) return []
+  return String(text)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
 
 async function openDetail(row) {
   const res = await vulnApi.detail(row.id)
@@ -741,6 +838,9 @@ onMounted(async () => {
 .tip { font-size: 12px; color: #94a3b8; margin-top: 6px; }
 .sec-title { font-weight: 600; margin: 16px 0 8px; color: #0f172a; }
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
+/* 多行文本段落(影响范围/修复建议)按列表渲染的样式:左 padding 让序号清晰 */
+.detail-list { margin: 0; padding-left: 22px; }
+.detail-list li { line-height: 1.7; margin-bottom: 4px; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .steps-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }

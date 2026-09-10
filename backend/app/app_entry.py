@@ -20,6 +20,7 @@ from sqlalchemy import text
 from .database import Base, SessionLocal, engine
 from .models import BaselineCategory, BaselineItem
 from .routers import admin, auth, baseline, dashboard, feishu, logs, scan, training, vulns
+from .vuln_taxonomy import TYPE_TO_CATEGORY
 
 # 创建数据表
 Base.metadata.create_all(bind=engine)
@@ -46,6 +47,7 @@ def _run_lightweight_migrations():
         ("vuln", "api_endpoint", "VARCHAR(500)"),
         ("vuln", "step_screenshots", "TEXT"),
         ("vuln", "fix_suggestion", "TEXT"),
+        ("vuln", "vuln_category", "VARCHAR(50)"),
     ]
     with engine.begin() as conn:
         for table, column, col_type in migrations:
@@ -62,7 +64,34 @@ def _run_lightweight_migrations():
         pass
 
 
+def _backfill_vuln_category():
+    """为历史漏洞回填一级大类（vuln_category 为 NULL 的记录）。幂等。"""
+    try:
+        with engine.begin() as conn:
+            for vtype, vcat in TYPE_TO_CATEGORY.items():
+                conn.execute(
+                    text(
+                        "UPDATE vuln SET vuln_category = :cat "
+                        "WHERE vuln_category IS NULL AND vuln_type = :t"
+                    ),
+                    {"cat": vcat, "t": vtype},
+                )
+            # 无法匹配的兜底为「其他」
+            conn.execute(
+                text(
+                    "UPDATE vuln SET vuln_category = '其他' "
+                    "WHERE vuln_category IS NULL AND vuln_type IS NOT NULL AND vuln_type != ''"
+                )
+            )
+    except Exception:
+        # 回填失败不阻塞启动
+        pass
+
+
 _run_lightweight_migrations()
+
+# 历史漏洞数据回填一级大类：按二级类型反查所属大类（幂等，仅填 NULL 值）
+_backfill_vuln_category()
 
 
 def _seed_baseline_defaults():
