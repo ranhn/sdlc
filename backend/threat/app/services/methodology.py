@@ -476,19 +476,36 @@ ALL_METHODOLOGIES: List[str] = ["STRIDE", "STRIDE-AI", "CIA", "CIADIE", "LINDDUN
 # ---------------------------------------------------------------------------
 # 公共接口
 # ---------------------------------------------------------------------------
+def _mkey(s: str) -> str:
+    """方法论比较键：去掉分隔符与大小写差异。
+
+    'STRIDE-AI' / 'STRIDE_AI' / 'stride ai' / 'STRIDEAI' → 'STRIDEAI'
+    仅用于「精确匹配」，不参与模糊匹配，避免 STRIDE 吃掉 STRIDE-AI。
+    """
+    return s.strip().upper().replace(" ", "").replace("_", "").replace("-", "")
+
+
 def normalize_methodology(name: str) -> str:
-    """将用户输入的方法论名称归一化为标准名（兼容大小写/别名）。"""
+    """将用户输入的方法论名称归一化为标准名（兼容大小写/别名/分隔符）。
+
+    精确匹配优先于模糊匹配，且精确匹配对 STRIDE 与 STRIDE-AI 做了区分——
+    否则 'STRIDE-AI' 会被模糊规则（'STRIDE' in 'STRIDE-AI'）错误降级为
+    'STRIDE'，导致 AI 建模任务的威胁被显示成通用 STRIDE 方法论。
+    """
     if not name:
         return "STRIDE"
-    n = name.strip().upper().replace(" ", "").replace("_", "")
+    n = _mkey(name)
     if n in ("EOP", "CORNUCOPIA", "EOPCORNUCCOPIA"):
         return "EOP"
+    # 精确匹配（归一化后比 key，STRIDE 与 STRIDE-AI 在此被正确区分）
     for m in ALL_METHODOLOGIES:
-        if n == m.upper():
+        if n == _mkey(m):
             return m
-    # 模糊匹配
-    for m in ALL_METHODOLOGIES:
-        if m.upper() in n or n in m.upper():
+    # 模糊匹配：仅在精确匹配全部落空时启用。按名称长度降序尝试，
+    # 让 'STRIDEAI' 这类输入先命中 STRIDE-AI 而不是被 STRIDE 截获。
+    for m in sorted(ALL_METHODOLOGIES, key=lambda x: -len(x)):
+        k = _mkey(m)
+        if k in n:
             return m
     return "STRIDE"
 

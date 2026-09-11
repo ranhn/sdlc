@@ -133,6 +133,13 @@ class ResultMeta(BaseModel):
     owner_display_name: str = Field(
         "", description="建模人显示名（中文姓名 / 昵称）"
     )
+    seq: Optional[int] = Field(
+        None,
+        description=(
+            "可见范围内的正序序号（最早 = 1，最新 = N）。列表按时间倒序返回，"
+            "但界面展示的 #序号 用该值，保证「第几次建模」的语义稳定"
+        ),
+    )
 
 
 class ResultListResponse(BaseModel):

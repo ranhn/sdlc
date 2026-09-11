@@ -122,17 +122,15 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  font-size: 13px;
-  box-shadow: var(--shadow-lg);
-  border: 1px solid var(--border);
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: var(--c-r-md, 9px);
+  font-size: 12.5px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+  border: 1px solid var(--c-line, #e2e8f0);
   cursor: pointer;
-  background: var(--bg-elevated);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  color: var(--text);
+  background: var(--c-bg, #fff);
+  color: var(--c-text, #0f172a);
   overflow: hidden;
 }
 .toast:hover {
@@ -219,13 +217,11 @@ onBeforeUnmount(() => {
 }
 .confirm-box {
   width: min(420px, 92%);
-  background: var(--bg-elevated);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  padding: 26px 26px 22px;
+  background: var(--c-bg, #fff);
+  border: 1px solid var(--c-line, #e2e8f0);
+  border-radius: var(--c-r-lg, 12px);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  padding: 24px 24px 20px;
   text-align: center;
   position: relative;
   overflow: hidden;

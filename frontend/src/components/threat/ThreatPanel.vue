@@ -13,7 +13,9 @@
         </div>
         <div class="head-text">
           <h3>威胁分析</h3>
-          <p>{{ stats ? `${stats.threatCount || 0} 项威胁已识别` : '点击图中节点查看威胁' }}</p>
+          <!-- 副标题里的 "N 项威胁已识别" 与下方 KPI 的 threatCount 卡片重复，
+               移除副标题数字；仅在未加载数据时显示引导文字。 -->
+          <p v-if="!stats">点击图中节点查看威胁</p>
         </div>
       </div>
     </header>
@@ -749,11 +751,11 @@ function isExpanded(t) {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  /* 外层 .analysis-col 已带边框圆角，这里不再叠加描边/圆角，
+     避免出现"卡片套卡片"的双层视觉重复。 */
   background: var(--bg-panel);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
 
@@ -943,7 +945,9 @@ function isExpanded(t) {
   padding: 0 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  /* 行间留 9px（原来 7）：右栏 380px 里塞 9 个控件本来就挤，
+     行间距再小就"贴一起"，跟上面 KPI/分布横排的留白节奏不一致。 */
+  gap: 9px;
 }
 .threat-item {
   background: var(--bg-panel-2);
@@ -968,8 +972,12 @@ function isExpanded(t) {
 .threat-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 8px 10px;
+  /* 行内元素间距从 7px → 6px：9 个控件挤一行时再宽就溢出换行，
+     但 6 比 7 略紧凑，避免相邻 chip 视觉粘连。 */
+  gap: 6px;
+  /* 行内上下 8/10 → 9/12：让行高略增、左右扩 2px，
+     跟 KPI 卡和评审进度的留白节奏统一。 */
+  padding: 9px 12px;
 }
 .sev-badge {
   font-size: 10px;

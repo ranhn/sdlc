@@ -12,6 +12,8 @@ import math
 import uuid
 from typing import Any
 
+from .methodology import normalize_methodology
+
 logger = logging.getLogger(__name__)
 
 # Threat Dragon 版本号（保持兼容）
@@ -1346,17 +1348,16 @@ class ThreatModelBuilder:
         """
         number = self._counter
         self._counter += 1
-        # threat.modelType 是官方 TD 用 getThreatTypesByElement / 翻译映射的
-        # 关键字段。STRIDE-AI 是平台扩展方法论，官方 TD 不识别，会让新
-        # 建威胁的下拉退化为『全部方法论混合』。这里把 STRIDE-AI 映射
-        # 为最接近的官方方法论 STRIDE（AI 特有的威胁类型仍可通过
-        # threat.type 字段正确显示），并用 aiExtension 字段让平台前端
-        # 识别并显示 STRIDE-AI 标签。
-        model_type = methodology if methodology in (
-            "STRIDE", "CIA", "CIADIE", "LINDDUN", "PLOT4ai", "EOP"
-        ) else "STRIDE"
-        if methodology == "STRIDE-AI":
-            model_type = "STRIDE"
+        # threat.modelType 语义 = 本次建模所采用的方法论（任务级事实）。
+        #   - 官方 TD 认识的通用方法论（STRIDE/CIA/CIADIE/LINDDUN/PLOT4ai/EOP）
+        #     直接写入，官方 schema 与翻译映射都能正常匹配。
+        #   - 平台扩展方法论（STRIDE-AI / MAESTRO）官方 TD 不识别，写入原值
+        #     会令官方下拉退化为『全部方法论混合』。但此处不再降级改写为
+        #     STRIDE —— 那会让前端把 MAESTRO 任务误显示成 STRIDE，且
+        #     MAESTRO 的威胁类型（GoalHijacking/ToolMisuse 等）与 STRIDE
+        #     完全不同体系，强行对齐没有意义。改为原值写入 + aiExtension
+        #     标记，由平台前端负责显示正确的标签。
+        model_type = normalize_methodology(methodology)
         threat = {
             "title": t.get("title", "未命名威胁"),
             "type": t.get("type", "Information Disclosure"),

@@ -12,7 +12,7 @@
           @click="onBackendBadgeClick"
           :title="backendBadge.title"
         >
-          <span class="dot" /> 后端：{{ backendBadge.text }}
+          <span class="dot" /> {{ backendBadge.text }}
         </span>
         <span
           class="status-badge"

@@ -281,6 +281,11 @@ class ResultStore:
         - admin / secops：返回所有结果
         - 其他用户：仅返回 ``owner_username`` 与当前用户匹配的结果
         - 未登录（无 user_id 且无 username）：返回空列表
+
+        每条结果额外带 ``seq`` 字段：可见范围内的**正序序号**（最早 = 1，
+        最新 = N）。列表本身仍是倒序（最新在前），但展示的 ``#序号`` 用
+        ``seq``，与「第几次建模」的直觉一致。分页时 ``seq`` 是全量范围的值，
+        不会随页码重置。
         """
         with self._lock:
             records = [r for r in self._iter_records()]
@@ -288,16 +293,29 @@ class ResultStore:
         # admin/secops 不过滤
         is_admin = bool(user) and (user.get("role") in {"admin", "secops"})
         if is_admin:
-            return [self._meta(r) for r in records]
-        username = (user or {}).get("username") or ""
-        if not username:
-            # 未登录用户不可见任何结果
-            return []
-        return [
-            self._meta(r)
-            for r in records
-            if (r.get("owner_username") or "") == username
-        ]
+            visible = records
+        else:
+            username = (user or {}).get("username") or ""
+            if not username:
+                # 未登录用户不可见任何结果
+                return []
+            visible = [
+                r for r in records
+                if (r.get("owner_username") or "") == username
+            ]
+        # 正序序号：把可见记录按时间正序编号（最早 = 1），再映射回倒序列表。
+        # 用 created_at + id 双键排序，避免同一时间戳下序号抖动。
+        ascending = sorted(
+            visible,
+            key=lambda r: (r.get("created_at", 0), r.get("id") or ""),
+        )
+        seq_by_id = {r["id"]: i + 1 for i, r in enumerate(ascending)}
+        out: list[dict[str, Any]] = []
+        for r in visible:
+            meta = self._meta(r)
+            meta["seq"] = seq_by_id.get(r["id"])
+            out.append(meta)
+        return out
 
     def get(
         self,

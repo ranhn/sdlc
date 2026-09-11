@@ -19,9 +19,6 @@
     <el-card shadow="never">
       <div class="audit-summary">
         <span class="audit-total">共 {{ total }} 条记录</span>
-        <span class="audit-legend">
-          操作人列格式：<b>用户名</b> · <span class="audit-name">中文姓名</span>（用户删除后仅显示用户名）
-        </span>
       </div>
       <el-table :data="list" v-loading="loading" stripe row-key="id">
         <el-table-column prop="id" label="ID" width="70" />
@@ -177,9 +174,6 @@ onBeforeUnmount(() => {
 .audit-total {
   font-weight: 600;
   color: var(--text-primary, #303133);
-}
-.audit-legend .audit-name {
-  color: var(--primary, #409eff);
 }
 .audit-operator {
   display: flex;

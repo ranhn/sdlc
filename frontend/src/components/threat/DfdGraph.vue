@@ -1254,57 +1254,63 @@ defineExpose({ fitView })
   margin-top: 2px;
 }
 
+/* 画布计数：做成「横向分段 chip」而非竖向数字卡。
+   原先与右侧 ThreatPanel 的 .kpi-card（大数字+小标签的方格）几乎同形，
+   同一屏出现两组「4 个数字格」会被误读为重复指标；
+   这里改为一行可点击的分段器，语义回到「画布筛选工具」。
+   计数与后端的 stats.componentCount / flowCount 同源，
+   故右侧不再重复展示组件数、数据流数。 */
 .head-r {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 .kpi {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: var(--bg-panel-2);
-  border: 1px solid var(--border);
-  min-width: 44px;
-  transition: all 0.2s;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--c-bg-soft, #f8fafc);
+  border: 1px solid var(--c-line, #e2e8f0);
+  transition: all 0.16s;
+  cursor: pointer;
+  white-space: nowrap;
 }
 .kpi:hover {
-  border-color: var(--primary-border);
-  background: var(--primary-soft);
+  border-color: var(--c-primary-line, #bfdbfe);
+  background: var(--c-primary-soft, #eff6ff);
 }
 .kpi-num {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--text);
+  color: var(--c-text, #0f172a);
   line-height: 1.2;
   font-family: var(--font-mono);
 }
 .kpi-lbl {
-  font-size: 9.5px;
-  color: var(--text-faint);
+  font-size: 10.5px;
+  color: var(--c-text-3, #64748b);
   font-weight: 500;
 }
-.kpi.flow .kpi-num { color: var(--primary); }
+.kpi.flow .kpi-num { color: var(--c-primary, #2563eb); }
 .kpi.active {
-  border-color: var(--primary);
-  background: var(--primary-soft);
-  box-shadow: 0 0 0 2px var(--primary-soft);
-  cursor: pointer;
+  border-color: var(--c-primary, #2563eb);
+  background: var(--c-primary-soft, #eff6ff);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
-.kpi { cursor: pointer; }
+.kpi.active .kpi-lbl { color: var(--c-primary, #2563eb); }
 
 /* —— 图例 —— */
 .legend {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px;
+  padding: 7px 16px;
   font-size: 11px;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel-2);
+  color: var(--c-text-3, #64748b);
+  border-bottom: 1px solid var(--c-line, #e2e8f0);
+  background: var(--c-bg-soft, #f8fafc);
   flex-wrap: wrap;
 }
 .autofix-chip {
@@ -1337,7 +1343,7 @@ defineExpose({ fitView })
 .autofix-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-strong);
+  color: var(--c-text, #0f172a);
   margin-bottom: 6px;
 }
 .autofix-list {
@@ -1594,7 +1600,7 @@ defineExpose({ fitView })
 .fd-head-text h4 {
   font-size: 13.5px;
   font-weight: 700;
-  color: var(--text-strong);
+  color: var(--c-text, #0f172a);
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1651,7 +1657,7 @@ defineExpose({ fitView })
 .fd-node-name {
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--text-strong);
+  color: var(--c-text, #0f172a);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1737,7 +1743,7 @@ defineExpose({ fitView })
 .fd-threats-title {
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--text-strong);
+  color: var(--c-text, #0f172a);
   margin-bottom: 6px;
 }
 .fd-threats-list {
