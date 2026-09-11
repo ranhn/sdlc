@@ -1,8 +1,13 @@
-"""内存任务管理器：跟踪 AI 威胁建模异步任务的进度与结果。
+"""任务管理器：跟踪 AI 威胁建模异步任务的进度与结果。
 
 设计说明：
-- 使用进程内字典保存任务，适合单机单 worker 场景（本项目的默认部署形态）。
-- 任务生命周期：pending -> running -> success | error。
+- 任务状态保存在进程内字典（读取快、无锁竞争），适合单机单 worker 场景
+  （本项目的默认部署形态）。
+- **同时落盘一份 JSON**：后端重启（部署、崩溃、容器重建）后，进行中的任务
+  原本会「凭空消失」，前端只能拿到 404 并提示用户重做，体验很差。
+  落盘后重启可恢复任务历史，并把重启前处于 pending/running 的任务标记为
+  中断（interrupted），前端据此给出明确提示而非「找不到任务」���
+- 任务生命周期：pending -> running -> success | error | cancelled | interrupted。
 - 结果在任务完成后保留一段时间（TTL），到期自动清理，避免内存膨胀。
 - 若未来需要多 worker / 多机，可替换为 Redis + Celery，但 API 契约保持不变。
 """
@@ -10,9 +15,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from app.utils import network_clock as nc
@@ -23,6 +32,18 @@ RESULT_TTL = 60 * 30
 # 清理未完成任务 / 过期结果的间隔（秒）
 _CLEANUP_INTERVAL = 60
 
+# 任务快照落盘目录（可用环境变量覆盖，便于容器挂载持久卷）。
+# 基准与 result_store 保持一致（backend/threat/data/），避免受当前工作目录影响 ——
+# uvicorn / 容器启动时 cwd 不一定是 backend/。
+TASKS_DIR = Path(
+    os.getenv(
+        "THREAT_TASKS_DIR",
+        str(Path(__file__).resolve().parents[2] / "data" / "threat_tasks"),
+    )
+)
+# 落盘间隔节流：避免每次 add_log / update 都写盘（高频写会拖慢分析主流程）
+_PERSIST_MIN_INTERVAL = 1.0
+
 
 class TaskStatus:
     PENDING = "pending"
@@ -30,6 +51,9 @@ class TaskStatus:
     SUCCESS = "success"
     ERROR = "error"
     CANCELLED = "cancelled"
+    # 后端重启导致中断：与业务失败（error）区分开，
+    # 前端可据此给出「服务重启，请重新发起」的精准提示。
+    INTERRUPTED = "interrupted"
 
 
 class TaskNotFoundError(Exception):
@@ -37,11 +61,72 @@ class TaskNotFoundError(Exception):
 
 
 class TaskManager:
-    """进程内异步任务注册表。"""
+    """异步任务注册表（内存 + JSON 落盘）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, tasks_dir: Path | None = None) -> None:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._dir = Path(tasks_dir) if tasks_dir else TASKS_DIR
+        self._dir.mkdir(parents=True, exist_ok=True)
+        # task_id -> 上次落盘时间（节流用）
+        self._persisted_at: dict[str, float] = {}
+        self._restore()
+
+    # ------------------------------------------------------------------
+    # 落盘 / 恢复
+    # ------------------------------------------------------------------
+    def _persist(self, task_id: str, force: bool = False) -> None:
+        """把任务快照写入磁盘（原子替换，避免读到半截 JSON）。
+
+        节流：默认 1 秒内最多落盘一次，状态终态时 ``force=True`` 强制写，
+        保证任务结束时磁盘一定是最终状态。
+        """
+        record = self._tasks.get(task_id)
+        if record is None:
+            return
+        now = time.time()
+        if not force and (now - self._persisted_at.get(task_id, 0)) < _PERSIST_MIN_INTERVAL:
+            return
+        target = self._dir / f"{task_id}.json"
+        try:
+            fd, tmp_name = tempfile.mkstemp(dir=str(self._dir), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False)
+            os.replace(tmp_name, target)
+            self._persisted_at[task_id] = now
+        except Exception as exc:  # noqa: BLE001 - 落盘失败不应影响主流程
+            logger.warning("任务 %s 落盘失败：%s", task_id, exc)
+
+    def _restore(self) -> None:
+        """启动时从磁盘恢复任务，并把中断的任务标记为 interrupted。
+
+        重启前处于 pending/running 的任务，其执行协程已随进程消失，
+        永远不可能再推进；若原样恢复，前端会一直看到「进行中」而卡死。
+        因此这里统一标记为 interrupted 并写明原因。
+        """
+        restored = 0
+        interrupted = 0
+        for path in sorted(self._dir.glob("*.json")):
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    record = json.load(f)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("恢复任务 %s 失败（跳过）：%s", path.name, exc)
+                continue
+            task_id = record.get("id")
+            if not task_id:
+                continue
+            if record.get("status") in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                record["status"] = TaskStatus.INTERRUPTED
+                record["error"] = "服务重启导致任务中断，请重新发起建模"
+                record["finished_at"] = record.get("finished_at") or nc.epoch()
+                interrupted += 1
+            self._tasks[task_id] = record
+            restored += 1
+        if restored:
+            logger.info(
+                "已恢复 %d 个任务快照（其中 %d 个标记为中断）", restored, interrupted
+            )
 
     def create(self, steps: list[str]) -> str:
         """创建任务，返回 task_id。
@@ -64,6 +149,8 @@ class TaskManager:
             "finished_at": None,
         }
         self._ensure_cleanup()
+        # 创建即落盘：否则刚提交任务就重启，前端拿到的将是 404 而非「已中断」
+        self._persist(task_id, force=True)
         return task_id
 
     def cancel(self, task_id: str) -> bool:
@@ -84,6 +171,7 @@ class TaskManager:
             task["status"] = TaskStatus.CANCELLED
             task["finished_at"] = nc.epoch()
             task["error"] = "任务已取消"
+        self._persist(task_id, force=True)
         return True
 
     def is_cancelled(self, task_id: str) -> bool:
@@ -121,11 +209,13 @@ class TaskManager:
         )
         if message:
             task["log"].append({"time": nc.epoch(), "message": message})
+        self._persist(task_id)
 
     def add_log(self, task_id: str, message: str) -> None:
         task = self._tasks.get(task_id)
         if task:
             task["log"].append({"time": nc.epoch(), "message": message})
+            self._persist(task_id)
 
     def complete(self, task_id: str, result: Any) -> None:
         task = self._tasks.get(task_id)
@@ -135,6 +225,7 @@ class TaskManager:
         task["result"] = result
         task["progress"] = 100
         task["finished_at"] = nc.epoch()
+        self._persist(task_id, force=True)
 
     def mark_cancelled(self, task_id: str) -> None:
         """供任务协程在各步骤边界调用，正式标记为已取消。"""
@@ -145,6 +236,7 @@ class TaskManager:
         task["cancelled"] = True
         task["finished_at"] = nc.epoch()
         task["error"] = "任务已取消"
+        self._persist(task_id, force=True)
 
     def fail(self, task_id: str, error: str, status_code: int = 500) -> None:
         task = self._tasks.get(task_id)
@@ -154,6 +246,7 @@ class TaskManager:
         task["error"] = error
         task["status_code"] = status_code
         task["finished_at"] = nc.epoch()
+        self._persist(task_id, force=True)
 
     def get(self, task_id: str) -> dict[str, Any]:
         """获取任务快照。不存在则抛 TaskNotFoundError。"""
@@ -166,6 +259,7 @@ class TaskManager:
         task = self._tasks.get(task_id)
         if task:
             task.update(fields)
+            self._persist(task_id)
 
     # ------------------------------------------------------------------
     # 自动清理
@@ -196,6 +290,12 @@ class TaskManager:
                 expired.append(tid)
         for tid in expired:
             self._tasks.pop(tid, None)
+            self._persisted_at.pop(tid, None)
+            # 同步删除磁盘快照，避免重启后已过期任务被"复活"
+            try:
+                (self._dir / f"{tid}.json").unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("删除任务快照 %s 失败：%s", tid, exc)
             logger.info("清理过期任务 %s", tid)
 
 

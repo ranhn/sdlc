@@ -1,7 +1,7 @@
 <template>
   <div class="scan">
     <div class="page-header">
-      <span class="page-title">漏洞扫描 / {{ pageTitle }}</span>
+      <span class="page-title">{{ pageTitle }}</span>
       <el-button v-if="isSecops && tab === 'components'" type="primary" plain @click="compVisible = true">新增组件</el-button>
       <el-button v-if="isSecops && tab === 'cves'" type="primary" plain @click="cveVisible = true">新增 CVE</el-button>
       <el-button v-if="isSecops && tab === 'components'" type="primary" @click="scanVisible = true">

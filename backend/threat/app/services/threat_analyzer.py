@@ -95,6 +95,19 @@ CWE_BY_METHODOLOGY = {
         "Denial of Service": "CWE-400 (Resource Exhaustion), OWASP LLM10 (无界消耗)",
         "Elevation of Privilege": "CWE-269 (Improper Privilege Management), OWASP LLM05/LLM06 (输出处理/过度代理)",
     },
+    # MAESTRO：OWASP 多智能体威胁框架。CWE 用于把智能体风险落到可验证的缺陷类型。
+    "MAESTRO": {
+        "Goal Hijacking": "CWE-20 (Improper Input Validation), CWE-74 (Injection), AML.T0051 (提示注入)",
+        "Tool Misuse": "CWE-269 (Improper Privilege Management), CWE-862 (Missing Authorization), AML.T0044",
+        "Privilege Amplification": "CWE-269 (Improper Privilege Management), CWE-250 (Unnecessary Privileges), AML.T0044",
+        "Memory Poisoning": "CWE-345 (Insufficient Verification of Data Authenticity), AML.T0020",
+        "Inter-Agent Deception": "CWE-290 (Authentication Bypass), CWE-346 (Origin Validation Error), AML.T0054",
+        "Runaway Autonomy": "CWE-770 (Allocation without Limits), CWE-400 (Resource Exhaustion), AML.T0044",
+        "Insecure Orchestration": "CWE-1188 (Insecure Default Initialization), CWE-441 (Confused Deputy)",
+        "Observability Gap": "CWE-778 (Insufficient Logging), CWE-117 (Log Injection)",
+        "Supply Chain Compromise": "CWE-1104 (Unmaintained Third Party Components), CWE-494 (Download without Integrity Check), AML.T0010",
+        "Data Leakage": "CWE-200 (Exposure of Sensitive Information), CWE-359 (Exposure of Private Information), AML.T0024",
+    },
 }
 
 
@@ -230,6 +243,15 @@ class ThreatAnalyzer:
             ]:
                 types = get_threat_types_by_element(method, cell_key)
                 lines.append(f"- {cell_key}: {', '.join(types)}")
+        elif method == "MAESTRO":
+            # MAESTRO 需要把智能体特有的元素类型也告知 LLM，
+            # 否则它只会按 actor/process/datastore/flow 四类套模板。
+            for cell_key in [
+                "model", "prompt", "vectorstore", "memory",
+                "tool", "agent", "orchestrator",
+            ]:
+                types = get_threat_types_by_element(method, cell_key)
+                lines.append(f"- {cell_key}: {', '.join(types)}")
         return "\n".join(lines)
 
     @staticmethod
@@ -240,8 +262,27 @@ class ThreatAnalyzer:
 
     @staticmethod
     def _ai_rules_section(methodology: str) -> str:
-        """STRIDE-AI 下补充 AI 属性驱动判定规则。"""
+        """按方法论补充属性驱动的判定规则（STRIDE-AI / MAESTRO）。"""
         method = normalize_methodology(methodology)
+        if method == "MAESTRO":
+            return (
+                "\n### 多智能体威胁判定规则（MAESTRO，参考 OWASP MAESTRO 框架）\n"
+                "按七层模型审视：L1 基础模型 / L2 数据操作 / L3 智能体框架 / "
+                "L4 部署 / L5 评估 / L6 安全合规 / L7 智能体生态。\n"
+                "- type=agent：目标劫持（外部输入篡改 agent 目标）、自主失控（缺少步数/预算上限）、"
+                "记忆投毒（长期记忆被写入恶意内容）\n"
+                "- type=orchestrator：编排不安全（子 agent 返回值未校验即信任）、"
+                "权限扩散（编排器权限被子 agent 继承放大）、智能体间欺骗（伪造 agent 身份回传结果）、"
+                "可观测性缺失（多步链路无审计日志）\n"
+                "- type=tool：工具滥用（参数未做白名单校验）、越权调用（可触达高危内部接口）、"
+                "调用风暴（无速率限制导致资源耗尽）\n"
+                "- type=memory 或 datastore.isVectorStore=true：记忆/知识库投毒、跨会话数据泄露\n"
+                "- type=model：基础模型供应链投毒、模型窃取、对齐绕过\n"
+                "- type=prompt：系统提示泄露导致 agent 行为被改写\n"
+                "- process.hasTools=true 且 privilegeLevel 高：提示注入经工具链提权至系统权限\n"
+                "- 流涉及 agent 间通信：智能体间欺骗、中间人篡改协作消息\n"
+                "- 缺少 human-in-the-loop 的高危操作：自主失控风险\n"
+            )
         if method != "STRIDE-AI":
             return ""
         return (

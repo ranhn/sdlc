@@ -283,8 +283,10 @@ const props = defineProps({
   highlightCellId: { type: String, default: null },
   // DFD 自动纠错日志（后端在 LLM 输出明显错误时自动修正，并记录到这里）
   dfdAutofix: { type: Array, default: () => [] },
+  // 编辑模式：开启后可拖拽节点、改名、删除节点、拉线连接
+  editable: { type: Boolean, default: false },
 })
-const emit = defineEmits(['select-cell'])
+const emit = defineEmits(['select-cell', 'node-moved', 'node-renamed', 'node-removed', 'node-added'])
 
 const containerRef = ref(null)
 let graph = null
@@ -443,6 +445,9 @@ function closeFlowDetail() {
 
 let visibilityObserver = null
 let resizeObserver = null
+// 容器原生 keydown 监听：编辑模式下 Delete/Backspace 删除选中节点。
+// 之所以不用 graph.bindKey，是因为它属于未安装的 x6-plugin-keyboard。
+let keydownHandler = null
 
 // 重试渲染工具：当容器尚未挂载时（如 v-if/v-else 切换、路由恢复）延迟重试
 function tryRender(model, attempt = 0) {
@@ -456,7 +461,15 @@ function tryRender(model, attempt = 0) {
     }
     return
   }
-  initGraph()
+  // initGraph 内部会绑定事件/插件能力，失败时必须暴露出来：
+  // 早期版本在此链路里调用过未安装插件的 API，异常被吞掉后 render() 永不执行，
+  // 表现为"画布空白且无任何报错"，排查成本极高。
+  try {
+    initGraph()
+  } catch (e) {
+    console.error('[DfdGraph] initGraph 失败,画布无法初始化', e)
+    return
+  }
   if (graph) render(model)
   // 渲染完成后适配视图
   setTimeout(() => { if (graph) fitView() }, 50)
@@ -506,6 +519,9 @@ function initGraph() {
   const cw = c.clientWidth
   const ch = c.clientHeight
   console.log('[DfdGraph] initGraph start', { cw, ch, containerClass: c.className })
+  // 编辑模式：AI 提取的 DFD 必然有误差，允许用户拖动节点微调布局。
+  // 注意：默认只开启「拖拽」，连线/删除需要用户显式进入编辑模式（editMode），
+  // 避免误操作破坏 AI 生成的模型。
   graph = new Graph({
     container: c,
     grid: { visible: true, size: 20, type: 'dot' },
@@ -513,7 +529,36 @@ function initGraph() {
     panning: { enabled: true },
     mousewheel: { enabled: true, zoomAtMousePosition: true },
     selecting: { enabled: true, rubberband: false, showNodeSelectionBox: true },
-    interacting: { edgeLabelMovable: false },
+    interacting: {
+      edgeLabelMovable: false,
+      // 节点可拖动（布局微调）；连线由 editMode 控制
+      nodeMovable: true,
+      arrowheadMovable: false,
+    },
+    // 只允许编辑模式下从锚点拉线
+    connecting: {
+      enabled: false,
+      snap: { radius: 24 },
+      allowBlank: false,
+      allowLoop: false,
+      allowMulti: true,
+      highlight: true,
+      router: 'normal',
+      connector: { name: 'rounded', args: { radius: 8 } },
+      createEdge() {
+        return this.createEdge({
+          shape: 'edge',
+          attrs: {
+            line: {
+              stroke: '#94a3b8',
+              strokeWidth: 1.6,
+              targetMarker: { name: 'block', width: 10, height: 7 },
+            },
+          },
+          zIndex: 50,
+        })
+      },
+    },
   })
   // 关键：X6 创建时不知道容器真实尺寸，需同步 resize 一次
   // 否则首次 zoomToFit 可能基于 0 viewport 算出 scale=0/NaN，图"看不见"
@@ -547,6 +592,54 @@ function initGraph() {
     if (containerRef.value) containerRef.value.style.cursor = ''
     tooltip.value.visible = false
   })
+
+  // 拖拽结束：把新坐标回传给父组件，由其负责持久化到后端/本地模型。
+  // 只上报真实位移，避免点击时的 0 位移噪音。
+  graph.on('node:moved', ({ node }) => {
+    if (isLaneNode(node) || !props.editable) return
+    const pos = node.position()
+    const data = node.getData?.() || {}
+    const tdCell = data.tdCell || {}
+    if (tdCell.position && tdCell.position.x === pos.x && tdCell.position.y === pos.y) return
+    emit('node-moved', { cellId: node.id, x: pos.x, y: pos.y })
+  })
+
+  // 双击节点：编辑模式下弹窗重命名
+  graph.on('node:dblclick', ({ node }) => {
+    if (isLaneNode(node) || !props.editable) return
+    const data = node.getData?.() || {}
+    const tdCell = data.tdCell || {}
+    const current = ((tdCell.data || {}).name) || ''
+    const next = window.prompt('修改元素名称：', current)
+    if (next == null) return
+    const name = next.trim()
+    if (!name || name === current) return
+    node.attr('label/text', name)
+    emit('node-renamed', { cellId: node.id, name })
+  })
+
+  // 删除键：编辑模式下移除选中的节点（数据流边不允许单独删除，避免破坏模型一致性）
+  // 注意：不使用 graph.bindKey —— 那是 @antv/x6-plugin-keyboard 的 API，
+  // 本项目未安装该插件（package.json 仅依赖 @antv/x6 与 x6-plugin-snapline），
+  // 直接调用会在 initGraph 抛 TypeError，导致后续 render() 永远不执行、画布空白。
+  // 因此改为在容器上监听原生 keydown，行为等价且无额外依赖。
+  keydownHandler = (ev) => {
+    if (!props.editable) return
+    if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
+    const target = ev.target
+    // 输入态（如双击改名弹窗/输入框）不劫持删除键，避免误删节点或影响输入
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+    const nodes = graph.getSelectedCells().filter((c) => c.isNode() && !isLaneNode(c))
+    if (!nodes.length) return
+    ev.preventDefault()
+    nodes.forEach((n) => {
+      emit('node-removed', { cellId: n.id })
+      n.remove()
+    })
+  }
+  c.addEventListener('keydown', keydownHandler)
+  // 让容器可聚焦，否则 keydown 只在容器内已有焦点元素时才触发
+  if (!c.hasAttribute('tabindex')) c.setAttribute('tabindex', '0')
 }
 
 // 泳道背景节点：不可交互（不触发选中 / 点击 / 悬停浮层）
@@ -595,6 +688,10 @@ onBeforeUnmount(() => {
     resizeObserver.disconnect()
     resizeObserver = null
   }
+  if (keydownHandler && containerRef.value) {
+    containerRef.value.removeEventListener('keydown', keydownHandler)
+    keydownHandler = null
+  }
 })
 
 watch(
@@ -618,6 +715,15 @@ watch(
   (id) => {
     if (!graph) return
     if (id) graph.resetSelection([id])
+  }
+)
+
+// 编辑模式切换：开启后允许从锚点拉线新建数据流
+watch(
+  () => props.editable,
+  (on) => {
+    if (!graph) return
+    graph.options.connecting.enabled = !!on
   }
 )
 

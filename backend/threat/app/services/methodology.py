@@ -31,9 +31,15 @@ VECTORSTORE = "tm.VectorStore"
 TOOL = "tm.Tool"
 TRAININGDATA = "tm.TrainingData"
 AGENTCONFIG = "tm.AgentConfig"
+# 多智能体（MAESTRO）特有的元素类型
+AGENT = "tm.Agent"
+ORCHESTRATOR = "tm.Orchestrator"
+MEMORY = "tm.Memory"
 
 AI_CELL_TYPES = [MODEL, PROMPT, VECTORSTORE, TOOL, TRAININGDATA, AGENTCONFIG]
-ALL_CELL_TYPES = CELL_TYPES + AI_CELL_TYPES
+# MAESTRO 专属元素（多智能体协作场景）
+MAESTRO_CELL_TYPES = [AGENT, ORCHESTRATOR, MEMORY]
+ALL_CELL_TYPES = CELL_TYPES + AI_CELL_TYPES + MAESTRO_CELL_TYPES
 
 # 本平台自定义的等价类型名（用于从模型 JSON 中归一化）
 # document_analyzer / model_builder 使用的小写键名
@@ -47,6 +53,10 @@ ELEMENT_KEY_VECTORSTORE = "vectorstore"
 ELEMENT_KEY_TOOL = "tool"
 ELEMENT_KEY_TRAININGDATA = "trainingdata"
 ELEMENT_KEY_AGENTCONFIG = "agentconfig"
+# MAESTRO 元素小写键名
+ELEMENT_KEY_AGENT = "agent"
+ELEMENT_KEY_ORCHESTRATOR = "orchestrator"
+ELEMENT_KEY_MEMORY = "memory"
 
 # AI 元素映射到官方 cellType（视觉上以 Process 承载）
 AI_KEY_TO_CELL = {
@@ -56,6 +66,9 @@ AI_KEY_TO_CELL = {
     ELEMENT_KEY_TOOL: TOOL,
     ELEMENT_KEY_TRAININGDATA: TRAININGDATA,
     ELEMENT_KEY_AGENTCONFIG: AGENTCONFIG,
+    ELEMENT_KEY_AGENT: AGENT,
+    ELEMENT_KEY_ORCHESTRATOR: ORCHESTRATOR,
+    ELEMENT_KEY_MEMORY: MEMORY,
 }
 
 # 平台内部小写键名 -> 官方 cellType
@@ -298,6 +311,95 @@ EOP_BY_ELEMENT = {
 # ---------------------------------------------------------------------------
 # 方法论注册表
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# MAESTRO（Multi-Agent Environment, Security, Threat, Risk and Outcome）
+# ---------------------------------------------------------------------------
+# OWASP 面向 **Agentic AI / 多智能体系统** 的威胁建模框架（2025）。
+# 与 STRIDE-AI 的区别：
+#   - STRIDE-AI 关注「单个 AI 组件」的威胁（模型、提示词、向量库）；
+#   - MAESTRO 关注「智能体协作与自治」带来的新风险面——目标劫持、工具链
+#     权限扩散、agent 间通信欺骗、记忆污染、自主决策失控等。
+#
+# 七层分层模型（layers）：
+#   L1 Foundation Models   基础模型层
+#   L2 Data Operations     数据操作层（RAG / 记忆 / 向量库）
+#   L3 Agent Frameworks    智能体框架层（编排、规划、工具调用）
+#   L4 Deployment          部署与基础设施层
+#   L5 Evaluation          评估与可观测层
+#   L6 Security & Compliance 安全与合规层
+#   L7 Agent Ecosystem     智能体生态层（多智能体协作）
+MAESTRO_LAYERS = {
+    "foundationModels": "L1 基础模型层",
+    "dataOperations": "L2 数据操作层",
+    "agentFrameworks": "L3 智能体框架层",
+    "deployment": "L4 部署基础设施层",
+    "evaluation": "L5 评估可观测层",
+    "securityCompliance": "L6 安全合规层",
+    "agentEcosystem": "L7 智能体生态层",
+}
+
+# MAESTRO 威胁类型（跨层通用，带层级语义）
+MAESTRO_TYPES = {
+    "GoalHijacking": "Goal Hijacking 目标劫持",
+    "ToolMisuse": "Tool Misuse 工具滥用",
+    "PrivilegeAmplification": "Privilege Amplification 权限扩散",
+    "MemoryPoisoning": "Memory Poisoning 记忆投毒",
+    "InterAgentDeception": "Inter-Agent Deception 智能体间欺骗",
+    "AutonomyRunaway": "Runaway Autonomy 自主失控",
+    "InsecureOrchestration": "Insecure Orchestration 编排不安全",
+    "ObservabilityGap": "Observability Gap 可观测性缺失",
+    "SupplyChainCompromise": "Supply Chain Compromise 供应链投毒",
+    "DataLeakage": "Data Leakage 数据泄露",
+}
+
+# 元素类型 -> 允许的 MAESTRO 威胁类型
+# AI 元素沿用 STRIDE-AI 的扩展元素，另加多智能体特有角色。
+MAESTRO_BY_ELEMENT = {
+    # 人类用户/外部系统：主要面临欺骗与目标劫持
+    ACTOR: ["GoalHijacking", "InterAgentDeception"],
+    # 进程：编排不安全、工具滥用
+    PROCESS: ["InsecureOrchestration", "ToolMisuse", "PrivilegeAmplification"],
+    # 数据存储：记忆投毒与数据泄露
+    STORE: ["MemoryPoisoning", "DataLeakage"],
+    # 数据流：窃听与欺骗
+    FLOW: ["DataLeakage", "InterAgentDeception"],
+    # 基础模型
+    MODEL: ["GoalHijacking", "MemoryPoisoning", "SupplyChainCompromise", "DataLeakage"],
+    # 提示词
+    PROMPT: ["GoalHijacking", "InsecureOrchestration"],
+    # 向量库 / 记忆
+    VECTORSTORE: ["MemoryPoisoning", "DataLeakage"],
+    MEMORY: ["MemoryPoisoning", "DataLeakage"],
+    # 工具 / Agent 能力
+    TOOL: ["ToolMisuse", "PrivilegeAmplification", "AutonomyRunaway"],
+    # 智能体本体
+    AGENT: [
+        "GoalHijacking", "ToolMisuse", "AutonomyRunaway",
+        "InterAgentDeception", "MemoryPoisoning",
+    ],
+    # 编排器：多智能体协作的中枢，风险最集中
+    ORCHESTRATOR: [
+        "InsecureOrchestration", "PrivilegeAmplification",
+        "InterAgentDeception", "AutonomyRunaway", "ObservabilityGap",
+    ],
+}
+
+# 向后兼容：小写键名
+MAESTRO_RULES = {
+    ELEMENT_KEY_ACTOR: MAESTRO_BY_ELEMENT[ACTOR],
+    ELEMENT_KEY_PROCESS: MAESTRO_BY_ELEMENT[PROCESS],
+    ELEMENT_KEY_STORE: MAESTRO_BY_ELEMENT[STORE],
+    ELEMENT_KEY_FLOW: MAESTRO_BY_ELEMENT[FLOW],
+    ELEMENT_KEY_MODEL: MAESTRO_BY_ELEMENT[MODEL],
+    ELEMENT_KEY_PROMPT: MAESTRO_BY_ELEMENT[PROMPT],
+    ELEMENT_KEY_VECTORSTORE: MAESTRO_BY_ELEMENT[VECTORSTORE],
+    ELEMENT_KEY_TOOL: MAESTRO_BY_ELEMENT[TOOL],
+    ELEMENT_KEY_AGENT: MAESTRO_BY_ELEMENT[AGENT],
+    ELEMENT_KEY_ORCHESTRATOR: MAESTRO_BY_ELEMENT[ORCHESTRATOR],
+    ELEMENT_KEY_MEMORY: MAESTRO_BY_ELEMENT[MEMORY],
+}
+
+
 METHODOLOGIES: Dict[str, Dict] = {
     "STRIDE": {
         "label": "STRIDE",
@@ -352,9 +454,23 @@ METHODOLOGIES: Dict[str, Dict] = {
         "by_element": EOP_BY_ELEMENT,
         "frequency": lambda cell: {t: 0 for t in EOP_BY_ELEMENT.get(cell, EOP_BY_ELEMENT[PROCESS])},
     },
+    "MAESTRO": {
+        "label": "MAESTRO",
+        "description": (
+            "OWASP 面向多智能体/Agentic AI 的分层威胁建模：七层架构"
+            "（基础模型/数据操作/智能体框架/部署/评估/安全合规/智能体生态）×"
+            "十类智能体专属威胁（目标劫持、工具滥用、权限扩散、记忆投毒等）"
+        ),
+        "types": MAESTRO_TYPES,
+        "by_element": MAESTRO_BY_ELEMENT,
+        "frequency": lambda cell: {t: 0 for t in MAESTRO_BY_ELEMENT.get(cell, MAESTRO_BY_ELEMENT[PROCESS])},
+        "ai_elements": True,
+        "agentic": True,
+        "layers": MAESTRO_LAYERS,
+    },
 }
 
-ALL_METHODOLOGIES: List[str] = ["STRIDE", "STRIDE-AI", "CIA", "CIADIE", "LINDDUN", "PLOT4ai", "EOP"]
+ALL_METHODOLOGIES: List[str] = ["STRIDE", "STRIDE-AI", "CIA", "CIADIE", "LINDDUN", "PLOT4ai", "EOP", "MAESTRO"]
 
 
 # ---------------------------------------------------------------------------

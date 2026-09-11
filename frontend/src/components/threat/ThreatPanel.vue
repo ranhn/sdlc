@@ -69,12 +69,32 @@
       <h3 v-if="selectedThreats">{{ selectedThreats.cellName }} 的威胁</h3>
       <h3 v-else>威胁列表</h3>
       <button
+        v-if="resultId"
+        class="btn btn-sm btn-add-threat"
+        title="AI 识别可能有遗漏，手工补充一条威胁"
+        @click="openAddThreat"
+      >
+        + 新增威胁
+      </button>
+      <button
         v-if="selectedThreats"
         class="btn btn-sm"
         @click="$emit('clear-selection')"
       >
         全部
       </button>
+    </div>
+
+    <!-- 评审进度：回答「这份模型的评审做完了吗」 -->
+    <div v-if="reviewProgress.total" class="review-progress">
+      <div class="rp-bar">
+        <div class="rp-fill" :style="{ width: (reviewProgress.rate * 100).toFixed(1) + '%' }"></div>
+      </div>
+      <div class="rp-text">
+        评审进度 {{ reviewProgress.reviewed }}/{{ reviewProgress.total }}
+        <span v-if="reviewProgress.pending" class="rp-pending">· {{ reviewProgress.pending }} 条待评审</span>
+        <span v-else class="rp-done">· 已全部评审</span>
+      </div>
     </div>
 
     <!-- 威胁列表 -->
@@ -103,11 +123,42 @@
               <option value="In Progress">进行中</option>
               <option value="Mitigated">已缓解</option>
               <option value="Accepted">已接受</option>
+              <option value="NotApplicable">不适用</option>
             </select>
             <span class="threat-type" :title="t.type">{{ shortType(t.type) }}</span>
             <span class="threat-title" :class="{ 'is-out-of-scope': t.outOfScope }">
               <span class="t-num">#{{ t.number }}</span>
               <span>{{ t.title }}</span>
+            </span>
+            <!-- 评审结论徽标：待评审 / 已确认 / 已驳回 -->
+            <span
+              class="review-badge"
+              :class="'rv-' + reviewState(t)"
+              :title="reviewTitle(t)"
+              @click.stop
+            >
+              {{ reviewLabel(t) }}
+            </span>
+            <!-- 评审操作：一键确认 / 驳回（AI 误报需要人工推翻） -->
+            <span v-if="resultId" class="review-actions" @click.stop>
+              <button
+                class="rv-btn rv-ok"
+                :class="{ active: reviewState(t) === 'Confirmed' }"
+                title="确认威胁成立，推进整改"
+                :disabled="reviewingId === threatKey(t)"
+                @click="submitReview(t, 'Confirmed')"
+              >
+                ✓
+              </button>
+              <button
+                class="rv-btn rv-no"
+                :class="{ active: reviewState(t) === 'Rejected' }"
+                title="驳回：误报或经评估不成立"
+                :disabled="reviewingId === threatKey(t)"
+                @click="submitReview(t, 'Rejected')"
+              >
+                ✕
+              </button>
             </span>
             <label
               class="oos-toggle-inline"
@@ -152,7 +203,7 @@
                     <span class="dread-track">
                       <span class="dread-fill" :class="'dread-lv' + d.lv" :style="{ width: d.pct + '%' }"></span>
                     </span>
-                    <span class="dread-val">{{ d.val }}/5</span>
+                    <span class="dread-val">{{ d.val }}/10</span>
                   </div>
                 </div>
               </div>
@@ -168,6 +219,20 @@
                     class="ref-link"
                   >{{ ref }}</a>
                 </div>
+              </div>
+              <!-- 转漏洞工单：把威胁推进到漏洞管理的整改流程 -->
+              <div v-if="resultId" class="detail-actions">
+                <button
+                  class="btn-to-vuln"
+                  :disabled="converting.has(t.threatId)"
+                  :title="vulnLinkOf(t) ? '已转为漏洞单，点击可再次提交（会自动去重）' : '在漏洞管理中创建一条整改工单'"
+                  @click.stop="convertToVuln(t)"
+                >
+                  <template v-if="converting.has(t.threatId)">提交中…</template>
+                  <template v-else-if="vulnLinkOf(t)">已转漏洞单 #{{ vulnLinkOf(t) }}</template>
+                  <template v-else>转漏洞工单</template>
+                </button>
+                <span v-if="vulnLinkOf(t)" class="to-vuln-hint">已推送至漏洞管理</span>
               </div>
             </div>
           </transition>
@@ -185,13 +250,72 @@
         <span>完成一次 AI 建模后，此处将展示多方法论威胁及缓解措施</span>
       </div>
     </div>
+
+    <!-- 手工新增威胁弹窗 -->
+    <div v-if="addVisible" class="tp-modal-mask" @click.self="closeAddThreat">
+      <div class="tp-modal">
+        <div class="tp-modal-head">
+          <h3>新增威胁</h3>
+          <button class="tp-modal-close" @click="closeAddThreat">×</button>
+        </div>
+        <div class="tp-modal-body">
+          <p class="tp-modal-hint">
+            AI 识别可能有遗漏，可在此补充你发现的威胁。新增的威胁会标记为「手工录入」。
+          </p>
+          <div class="tp-field">
+            <label class="tp-field-lbl">挂载元素 <i>*</i></label>
+            <select v-model="addForm.elementId" class="tp-input">
+              <option value="">请选择组件或数据流…</option>
+              <option v-for="e in elementOptions" :key="e.id" :value="e.id">
+                {{ e.name }}（{{ e.kind }}）
+              </option>
+            </select>
+          </div>
+          <div class="tp-field">
+            <label class="tp-field-lbl">威胁标题 <i>*</i></label>
+            <input v-model="addForm.title" class="tp-input" type="text" maxlength="300" placeholder="如：订单接口未做水平越权校验" />
+          </div>
+          <div class="tp-field-row">
+            <div class="tp-field">
+              <label class="tp-field-lbl">威胁类型</label>
+              <input v-model="addForm.type" class="tp-input" type="text" placeholder="如 Spoofing" />
+            </div>
+            <div class="tp-field">
+              <label class="tp-field-lbl">严重度</label>
+              <select v-model="addForm.severity" class="tp-input">
+                <option value="Critical">严重</option>
+                <option value="High">高</option>
+                <option value="Medium">中</option>
+                <option value="Low">低</option>
+              </select>
+            </div>
+          </div>
+          <div class="tp-field">
+            <label class="tp-field-lbl">描述</label>
+            <textarea v-model="addForm.description" class="tp-textarea" rows="3" placeholder="威胁的触发条件与影响…"></textarea>
+          </div>
+          <div class="tp-field">
+            <label class="tp-field-lbl">缓解措施</label>
+            <textarea v-model="addForm.mitigation" class="tp-textarea" rows="3" placeholder="建议的整改方案…"></textarea>
+          </div>
+        </div>
+        <div class="tp-modal-foot">
+          <button class="btn btn-sm" @click="closeAddThreat">取消</button>
+          <button
+            class="btn btn-sm btn-primary"
+            :disabled="adding || !addForm.elementId || !addForm.title.trim()"
+            @click="submitAddThreat"
+          >{{ adding ? '提交中…' : '新增' }}</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
 import Toast from './Toast.vue'
-import { updateThreatStatus } from '@/api/threat.js'
+import { updateThreatStatus, convertThreatToVuln, addThreat, reviewThreat } from '@/api/threat.js'
 import { tSeverity, tStatus, tType, tMethodology } from '../../utils/i18n.js'
 
 const toastRef = ref(null)
@@ -203,11 +327,49 @@ const props = defineProps({
   selectedCellId: { type: String, default: null },
   selectedThreats: { type: Object, default: null },
   resultId: { type: String, default: null },
+  // 当前登录用户（用于评审后本地回显评审人，避免整页刷新）
+  currentUser: { type: Object, default: null },
 })
 const emit = defineEmits(['clear-selection', 'threat-updated'])
 
 const expanded = ref(new Set())
 const listRef = ref(null)
+
+// 正在提交「转漏洞单」的威胁 ID 集合（按 threatId 逐个禁用按钮）
+const converting = ref(new Set())
+// 已成功转出的漏洞单：threatId -> vuln_id，用于按钮回显与防重复点击
+const vulnLinks = ref({})
+
+function vulnLinkOf(t) {
+  return vulnLinks.value[t?.threatId] || null
+}
+
+/** 把一条威胁推送到漏洞管理模块，创建整改工单 */
+async function convertToVuln(t) {
+  const threatId = t?.threatId
+  if (!props.resultId || !threatId) {
+    toast('缺少结果或威胁标识，无法转单', 'error')
+    return
+  }
+  if (converting.value.has(threatId)) return
+  converting.value = new Set(converting.value).add(threatId)
+  try {
+    const res = await convertThreatToVuln(props.resultId, threatId, { skip_duplicate: true })
+    vulnLinks.value = { ...vulnLinks.value, [threatId]: res.vuln_id }
+    if (res.created) {
+      toast(`已转为漏洞单 #${res.vuln_id}：${res.title}`, 'success')
+    } else {
+      toast(`该威胁已存在未关闭的漏洞单 #${res.vuln_id}，未重复创建`, 'info')
+    }
+    emit('threat-updated', { threatId, vulnId: res.vuln_id })
+  } catch (e) {
+    toast('转漏洞单失败：' + (e?.response?.data?.detail || e?.message), 'error')
+  } finally {
+    const next = new Set(converting.value)
+    next.delete(threatId)
+    converting.value = next
+  }
+}
 
 watch(
   () => props.selectedCellId,
@@ -218,6 +380,71 @@ watch(
     })
   }
 )
+
+// ---- 手工新增威胁 ----
+const addVisible = ref(false)
+const adding = ref(false)
+const addForm = ref({
+  elementId: '', title: '', type: '', severity: 'Medium',
+  description: '', mitigation: '',
+})
+
+/**
+ * 可作为威胁挂载点的元素清单。
+ * 与后端 ``extract_threats`` 一致：组件与数据流（边）都可以挂威胁。
+ * 注意取值用元素「名称」而非 cell.id —— 后端 ``_find_cell_by_element``
+ * 先按 id 匹配、再按名称兜底，名称更稳定（cell.id 每次建模都会变）。
+ */
+const elementOptions = computed(() => {
+  const cells = props.model?.detail?.diagrams?.[0]?.cells || []
+  const rows = []
+  for (const cell of cells) {
+    if (cell.shape === 'tm.Text') continue
+    const name = (cell.data?.name || '').trim()
+    if (!name) continue
+    // 跳过后端自动补的空 trust boundary（没有子元素）
+    const isBoundary = cell.shape === 'tm.BoundaryBox'
+    if (isBoundary && !(cell.children || []).length) continue
+    const isEdge = !!(cell.source || cell.target)
+    rows.push({ id: name, name, kind: isEdge ? '数据流' : '组件' })
+  }
+  return rows
+})
+
+function openAddThreat() {
+  addForm.value = {
+    // 若用户在画布上选中了某个组件，默认挂到它下面（selectedThreats 是 prop）
+    elementId: props.selectedThreats?.cellName || '',
+    title: '', type: '', severity: 'Medium', description: '', mitigation: '',
+  }
+  addVisible.value = true
+}
+
+function closeAddThreat() {
+  addVisible.value = false
+}
+
+async function submitAddThreat() {
+  if (!props.resultId || !addForm.value.elementId || !addForm.value.title.trim()) return
+  adding.value = true
+  try {
+    await addThreat(props.resultId, {
+      element_id: addForm.value.elementId,
+      title: addForm.value.title.trim(),
+      type: addForm.value.type.trim() || undefined,
+      severity: addForm.value.severity,
+      description: addForm.value.description,
+      mitigation: addForm.value.mitigation,
+    })
+    toast('威胁已新增', 'success')
+    closeAddThreat()
+    emit('threat-updated', { added: true })
+  } catch (e) {
+    toast('新增失败：' + (e?.response?.data?.detail || e?.message), 'error')
+  } finally {
+    adding.value = false
+  }
+}
 
 const highCount = computed(() => {
   const bySev = props.stats?.threatCountBySeverity || {}
@@ -252,6 +479,129 @@ function statusKey(status) {
   if (s.includes('mitigat')) return 'mitigated'
   if (s.includes('applicable') || s === 'na' || s === 'not applicable') return 'na'
   return 'open'
+}
+
+// ---- 威胁评审（确认 / 驳回）----
+// AI 识别的威胁必然含误报，需要人工确认或推翻，否则噪音会淹没真实风险。
+// 评审结论（review）与处置状态（status）正交：确认威胁成立 ≠ 已经缓解。
+const reviewingId = ref('')
+
+/** 威胁的唯一标识（后端 threatId 优先，兜底用序号+标题） */
+function threatKey(t) {
+  return t.threatId || `${t.number}-${t.title}`
+}
+
+/**
+ * 评审进度统计（前端本地算，不额外请求后端）。
+ * 与后端 ``review_summary`` 口径一致：未评审的威胁视为 Pending。
+ */
+const reviewProgress = computed(() => {
+  const list = allThreats.value
+  let confirmed = 0
+  let rejected = 0
+  for (const t of list) {
+    const s = reviewState(t)
+    if (s === 'Confirmed') confirmed += 1
+    else if (s === 'Rejected') rejected += 1
+  }
+  const reviewed = confirmed + rejected
+  const total = list.length
+  return {
+    total,
+    confirmed,
+    rejected,
+    reviewed,
+    pending: total - reviewed,
+    rate: total ? reviewed / total : 0,
+  }
+})
+
+/** 当前评审结论，未评审时视为 Pending */
+function reviewState(t) {
+  const s = t.review?.state
+  return s === 'Confirmed' || s === 'Rejected' ? s : 'Pending'
+}
+
+function reviewLabel(t) {
+  const s = reviewState(t)
+  if (s === 'Confirmed') return '已确认'
+  if (s === 'Rejected') return '已驳回'
+  return '待评审'
+}
+
+function reviewTitle(t) {
+  const r = t.review
+  if (!r?.state) return '待评审：请确认威胁是否成立'
+  const who = r.reviewer ? `，评审人 ${r.reviewer}` : ''
+  const when = r.reviewed_at ? `，${fmtReviewTime(r.reviewed_at)}` : ''
+  const cmt = r.comment ? `\n意见：${r.comment}` : ''
+  return `${reviewLabel(t)}${who}${when}${cmt}`
+}
+
+function fmtReviewTime(epoch) {
+  if (!epoch) return ''
+  const d = new Date(epoch * 1000)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/**
+ * 提交评审结论。
+ *
+ * 驳回时会弹出输入框收集原因 —— 驳回理由对后续复盘（"当初为什么判为误报"）
+ * 很有价值，留空也允许提交。
+ */
+async function submitReview(t, state) {
+  if (!props.resultId) return
+  const key = threatKey(t)
+  // 再次点击同一结论视为取消评审（回到待评审）
+  const next = reviewState(t) === state ? 'Pending' : state
+
+  let comment = ''
+  if (next === 'Rejected') {
+    const input = window.prompt('驳回原因（可选，便于后续复盘）：', t.review?.comment || '')
+    // 用户点取消 → 放弃本次操作
+    if (input === null) return
+    comment = input
+  }
+
+  reviewingId.value = key
+  try {
+    await reviewThreat(props.resultId, key, next, comment)
+    // 本地同步，避免整页刷新（评审是高频轻量操作）
+    applyReviewLocally(t, next, comment)
+    const tip = next === 'Pending' ? '已取消评审' : next === 'Confirmed' ? '已确认该威胁' : '已驳回该威胁'
+    toast(tip, 'success')
+    emit('threat-updated', { reviewed: true, state: next })
+  } catch (e) {
+    toast('评审失败：' + (e?.response?.data?.detail || e?.message), 'error')
+  } finally {
+    reviewingId.value = ''
+  }
+}
+
+/** 把评审结果写回 store 中的模型（保持前端状态与后端一致） */
+function applyReviewLocally(t, state, comment) {
+  const me = props.currentUser || {}
+  const cells = props.model?.detail?.diagrams?.[0]?.cells || []
+  for (const cell of cells) {
+    for (const threat of cell.threats || []) {
+      if (threatKey(threat) !== threatKey(t)) continue
+      if (state === 'Pending') {
+        threat.review = null
+      } else {
+        threat.review = {
+          state,
+          comment: comment || '',
+          reviewer: me.username || '',
+          reviewed_at: Math.floor(Date.now() / 1000),
+        }
+        // 与后端一致：驳回的威胁同步收敛状态，不再计入待处理
+        if (state === 'Rejected') threat.status = 'NotApplicable'
+      }
+      return
+    }
+  }
 }
 
 async function toggleOutOfScope(t, event) {
@@ -301,12 +651,16 @@ const DREAD_META = [
   { key: 'discoverability', label: '可发现性' },
 ]
 
+// 后端 DREAD 每维取值 0~10（见 output_schema.py 的 dread 字段定义），单维满分 10，总分 50。
+const DREAD_MAX_PER_DIM = 10
+
 function dreadItems(dread) {
   if (!dread) return []
   return DREAD_META.map(({ key, label }) => {
-    const val = Math.min(5, Number(dread[key] || 0))
-    const lv = val >= 4 ? 'h' : val >= 2 ? 'm' : 'l'
-    return { key, label, val, lv, pct: (val / 5) * 100 }
+    const val = Math.min(DREAD_MAX_PER_DIM, Math.max(0, Number(dread[key] || 0)))
+    // 分级阈值：>=7 高、>=4 中、其余低（对应单维 10 分制）
+    const lv = val >= 7 ? 'h' : val >= 4 ? 'm' : 'l'
+    return { key, label, val, lv, pct: (val / DREAD_MAX_PER_DIM) * 100 }
   })
 }
 
@@ -352,17 +706,27 @@ function shortType(type) {
   return zh.length > 8 ? zh.slice(0, 7) + '…' : zh
 }
 
-const visibleThreats = computed(() => {
-  if (props.selectedThreats) return props.selectedThreats.threats || []
-  if (!props.model) return []
-  const diagram = props.model.detail?.diagrams?.[0]
+/**
+ * 模型中的全部威胁（不受画布选中过滤影响）。
+ * 评审进度必须以「全部威胁」为分母，否则选中单个组件时进度条会失真。
+ */
+const allThreats = computed(() => {
+  const diagram = props.model?.detail?.diagrams?.[0]
   const all = []
   for (const cell of diagram?.cells || []) {
     for (const t of cell.threats || []) {
       all.push({ ...t, _cellName: cell.data?.name || '' })
     }
   }
-  return all.sort((a, b) => (a.severityRank ?? 99) - (b.severityRank ?? 99))
+  return all
+})
+
+const visibleThreats = computed(() => {
+  if (props.selectedThreats) return props.selectedThreats.threats || []
+  if (!props.model) return []
+  return [...allThreats.value].sort(
+    (a, b) => (a.severityRank ?? 99) - (b.severityRank ?? 99)
+  )
 })
 
 function toggleExpand(t) {
@@ -880,6 +1244,161 @@ function isExpanded(t) {
 .ref-link:hover {
   text-decoration: underline;
   background: var(--primary-soft);
+}
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-light);
+}
+.btn-to-vuln {
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--accent-violet);
+  background: rgba(124, 58, 237, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.32);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-to-vuln:hover:not(:disabled) {
+  background: rgba(124, 58, 237, 0.16);
+  border-color: rgba(124, 58, 237, 0.55);
+}
+.btn-to-vuln:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.to-vuln-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+/* ---- 评审进度条 ---- */
+.review-progress {
+  padding: 7px 12px 6px;
+  border-bottom: 1px solid var(--border-light);
+  flex-shrink: 0;
+}
+.rp-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.25);
+  overflow: hidden;
+}
+.rp-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #7c3aed, #047857);
+  transition: width 0.3s ease;
+}
+.rp-text {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.rp-pending { color: var(--warning, #d97706); }
+.rp-done { color: #047857; }
+
+/* ---- 威胁评审（确认 / 驳回）---- */
+.review-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  cursor: help;
+}
+.rv-Pending {
+  color: var(--text-faint);
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.3);
+}
+.rv-Confirmed {
+  color: #047857;
+  background: rgba(4, 120, 87, 0.1);
+  border-color: rgba(4, 120, 87, 0.3);
+}
+.rv-Rejected {
+  color: #b91c1c;
+  background: rgba(185, 28, 28, 0.1);
+  border-color: rgba(185, 28, 28, 0.28);
+}
+.review-actions {
+  display: inline-flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.rv-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-panel);
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.rv-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.rv-ok:hover:not(:disabled), .rv-ok.active { color: #047857; border-color: #047857; }
+.rv-no:hover:not(:disabled), .rv-no.active { color: #b91c1c; border-color: #b91c1c; }
+
+/* ---- 手工新增威胁弹窗 ---- */
+.btn-add-threat { color: var(--accent-violet); }
+.tp-modal-mask {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
+}
+.tp-modal {
+  width: 520px; max-width: 92vw; max-height: 86vh;
+  display: flex; flex-direction: column;
+  background: var(--bg-panel); border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.tp-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border-light);
+}
+.tp-modal-head h3 { margin: 0; font-size: 13.5px; color: var(--text); }
+.tp-modal-close {
+  border: none; background: none; cursor: pointer;
+  font-size: 18px; line-height: 1; color: var(--text-faint); padding: 0 4px;
+}
+.tp-modal-close:hover { color: var(--danger); }
+.tp-modal-body { padding: 14px 16px; overflow-y: auto; }
+.tp-modal-hint {
+  font-size: 11px; color: var(--text-faint);
+  margin: 0 0 12px; line-height: 1.5;
+}
+.tp-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; flex: 1; }
+.tp-field-row { display: flex; gap: 10px; }
+.tp-field-lbl { font-size: 11px; color: var(--text-dim); font-weight: 500; }
+.tp-field-lbl i { color: var(--danger); font-style: normal; }
+.tp-input, .tp-textarea {
+  width: 100%; box-sizing: border-box;
+  font-family: inherit; font-size: 12px;
+  padding: 6px 9px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: var(--bg); color: var(--text);
+}
+.tp-textarea { resize: vertical; line-height: 1.5; }
+.tp-input:focus, .tp-textarea:focus { outline: none; border-color: var(--primary); }
+.tp-modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--border-light);
 }
 .no-threats {
   text-align: center;

@@ -182,20 +182,23 @@ GET /threat/api/health
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/threat/api/templates` | 获取示例场景模板 |
-| POST | `/threat/api/fingerprint` | 计算输入指纹（用于缓存命中） |
 | POST | `/threat/api/upload` | 上传 PDF/DOCX 文档（multipart） |
 | GET | `/threat/api/system-prompt` | 查看某方法论下的系统提示词（调试） |
-| GET | `/threat/api/llm/config` | 获取 LLM 配置 |
-| POST | `/threat/api/llm/config` | 更新 LLM 配置 |
+| GET | `/threat/api/llm/config` | 获取 LLM 配置（Key 脱敏，所有登录用户可读） |
+| POST | `/threat/api/llm/config` | 更新 LLM 配置（仅 admin / secops） |
+| DELETE | `/threat/api/llm/config` | 清空 LLM 配置（仅 admin / secops） |
+
+> 注：输入指纹由前端本地计算（与后端 `_compute_fingerprint` 算法一致），不存在 `POST /threat/api/fingerprint` 端点。
 
 ### 2.3 分析任务
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/threat/api/analyze` | 提交分析任务（异步） |
-| GET | `/threat/api/tasks/{task_id}` | 查询任务进度 |
-| POST | `/threat/api/tasks/{task_id}/cancel` | 取消任务 |
-| GET | `/threat/api/tasks` | 任务列表（分页） |
+| POST | `/threat/api/analyze` | 提交分析任务（异步，返回 task_id） |
+| GET | `/threat/api/tasks/{task_id}` | 查询任务进度 / 日志 / 结果 |
+| POST | `/threat/api/tasks/{task_id}/cancel` | 取消进行中的任务 |
+
+> 注：任务保存在进程内存中，没有 `GET /threat/api/tasks` 列表端点；服务重启后任务状态会丢失。
 
 **analyze 请求：**
 ```json
@@ -204,44 +207,97 @@ GET /threat/api/health
   "requirements": "用户下单、支付、查询订单...",
   "architecture": "前端 -> API 网关 -> 订单服务 -> 库存服务 -> MySQL",
   "images": ["data:image/png;base64,..."],
-  "methodology": "stride",
-  "industry": "ecommerce"
+  "pasted_images": ["data:image/png;base64,..."],
+  "methodology": "STRIDE",
+  "industry": "health"
 }
 ```
+
+- `requirements`：必填，最少 10 字符
+- `architecture`：可选，为空时由 `architecture_reasoner` 自动推断
+- `methodology`：可选，默认 `STRIDE`；可选值见 §2.5
+- `images` / `pasted_images`：可选，支持多模态输入
 
 **analyze 响应：**
 ```json
 {
   "task_id": "t_abc123",
-  "status": "queued",
-  "steps": ["需求解析", "DFD 构建", "威胁识别", "风险评级"]
+  "status": "pending",
+  "steps": ["需求解析", "DFD 构建", "DFD 自校验", "威胁识别"],
+  "deduped": false
 }
 ```
 
-**任务状态：**
-- `queued` 排队中
+当 `deduped=true` 时表示命中幂等窗口，`task_id` 指向已存在的任务。
+
+**任务状态（`task_manager.py`）：**
+- `pending` 排队中
 - `running` 分析中
-- `succeeded` 完成
-- `failed` 失败
+- `success` 完成
+- `error` 失败
 - `cancelled` 已取消
 
 ### 2.4 结果管理
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/threat/api/results` | 结果列表（支持分页/搜索） |
-| GET | `/threat/api/results/{id}` | 结果详情（DFD + 威胁） |
-| PATCH | `/threat/api/results/{id}` | 重命名结果 |
-| DELETE | `/threat/api/results/{id}` | 删除结果 |
-| GET | `/threat/api/results/{id}/export?format=md` | 导出结果（md/json/csv） |
-| PATCH | `/threat/api/results/{id}/threats/{tid}` | 更新某条威胁状态 |
+| GET | `/threat/api/results` | 结果列表（支持分页/方法论筛选/关键词搜索，按 owner 隔离） |
+| GET | `/threat/api/results/{id}` | 结果详情（含完整 Threat Dragon v2 model） |
+| PATCH | `/threat/api/results/{id}` | 重命名结果（1~60 字符） |
+| DELETE | `/threat/api/results/{id}` | 删除结果，并精准失效对应的 LLM 缓存 |
+| GET | `/threat/api/results/{id}/export?format=md` | 导出结果（`md` / `json` / `csv` / `docx`） |
+| PATCH | `/threat/api/results/{id}/threats/{tid}` | 更新某条威胁的处理状态 / 范围外标记 |
 
 **威胁处置状态：**
-- `open` 待处理
-- `mitigated` 已缓解
-- `accepted` 已接受
-- `false_positive` 误报
-- `out_of_scope` 范围外（用 `outOfScope: true` 标记）
+- `Open` 待处理
+- `In Progress` 处理中
+- `Mitigated` 已缓解
+- `Accepted` 已接受
+- `NotApplicable` 不适用
+
+范围外标记独立于状态，通过请求体 `outOfScope: true` 设置。
+
+### 2.5 支持的威胁建模方法论
+
+| 方法论 | 说明 |
+|---|---|
+| `STRIDE` | 微软经典六分类（Spoofing / Tampering / Repudiation / Info Disclosure / DoS / Elevation） |
+| `STRIDE-AI` | 平台扩展：STRIDE 叠加 AI 元素专属威胁，含 DREAD 五维评分与 OWASP LLM Top10 映射 |
+| `CIA` | 机密性 / 完整性 / 可用性 |
+| `CIADIE` | CIA + Distributed / Immutable / Ephemeral |
+| `LINDDUN` | 隐私威胁七分类 |
+| `PLOT4ai` | 隐私威胁八分类 |
+| `EOP` | Cornucopia suits（Authentication / Authorization / Cryptography / Data Validation / Session Management） |
+| `MAESTRO` | OWASP 多智能体（Agentic AI）分层框架：七层模型 × 十类智能体威胁（目标劫持 / 工具滥用 / 权限扩散 / 记忆投毒 / 智能体间欺骗 / 自主失控 / 编排不安全 / 可观测性缺失 / 供应链投毒 / 数据泄露） |
+
+### 2.6 威胁评审（确认 / 驳回）
+
+AI 识别的威胁必然包含误报，需要人工确认或推翻。评审结论与处置状态（`status`）**正交**：
+`review` 回答「这条威胁是否成立」，`status` 回答「打算怎么处理」。
+
+`PATCH /api/results/{result_id}/threats/{threat_id}/review`
+
+```json
+{ "state": "Confirmed", "comment": "经复核，该接口确实缺少越权校验" }
+```
+
+- `state`：`Pending`（待评审，可用于撤销）/ `Confirmed`（已确认）/ `Rejected`（已驳回）
+- 驳回时会同步把 `status` 置为 `NotApplicable`，避免误报继续计入待处理统计
+- 权限：`admin` / `secops` 可评审任意结果；其他用户仅限自己建模的结果
+
+`GET /api/results/{result_id}/review-summary` — 返回评审进度（`total` / `pending` /
+`confirmed` / `rejected` / `reviewRate` / `reviewers`），用于回答「这份模型的评审做完了吗」。
+
+### 2.7 AI 知识库
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/knowledge/atlas` | MITRE ATLAS 技术目录（AI 领域对抗战术与技术），含按战术分组视图 |
+| `GET /api/knowledge/prompt` | 预览指定方法论 + 行业模板生成的系统提示词（不发起 LLM 调用） |
+| `GET /api/templates` | 示例场景模板库（6 个场景，覆盖 STRIDE / STRIDE-AI / MAESTRO / LINDDUN / EOP） |
+
+单次建模结果的度量指标（`metrics`）中包含 `atlasCovered`（命中的 ATLAS 技术编号）
+与 `atlasHits`（各技术命中次数），便于把威胁对齐到业界通用的攻击语言。
 
 ---
 

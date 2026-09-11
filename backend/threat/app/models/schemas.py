@@ -55,12 +55,12 @@ class AnalyzeRequest(BaseModel):
         None, description="界面传入的模型配置，优先于 .env 中的配置"
     )
     methodology: Optional[str] = Field(
-        "STRIDE",
-        description=(
-            "威胁建模方法论：STRIDE / STRIDE-AI / CIA / CIADIE / LINDDUN / "
-            "PLOT4ai / EOP。默认 STRIDE；STRIDE-AI 用于大模型/Agent/RAG 等 "
-            "AI 系统的威胁建模。"
-        ),
+    "STRIDE",
+    description=(
+        "威胁建模方法论：STRIDE / STRIDE-AI / CIA / CIADIE / LINDDUN / "
+        "PLOT4ai / EOP / MAESTRO。默认 STRIDE；STRIDE-AI 用于大模型/RAG 等 "
+        "AI 系统的威胁建模；MAESTRO 用于多智能体（Agentic AI）系统。"
+    ),
     )
     industry: Optional[str] = Field(
         None,
@@ -155,6 +155,90 @@ class ThreatStatusUpdate(BaseModel):
     )
     outOfScope: bool | None = Field(
         default=None, description="是否将该威胁标记为不在范围内"
+    )
+
+
+class ThreatReviewRequest(BaseModel):
+    """提交一条威胁的评审结论（确认 / 驳回）。
+
+    评审结论与处置状态（status）正交：
+    - ``review`` 回答"我们是否认可这条威胁成立"
+    - ``status`` 回答"这条威胁我们打算怎么处理"
+
+    AI 识别的威胁必然含误报，需要人工确认或推翻，否则模型会逐渐失去团队信任。
+    """
+
+    state: str = Field(
+        description="评审结论：Pending（待评审）/ Confirmed（已确认）/ Rejected（已驳回）"
+    )
+    comment: str | None = Field(
+        default=None, description="评审意见，如驳回原因或确认依据", max_length=1000
+    )
+
+
+class LayoutUpdateRequest(BaseModel):
+    """批量更新 DFD 元素坐标（用户在画布上拖动节点后保存布局）。"""
+
+    positions: dict[str, dict[str, float]] = Field(
+        ...,
+        description='元素坐标映射，形如 {"cell-id": {"x": 100, "y": 200}}',
+    )
+
+
+class ElementRenameRequest(BaseModel):
+    """重命名一个 DFD 元素。"""
+
+    element_id: str = Field(..., min_length=1, max_length=200, description="cell.id 或原组件名")
+    name: str = Field(..., min_length=1, max_length=200, description="新的元素名称")
+
+
+class ThreatCreateRequest(BaseModel):
+    """手动新增一条威胁的请求体。"""
+
+    element_id: str = Field(
+        ..., min_length=1, max_length=200,
+        description="目标元素的 cell.id 或组件名（威胁挂载到该元素下）",
+    )
+    title: str = Field(..., min_length=1, max_length=300, description="威胁标题")
+    type: Optional[str] = Field(default=None, max_length=100, description="威胁类型（方法论维度）")
+    severity: Optional[str] = Field(default=None, description="严重度：Low/Medium/High/Critical")
+    status: Optional[str] = Field(default=None, description="处置状态，默认 Open")
+    description: Optional[str] = Field(default=None, description="威胁描述")
+    mitigation: Optional[str] = Field(default=None, description="缓解措施")
+    cwe: Optional[str] = Field(default=None, max_length=200, description="关联 CWE")
+    outOfScope: Optional[bool] = Field(default=None, description="是否标记为范围外")
+
+
+class ThreatEditRequest(BaseModel):
+    """编辑一条威胁的请求体（仅传需要修改的字段）。"""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    type: Optional[str] = Field(default=None, max_length=100)
+    severity: Optional[str] = Field(default=None)
+    status: Optional[str] = Field(default=None, description="Open/In Progress/Mitigated/Accepted/NotApplicable")
+    description: Optional[str] = Field(default=None)
+    mitigation: Optional[str] = Field(default=None)
+    cwe: Optional[str] = Field(default=None, max_length=200)
+    outOfScope: Optional[bool] = Field(default=None)
+
+
+class ThreatToVulnRequest(BaseModel):
+    """把一条威胁转为漏洞工单的请求体。"""
+
+    system_id: Optional[int] = Field(
+        default=None, description="关联的系统资产 ID（AssetSystem.id）"
+    )
+    assignee_id: Optional[int] = Field(
+        default=None, description="修复负责人用户 ID，留空表示暂不指派"
+    )
+    api_endpoint: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="受影响的接口路径；威胁建模通常没有该信息，留空时后端填占位值",
+    )
+    skip_duplicate: bool = Field(
+        default=True,
+        description="已存在同名且未关闭的漏洞单时，是否直接复用而不重复创建",
     )
 
 

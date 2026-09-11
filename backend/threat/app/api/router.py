@@ -18,7 +18,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from openai import APIStatusError, AuthenticationError, BadRequestError
 
 from ..config import settings
-from ..core.auth import get_sdlc_user, can_view_all, ADMIN_ROLES
+from ..core.auth import get_sdlc_user, require_login, can_view_all, ADMIN_ROLES
 from ..models.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -34,6 +34,12 @@ from ..models.schemas import (
     TemplateItem,
     TemplateListResponse,
     ThreatStatusUpdate,
+    ThreatToVulnRequest,
+    ThreatCreateRequest,
+    ThreatEditRequest,
+    ThreatReviewRequest,
+    LayoutUpdateRequest,
+    ElementRenameRequest,
 )
 from ..services.llm_client import LLMClient
 from ..services import llm_config_store
@@ -125,6 +131,7 @@ _METHODOLOGY_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "LINDDUN":  {"analyze": "对组件进行 LINDDUN 威胁分析",   "report": "生成 LINDDUN 风险评估报告"},
     "PLOT4ai":  {"analyze": "对组件进行 PLOT4ai 威胁分析",   "report": "生成 PLOT4ai 风险评估报告"},
     "EOP":      {"analyze": "对组件进行 EOP 威胁分析",       "report": "生成 EOP 风险评估报告"},
+    "MAESTRO":  {"analyze": "按 MAESTRO 七层模型分析多智能体威胁（目标劫持/工具滥用/权限扩散等）", "report": "生成 MAESTRO 智能体风险评估报告"},
 }
 
 
@@ -355,7 +362,9 @@ async def analyze(
             attachments=request.attachments,
             pasted_images=request.pasted_images,
             title=request.title,
-            owner=current_user if current_user.get("user_id") else None,
+            # 注意：用 is not None 判断，首个管理员 id=0 为合法值，
+            # 用真值判断会把 admin 建的模型 owner 丢成 None，导致其看不到自己的历史结果。
+            owner=current_user if current_user.get("user_id") is not None else None,
             fingerprint=fingerprint,
         )
     )
@@ -840,6 +849,25 @@ def _build_metrics(
         for c in comp
     ]
     metrics["compliance"] = mapped
+
+    # MITRE ATLAS 覆盖：把威胁映射到 AI 对抗技术，对齐业界通用攻击语言。
+    # 主要用于 STRIDE-AI 场景，但 STRIDE/CIA 等也可用（只要有 STRIDE 类型）。
+    from ..services.ai_knowledge import map_threat_to_atlas
+
+    atlas_hits: dict[str, int] = {}
+    for t in threats:
+        blob = " ".join(
+            str(t.get(k) or "") for k in ("title", "description", "mitigation", "cwe")
+        )
+        for tech in map_threat_to_atlas(t.get("type"), blob):
+            atlas_hits[tech["id"]] = atlas_hits.get(tech["id"], 0) + 1
+    if atlas_hits:
+        metrics["atlasCovered"] = sorted(
+            atlas_hits.keys(),
+            key=lambda k: atlas_hits[k],
+            reverse=True,
+        )
+        metrics["atlasHits"] = atlas_hits
     return metrics
 
 
@@ -979,6 +1007,55 @@ async def rename_result(
     return {"renamed": True, "id": result_id, "title": body.title.strip()}
 
 
+@router.get("/api/results/{result_id}/diff")
+async def diff_result(
+    result_id: str,
+    base_id: str = Query(..., description="基线结果 ID（较早的那次建模）"),
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
+) -> dict[str, Any]:
+    """对比两次建模结果，输出威胁的新增 / 消失 / 变化。
+
+    用于回答「架构改了一版之后，威胁有什么变化」——对应 Threat Modeling
+    Manifesto 原则 2「随设计变更在迭代中跟进」。
+
+    - ``result_id``：当前（较新）的结果
+    - ``base_id``：基线（较早）的结果
+
+    权限：两个结果都需要当前用户可访问。
+    """
+    from ..services.model_diff import diff_models
+
+    try:
+        current = result_store.get(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not current:
+        raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
+
+    try:
+        base = result_store.get(base_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not base:
+        raise HTTPException(status_code=404, detail=f"基线结果不存在：{base_id}")
+
+    result = diff_models(base.get("model"), current.get("model"))
+    result["base"] = {
+        "id": base["id"],
+        "title": base.get("title"),
+        "created_at": base.get("created_at"),
+        "methodology": base.get("methodology"),
+    }
+    result["current"] = {
+        "id": current["id"],
+        "title": current.get("title"),
+        "created_at": current.get("created_at"),
+        "methodology": current.get("methodology"),
+    }
+    return result
+
+
 @router.get("/api/results/{result_id}/export")
 async def export_result(
     result_id: str,
@@ -1059,6 +1136,9 @@ async def update_threat_status(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        # 状态不在白名单内（THREAT_STATUSES）
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(
             status_code=404, detail="结果或威胁不存在，无法更新状态"
@@ -1070,6 +1150,289 @@ async def update_threat_status(
         "status": body.status,
         "outOfScope": body.outOfScope,
     }
+
+
+@router.patch("/api/results/{result_id}/layout")
+async def update_layout(
+    result_id: str,
+    body: LayoutUpdateRequest,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """保存用户在画布上拖动后的元素坐标。
+
+    AI 自动布局不可能适合所有架构图，用户拖拽微调后需要持久化，
+    否则刷新页面布局会回到初始状态。
+    """
+    try:
+        updated = result_store.update_layout(
+            result_id, body.positions, user=current_user
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if updated == 0:
+        raise HTTPException(status_code=404, detail="结果不存在或没有匹配的元素")
+    return {"updated": updated, "result_id": result_id}
+
+
+@router.patch("/api/results/{result_id}/elements/rename")
+async def rename_element(
+    result_id: str,
+    body: ElementRenameRequest,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """重命名一个 DFD 元素（AI 提取的组件名常有偏差）。"""
+    try:
+        ok = result_store.rename_element(
+            result_id, body.element_id, body.name, user=current_user
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="结果或元素不存在")
+    return {"renamed": True, "result_id": result_id, "name": body.name.strip()}
+
+
+@router.post("/api/results/{result_id}/threats", status_code=201)
+async def add_threat(
+    result_id: str,
+    body: ThreatCreateRequest,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """在指定元素下手动新增一条威胁。
+
+    AI 提取必然有遗漏，这里允许安全工程师补充自己发现的威胁，
+    新增的威胁 ``source="manual"``，便于与 AI 识别的威胁区分。
+
+    权限：admin / secops 可改任意结果；其他用户仅限自己建模的结果。
+    """
+    try:
+        threat = result_store.add_threat(
+            result_id,
+            body.element_id,
+            body.model_dump(exclude_none=True),
+            user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if threat is None:
+        raise HTTPException(status_code=404, detail="结果或目标元素不存在")
+    return {"created": True, "result_id": result_id, "threat": threat}
+
+
+@router.patch("/api/results/{result_id}/threats/{threat_id}/edit")
+async def edit_threat(
+    result_id: str,
+    threat_id: str,
+    body: ThreatEditRequest,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """编辑一条威胁的内容（标题/描述/缓解措施/类型/严重度/CWE 等）。
+
+    与 ``PATCH .../threats/{threat_id}``（只改状态与范围外）区分：
+    本端点用于安全工程师完善威胁描述与整改建议。
+    """
+    try:
+        threat = result_store.update_threat(
+            result_id,
+            threat_id,
+            body.model_dump(exclude_none=True),
+            user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if threat is None:
+        raise HTTPException(status_code=404, detail="结果或威胁不存在")
+    return {"updated": True, "result_id": result_id, "threat": threat}
+
+
+@router.delete("/api/results/{result_id}/threats/{threat_id}")
+async def remove_threat(
+    result_id: str,
+    threat_id: str,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """删除一条威胁（AI 误报 / 经评估不适用）。"""
+    try:
+        ok = result_store.delete_threat(result_id, threat_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="结果或威胁不存在")
+    return {"deleted": True, "result_id": result_id, "threat_id": threat_id}
+
+
+@router.patch("/api/results/{result_id}/threats/{threat_id}/review")
+async def review_threat(
+    result_id: str,
+    threat_id: str,
+    body: ThreatReviewRequest,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """提交某条威胁的评审结论（确认 / 驳回）。
+
+    AI 识别的威胁必然包含误报，需要人工确认或推翻，否则噪音会淹没真实风险。
+    评审结论（review）与处置状态（status）正交：确认威胁成立不代表已缓解。
+    驳回时会同步把 status 置为 NotApplicable，避免误报继续计入待处理统计。
+
+    权限：admin / secops 可评审任意结果；其他用户仅限自己建模的结果。
+    """
+    try:
+        review = result_store.review_threat(
+            result_id,
+            threat_id,
+            body.state,
+            comment=body.comment,
+            reviewer=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if review is None:
+        raise HTTPException(status_code=404, detail="结果或威胁不存在")
+    return {"reviewed": True, "result_id": result_id, "threat_id": threat_id, "review": review}
+
+
+@router.get("/api/results/{result_id}/review-summary")
+async def get_review_summary(
+    result_id: str,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
+) -> dict[str, Any]:
+    """返回某结果的威胁评审进度（待评审 / 已确认 / 已驳回 / 评审完成率）。
+
+    用于回答「这份模型的评审做完了吗」——是评审工作流的收口指标。
+    """
+    try:
+        summary = result_store.review_summary(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if summary is None:
+        raise HTTPException(status_code=404, detail="结果不存在")
+    return {"result_id": result_id, **summary}
+
+
+@router.post("/api/results/{result_id}/threats/{threat_id}/to-vuln")
+async def convert_threat_to_vuln(
+    result_id: str,
+    threat_id: str,
+    body: ThreatToVulnRequest,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(require_login),
+) -> dict[str, Any]:
+    """把一条威胁转为漏洞管理模块的工单，打通「建模 → 整改」闭环。
+
+    权限：admin / secops 可转任意结果中的威胁；其他用户仅限自己建模的结果。
+
+    注意：本端点需要与主应用共用同一个数据库。威胁建模子应用通过
+    ``app.database.get_db`` 拿到与主应用同源的 Session（同一进程、同一库）。
+    """
+    from ..services.vuln_bridge import create_vuln_from_threat
+
+    # 1) 取威胁（内部已做 owner 权限校验）
+    try:
+        threat = result_store.get_threat(result_id, threat_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not threat:
+        raise HTTPException(status_code=404, detail="结果或威胁不存在")
+
+    # 2) 取结果元数据，作为漏洞描述里的来源溯源信息
+    try:
+        detail = result_store.get(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    result_meta: dict[str, Any] = {"threat_id": threat_id}
+    if detail:
+        result_meta.update(
+            {
+                "id": detail.get("id") or result_id,
+                "title": detail.get("title"),
+                "methodology": detail.get("methodology"),
+            }
+        )
+
+    # 3) 提交人必须是真实用户（Vuln.reporter_id 非空）
+    # 注意：admin 的 user_id 是 0，属合法值，必须用 is None 判断，
+    # 否则管理员无法把威胁转成漏洞单。
+    reporter_id = current_user.get("user_id")
+    if reporter_id is None:
+        raise HTTPException(status_code=401, detail="无法识别当前用户，请重新登录")
+
+    # 4) 落库：复用主应用的数据库 Session
+    try:
+        from app.database import SessionLocal
+        from app.models import User
+        from app.utils import write_operation_log
+    except ImportError as exc:  # pragma: no cover - 独立部署场景
+        raise HTTPException(
+            status_code=503,
+            detail="漏洞模块不可用（威胁建模未与主应用同进程部署）",
+        ) from exc
+
+    db = SessionLocal()
+    try:
+        vuln, created = create_vuln_from_threat(
+            db,
+            threat,
+            reporter_id=int(reporter_id),
+            result_meta=result_meta,
+            system_id=body.system_id,
+            api_endpoint=body.api_endpoint,
+            assignee_id=body.assignee_id,
+            skip_duplicate=body.skip_duplicate,
+        )
+        if vuln is None:
+            raise HTTPException(status_code=503, detail="漏洞模块不可用")
+        db.commit()
+        db.refresh(vuln)
+
+        # 审计日志：与主应用写操作保持一致的留痕
+        try:
+            operator = db.query(User).filter(User.id == int(reporter_id)).first()
+            if operator is not None:
+                write_operation_log(
+                    db,
+                    operator,
+                    "threat_to_vuln",
+                    "vuln",
+                    f"威胁建模 {result_id}/{threat_id} 转漏洞单 #{vuln.id}",
+                )
+        except Exception as exc:  # 审计失败不影响主流程
+            logger.warning("写审计日志失败（威胁转漏洞）：%s", exc)
+
+        return {
+            "created": created,
+            "vuln_id": vuln.id,
+            "title": vuln.title,
+            "severity": vuln.severity,
+            "vuln_category": vuln.vuln_category,
+            "vuln_type": vuln.vuln_type,
+            "status": vuln.status,
+            "result_id": result_id,
+            "threat_id": threat_id,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("威胁转漏洞失败：%s", exc)
+        raise HTTPException(status_code=500, detail=f"转漏洞单失败：{exc}") from exc
+    finally:
+        db.close()
 
 
 # ----------------------------------------------------------------------
@@ -1097,6 +1460,24 @@ async def get_system_prompt(
         "system_prompt": prompt,
         "length": len(prompt),
     }
+
+
+@router.get("/api/knowledge/atlas")
+async def get_atlas_catalog(
+    _auth: None = Depends(verify_api_key),
+) -> dict[str, Any]:
+    """返回 MITRE ATLAS 技术目录（AI 系统对抗战术与技术）。
+
+    ATLAS 相当于 AI 领域的 ATT&CK，用于把威胁对齐到业界通用的攻击语言，
+    便于跨团队沟通与红队验证。此处同时返回按战术分组的视图，方便前端展示。
+    """
+    from ..services.ai_knowledge import get_atlas_techniques
+
+    items = get_atlas_techniques()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for it in items:
+        grouped.setdefault(it["tactic_label"], []).append(it)
+    return {"total": len(items), "items": items, "byTactic": grouped}
 
 
 @router.get("/api/templates", response_model=TemplateListResponse)

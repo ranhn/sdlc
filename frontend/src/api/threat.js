@@ -272,6 +272,20 @@ export async function getResultDetail(resultId) {
 }
 
 /**
+ * 对比两次建模结果，返回威胁的新增 / 消失 / 变化。
+ * 用于回答「架构改了一版之后，威胁有什么变化」。
+ * @param {string} resultId 当前（较新）结果 ID
+ * @param {string} baseId 基线（较早）结果 ID
+ * @returns {Promise<{summary: object, added: object[], removed: object[], changed: object[], unchanged: object[], base: object, current: object}>}
+ */
+export async function diffResult(resultId, baseId) {
+  const { data } = await http.get(`/results/${resultId}/diff`, {
+    params: { base_id: baseId },
+  })
+  return data
+}
+
+/**
  * 删除一条历史建模结果
  * @param {string} resultId
  */
@@ -317,6 +331,115 @@ export async function updateThreatStatus(resultId, threatId, status, opts = {}) 
   if (status !== undefined && status !== null) payload.status = status
   if (typeof opts.outOfScope === 'boolean') payload.outOfScope = opts.outOfScope
   const { data } = await http.patch(`/results/${resultId}/threats/${threatId}`, payload)
+  return data
+}
+
+/**
+ * 保存用户在画布上拖动后的元素坐标。
+ * AI 自动布局不可能适配所有架构图，用户微调后需要持久化。
+ * @param {string} resultId
+ * @param {Record<string, {x: number, y: number}>} positions 形如 { cellId: {x, y} }
+ * @returns {Promise<{updated: number}>}
+ */
+export async function updateLayout(resultId, positions) {
+  const { data } = await http.patch(`/results/${resultId}/layout`, { positions })
+  return data
+}
+
+/**
+ * 重命名一个 DFD 元素（AI 提取的组件名常有偏差）。
+ * @param {string} resultId
+ * @param {string} elementId 元素的 cell.id 或原组件名
+ * @param {string} name 新名称
+ * @returns {Promise<{renamed: boolean, name: string}>}
+ */
+export async function renameElement(resultId, elementId, name) {
+  const { data } = await http.patch(`/results/${resultId}/elements/rename`, {
+    element_id: elementId,
+    name,
+  })
+  return data
+}
+
+/**
+ * 提交一条威胁的评审结论（确认 / 驳回）。
+ *
+ * AI 识别的威胁必然含误报，需要人工确认或推翻。评审结论与处置状态正交：
+ * 确认威胁成立（Confirmed）不代表已经缓解（Mitigated）。
+ *
+ * @param {string} resultId
+ * @param {string} threatId
+ * @param {'Pending'|'Confirmed'|'Rejected'} state 评审结论
+ * @param {string} [comment] 评审意见（如驳回原因）
+ * @returns {Promise<{review: {state: string, comment: string, reviewer: string, reviewed_at: number}}>}
+ */
+export async function reviewThreat(resultId, threatId, state, comment) {
+  const { data } = await http.patch(`/results/${resultId}/threats/${threatId}/review`, {
+    state,
+    comment: comment || undefined,
+  })
+  return data
+}
+
+/**
+ * 查询某结果的威胁评审进度（待评审 / 已确认 / 已驳回 / 评审完成率）。
+ * @param {string} resultId
+ * @returns {Promise<{total: number, pending: number, confirmed: number, rejected: number, reviewRate: number, reviewers: string[]}>}
+ */
+export async function getReviewSummary(resultId) {
+  const { data } = await http.get(`/results/${resultId}/review-summary`)
+  return data
+}
+
+/**
+ * 手动新增一条威胁（AI 提取有遗漏时由安全工程师补充）。
+ * @param {string} resultId
+ * @param {{element_id: string, title: string, type?: string, severity?: string, status?: string, description?: string, mitigation?: string, cwe?: string}} payload
+ * @returns {Promise<{created: boolean, threat: object}>}
+ */
+export async function addThreat(resultId, payload) {
+  const { data } = await http.post(`/results/${resultId}/threats`, payload)
+  return data
+}
+
+/**
+ * 编辑一条威胁的内容（标题/描述/缓解措施/类型/严重度/CWE 等）。
+ * @param {string} resultId
+ * @param {string} threatId
+ * @param {object} payload 仅传需要修改的字段
+ * @returns {Promise<{updated: boolean, threat: object}>}
+ */
+export async function editThreat(resultId, threatId, payload) {
+  const { data } = await http.patch(`/results/${resultId}/threats/${threatId}/edit`, payload)
+  return data
+}
+
+/**
+ * 删除一条威胁（AI 误报 / 经评估不适用）。
+ * @param {string} resultId
+ * @param {string} threatId
+ */
+export async function deleteThreat(resultId, threatId) {
+  const { data } = await http.delete(`/results/${resultId}/threats/${threatId}`)
+  return data
+}
+
+/**
+ * 把一条威胁转为漏洞管理模块的工单。
+ * 打通「威胁建模 → 漏洞整改」闭环：威胁的标题/描述/缓解措施/CWE 会自动
+ * 映射到漏洞字段，并带上来源建模结果的溯源信息。
+ * @param {string} resultId
+ * @param {string} threatId
+ * @param {{system_id?: number, assignee_id?: number, api_endpoint?: string, skip_duplicate?: boolean}} [opts]
+ * @returns {Promise<{created: boolean, vuln_id: number, title: string, severity: string, vuln_category: string, vuln_type: string, status: string}>}
+ */
+export async function convertThreatToVuln(resultId, threatId, opts = {}) {
+  const payload = {}
+  if (opts.system_id != null) payload.system_id = opts.system_id
+  if (opts.assignee_id != null) payload.assignee_id = opts.assignee_id
+  if (opts.api_endpoint) payload.api_endpoint = opts.api_endpoint
+  if (typeof opts.skip_duplicate === 'boolean') payload.skip_duplicate = opts.skip_duplicate
+  const { data } = await http.post(`/results/${resultId}/threats/${threatId}/to-vuln`, payload)
   return data
 }
 

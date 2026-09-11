@@ -1,175 +1,261 @@
 <template>
   <div class="input-panel">
-    <!-- 头部 -->
-    <header class="panel-head">
-      <div class="head-l">
+    <!-- ═══ 左侧引导栏：步骤 + 场景模板 + 输入建议 ═══ -->
+    <aside class="guide-rail">
+      <div class="rail-head">
         <div class="head-icon">
-          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
-            <path d="M3 6h14M3 10h14M3 14h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true">
+            <path d="M10 2L2 6l8 4 8-4-8-4z" fill="currentColor" opacity="0.9" />
+            <path d="M2 10l8 4 8-4M2 14l8 4 8-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
           </svg>
         </div>
         <div class="head-text">
-          <h3>AI 威胁建模输入</h3>
-          <p>粘贴文档 → AI 生成 DFD 与威胁列表</p>
-        </div>
-      </div>
-    </header>
-
-    <div class="panel-body">
-      <!-- 威胁建模标题 -->
-      <section class="field field-grow-title">
-        <div class="field-head">
-          <label>
-            <span class="field-num">01</span>
-            <span>威胁建模标题</span>
-            <span class="optional">（可选）</span>
-          </label>
-        </div>
-        <div class="ta-wrap">
-          <input
-            v-model="title"
-            class="title-input"
-            type="text"
-            placeholder="例如：用户管理系统威胁建模、电商平台支付模块安全分析…"
-            maxlength="60"
-          />
-        </div>
-      </section>
-
-      <!-- 需求文档 -->
-      <section class="field field-grow-req">
-        <div class="field-head">
-          <label>
-            <span class="field-num">02</span>
-            <span>系统需求文档</span>
-            <span class="required">*</span>
-          </label>
-          <div class="field-head-r">
-            <span class="char-count" :class="{ ok: requirements.length >= 10 }">
-              {{ requirements.length }} / 10
-            </span>
-            <button
-              class="upload-btn"
-              type="button"
-              :disabled="uploadingReq"
-              @click="pickFile('requirements')"
-            >
-              <span v-if="uploadingReq" class="mini-spinner" />
-              <svg v-else viewBox="0 0 20 20" width="12" height="12" aria-hidden="true">
-                <path d="M10 3v8M6 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M3 13v3a1 1 0 001 1h12a1 1 0 001-1v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              </svg>
-              <span>{{ uploadingReq ? '解析中…' : '上传文档' }}</span>
-            </button>
-          </div>
-        </div>
-        <div class="ta-wrap">
-          <textarea
-            v-model="requirements"
-            rows="4"
-            placeholder="粘贴或上传系统需求文档，例如：&#10;1、系统包含用户管理、订单、支付模块；&#10;2、用户通过 Web 登录，数据存入 MySQL；&#10;3、支持第三方支付回调（微信/支付宝）等。"
-            @paste="onPaste($event, 'requirements')"
-          ></textarea>
-        </div>
-        <div v-if="reqAttachment" class="field-actions">
-          <div class="attachment-chip">
-            <svg viewBox="0 0 20 20" width="13" height="13" aria-hidden="true">
-              <path d="M6 4h8a1 1 0 011 1v12l-2.5-1.5L10 17l-2.5-1.5L5 17V5a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-            </svg>
-            <span class="att-name" :title="reqAttachment.filename">{{ reqAttachment.filename }}</span>
-            <span v-if="reqAttachment.image_count" class="att-imgs">{{ reqAttachment.image_count }} 张架构图</span>
-            <button class="att-remove" type="button" title="移除附件" @click="removeAttachment('requirements')">✕</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 架构设计 -->
-      <section class="field field-grow-arch">
-        <div class="field-head">
-          <label>
-            <span class="field-num">03</span>
-            <span>产品架构设计文档</span>
-            <span class="optional">（可选）</span>
-          </label>
-          <div class="field-head-r">
-            <button
-              class="upload-btn"
-              type="button"
-              :disabled="uploadingArch"
-              @click="pickFile('architecture')"
-            >
-              <span v-if="uploadingArch" class="mini-spinner" />
-              <svg v-else viewBox="0 0 20 20" width="12" height="12" aria-hidden="true">
-                <path d="M10 3v8M6 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M3 13v3a1 1 0 001 1h12a1 1 0 001-1v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              </svg>
-              <span>{{ uploadingArch ? '解析中…' : '上传文档' }}</span>
-            </button>
-          </div>
-        </div>
-        <div class="ta-wrap">
-          <textarea
-            v-model="architecture"
-            rows="4"
-            placeholder="粘贴或上传架构设计文档，例如：&#10;1、前端 Vue 应用 → 后端 API → 数据库；&#10;2、Redis 缓存、消息队列、对象存储等。"
-            @paste="onPaste($event, 'architecture')"
-          ></textarea>
-        </div>
-        <div v-if="archAttachment" class="field-actions">
-          <div class="attachment-chip">
-            <svg viewBox="0 0 20 20" width="13" height="13" aria-hidden="true">
-              <path d="M6 4h8a1 1 0 011 1v12l-2.5-1.5L10 17l-2.5-1.5L5 17V5a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-            </svg>
-            <span class="att-name" :title="archAttachment.filename">{{ archAttachment.filename }}</span>
-            <span v-if="archAttachment.image_count" class="att-imgs">{{ archAttachment.image_count }} 张架构图</span>
-            <button class="att-remove" type="button" title="移除附件" @click="removeAttachment('architecture')">✕</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- P0-3：粘贴的架构图/数据流图缩略图列表（不进 LLM 多模态） -->
-      <div v-if="pastedImages.length" class="pasted-images">
-        <div class="pi-head">
-          <span class="pi-title">已粘贴的架构图</span>
-          <span class="pi-hint">（这些图将以多模态方式一起发给 AI）</span>
-          <button class="pi-clear" type="button" @click="clearPastedImages">清空</button>
-        </div>
-        <div class="pi-grid">
-          <div v-for="(img, i) in pastedImages" :key="i" class="pi-item">
-            <img :src="img.dataUri" :alt="img.name" />
-            <span class="pi-name" :title="img.name">{{ img.name }}</span>
-            <button class="pi-remove" type="button" title="移除" @click="removePastedImage(i)">✕</button>
-          </div>
+          <h3>AI 威胁建模</h3>
+          <p>文档 → DFD + 威胁清单</p>
         </div>
       </div>
 
-      <!-- 方法论 + CTA（同一行） -->
-      <div class="cta-row">
-        <el-select
-          v-model="methodology"
-          class="methodology-select"
-          placeholder="选择威胁建模方法论"
-          popper-class="methodology-popper"
-        >
-          <el-option
-            v-for="m in methodologyOptions"
-            :key="m.value"
-            :label="m.label"
-            :value="m.value"
+      <!-- 步骤指示器 -->
+      <ol class="rail-steps">
+        <li v-for="(s, i) in railSteps" :key="s.key" class="rail-step" :class="s.state" :title="s.tip || ''">
+          <span class="rs-idx">
+            <svg v-if="s.state === 'done'" viewBox="0 0 16 16" width="9" height="9" aria-hidden="true">
+              <path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="2.4"
+                    stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <template v-else>{{ i + 1 }}</template>
+          </span>
+          <span class="rs-body">
+            <span class="rs-label">{{ s.label }}</span>
+            <span v-if="s.hint" class="rs-hint">{{ s.hint }}</span>
+          </span>
+        </li>
+      </ol>
+
+      <!-- 场景模板 -->
+      <div class="rail-block">
+        <div class="rb-head">
+          <span class="rb-title">场景模板</span>
+          <span v-if="templates.length" class="rb-count">{{ templates.length }}</span>
+        </div>
+        <div v-if="templates.length" class="tpl-list">
+          <button
+            v-for="tpl in templates"
+            :key="tpl.id"
+            type="button"
+            class="tpl-row"
+            :class="{ active: activeTemplate?.id === tpl.id }"
+            :title="tpl.description"
+            @click="fillTemplate(tpl)"
           >
-            <div class="methodology-option">
-              <span class="mo-label">{{ m.label }}</span>
-              <span class="mo-desc">{{ m.desc }}</span>
+            <span class="tpl-dot" />
+            <span class="tpl-row-name">{{ tpl.name }}</span>
+            <svg class="tpl-arrow" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+              <path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.9"
+                    stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <p v-else class="rail-empty">暂无模板，可直接在右侧填写</p>
+      </div>
+
+      <!-- 核心能力：把引导栏下方空白填实，同时向用户说明产品价值 -->
+      <div class="rail-block">
+        <div class="rb-head">
+          <span class="rb-title">核心能力</span>
+        </div>
+        <ul class="feat-list">
+          <li v-for="f in features" :key="f.title" class="feat-row">
+            <span class="feat-icon">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor"
+                   stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path :d="f.path" />
+              </svg>
+            </span>
+            <span class="feat-body">
+              <span class="feat-title">{{ f.title }}</span>
+              <span class="feat-desc">{{ f.desc }}</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- ═══ 右侧：步骤化输入工作区 ═══ -->
+    <div class="work-area">
+      <div class="work-scroll">
+        <!-- Step 01 标题 -->
+        <section class="card card--compact">
+          <div class="card-head">
+            <span class="card-num">01</span>
+            <div class="card-title-wrap">
+              <h4>建模标题 <span class="tag-req">必填</span></h4>
+              <p class="card-sub">用于在结果列表中识别本次建模</p>
             </div>
-          </el-option>
-        </el-select>
+          </div>
+          <div class="ta-wrap ta-wrap--line">
+            <input
+              v-model="title"
+              class="title-input"
+              type="text"
+              placeholder="例如：电商平台支付模块安全分析"
+              maxlength="60"
+            />
+          </div>
+        </section>
+
+        <!-- Step 02 需求文档 -->
+        <section class="card card--grow">
+          <div class="card-head">
+            <span class="card-num card-num--req">02</span>
+            <div class="card-title-wrap">
+              <h4>系统需求文档 <span class="tag-req">必填</span></h4>
+              <p class="card-sub">功能描述、参与角色、涉及的数据类型</p>
+            </div>
+            <div class="card-head-r">
+              <span class="char-pill" :class="{ ok: requirements.length >= 10 }">
+                {{ requirements.length }}<i>/10</i>
+              </span>
+              <button
+                class="upload-btn"
+                type="button"
+                :disabled="uploadingReq"
+                @click="pickFile('requirements')"
+              >
+                <span v-if="uploadingReq" class="mini-spinner" />
+                <svg v-else viewBox="0 0 20 20" width="12" height="12" aria-hidden="true">
+                  <path d="M10 3v8M6 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M3 13v3a1 1 0 001 1h12a1 1 0 001-1v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                <span>{{ uploadingReq ? '解析中…' : '上传' }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="ta-wrap">
+            <textarea
+              v-model="requirements"
+              rows="4"
+              placeholder="粘贴或上传系统需求文档，例如：&#10;1、系统包含用户管理、订单、支付模块；&#10;2、用户通过 Web 登录，数据存入 MySQL；&#10;3、支持第三方支付回调（微信/支付宝）等。"
+              @paste="onPaste($event, 'requirements')"
+            ></textarea>
+          </div>
+
+          <div v-if="reqAttachment" class="field-actions">
+            <div class="attachment-chip">
+              <svg viewBox="0 0 20 20" width="12" height="12" aria-hidden="true">
+                <path d="M6 4h8a1 1 0 011 1v12l-2.5-1.5L10 17l-2.5-1.5L5 17V5a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+              </svg>
+              <span class="att-name" :title="reqAttachment.filename">{{ reqAttachment.filename }}</span>
+              <span v-if="reqAttachment.image_count" class="att-imgs">{{ reqAttachment.image_count }} 图</span>
+              <button class="att-remove" type="button" title="移除附件" @click="removeAttachment('requirements')">✕</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Step 03 架构文档 -->
+        <section class="card card--grow">
+          <div class="card-head">
+            <span class="card-num">03</span>
+            <div class="card-title-wrap">
+              <h4>产品架构设计 <span class="tag-opt">可选</span></h4>
+              <p class="card-sub">服务拆分、调用链路、信任边界</p>
+            </div>
+            <div class="card-head-r">
+              <button
+                class="upload-btn"
+                type="button"
+                :disabled="uploadingArch"
+                @click="pickFile('architecture')"
+              >
+                <span v-if="uploadingArch" class="mini-spinner" />
+                <svg v-else viewBox="0 0 20 20" width="12" height="12" aria-hidden="true">
+                  <path d="M10 3v8M6 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M3 13v3a1 1 0 001 1h12a1 1 0 001-1v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                <span>{{ uploadingArch ? '解析中…' : '上传' }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="ta-wrap">
+            <textarea
+              v-model="architecture"
+              rows="4"
+              placeholder="粘贴或上传架构设计文档，例如：&#10;1、前端 Vue 应用 → 后端 API → 数据库；&#10;2、Redis 缓存、消息队列、对象存储等。"
+              @paste="onPaste($event, 'architecture')"
+            ></textarea>
+          </div>
+
+          <div v-if="archAttachment" class="field-actions">
+            <div class="attachment-chip">
+              <svg viewBox="0 0 20 20" width="12" height="12" aria-hidden="true">
+                <path d="M6 4h8a1 1 0 011 1v12l-2.5-1.5L10 17l-2.5-1.5L5 17V5a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+              </svg>
+              <span class="att-name" :title="archAttachment.filename">{{ archAttachment.filename }}</span>
+              <span v-if="archAttachment.image_count" class="att-imgs">{{ archAttachment.image_count }} 图</span>
+              <button class="att-remove" type="button" title="移除附件" @click="removeAttachment('architecture')">✕</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 粘贴图缩略图（P0-3：多模态发送给 AI） -->
+        <div v-if="pastedImages.length" class="pasted-images">
+          <div class="pi-head">
+            <span class="pi-title">已粘贴的架构图</span>
+            <span class="pi-hint">多模态发送给 AI</span>
+            <button class="pi-clear" type="button" @click="clearPastedImages">清空</button>
+          </div>
+          <div class="pi-grid">
+            <div v-for="(img, i) in pastedImages" :key="i" class="pi-item">
+              <img :src="img.dataUri" :alt="img.name" />
+              <span class="pi-name" :title="img.name">{{ img.name }}</span>
+              <button class="pi-remove" type="button" title="移除" @click="removePastedImage(i)">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 缓存命中提示（默认隐藏，仅命中缓存时显示） -->
+        <div v-if="replayAvailable" class="fp-hint fp-hint--replay">
+          <div class="fp-row">
+            <span class="fp-dot same" />
+            <span class="fp-text">输入与上次一致，再次分析将命中结果缓存（秒级、结果一致）</span>
+            <button class="fp-replay" type="button" @click="submit(true)">重放上次输入</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ 固定操作条 ═══ -->
+      <footer class="action-bar">
+        <div class="ab-left">
+          <el-select
+            v-model="methodology"
+            class="methodology-select"
+            placeholder="选择威胁建模方法论"
+            popper-class="methodology-popper"
+          >
+            <el-option
+              v-for="m in methodologyOptions"
+              :key="m.value"
+              :label="m.label"
+              :value="m.value"
+            >
+              <div class="methodology-option">
+                <span class="mo-label">{{ m.label }}</span>
+                <span class="mo-desc">{{ m.desc }}</span>
+              </div>
+            </el-option>
+          </el-select>
+          <span class="ab-method-desc">{{ currentMethodologyDesc }}</span>
+        </div>
+
         <button
           class="btn btn-primary analyze-btn"
           :disabled="analyzing || !canAnalyze"
           @click="submit"
         >
           <span v-if="!analyzing" class="cta-content">
-            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+            <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true">
               <path d="M10 2L2 6l8 4 8-4-8-4z" fill="currentColor" opacity="0.85" />
               <path d="M2 10l8 4 8-4M2 14l8 4 8-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
             </svg>
@@ -180,92 +266,17 @@
             <span>AI 正在分析文档…</span>
           </span>
         </button>
-      </div>
-
-      <!-- 输入指纹 / 稳定性提示（默认隐藏，仅命中缓存时显示） -->
-      <div v-if="replayAvailable" class="fp-hint fp-hint--replay">
-        <div class="fp-row">
-          <span class="fp-dot" :class="{ same: replayAvailable }" />
-          <span class="fp-text">
-            <template v-if="replayAvailable">
-              输入与上次一致，再次分析将命中结果缓存（秒级、结果一致）
-            </template>
-            <template v-else>
-              每次分析使用固定模型种子 + 结构化输出，结果可复现
-            </template>
-          </span>
-        </div>
-        <div v-if="currentFingerprint" class="fp-meta">
-          <span class="fp-label">输入指纹</span>
-          <code class="fp-value">{{ currentFingerprint.slice(0, 16) }}…</code>
-          <button
-            v-if="replayAvailable"
-            class="fp-replay"
-            type="button"
-            @click="submit(true)"
-          >
-            重放上次相同输入
-          </button>
-        </div>
-      </div>
-
+      </footer>
     </div>
 
-    <!-- 模板抽屉（固定在输入面板底部，不参与 panel-body 滚动，避免被裁切） -->
-      <section class="example-box">
-        <div
-          class="example-head"
-          role="button"
-          tabindex="0"
-          :aria-expanded="showExample"
-          @click.stop="toggleShowExample"
-          @keydown.enter.stop.prevent="toggleShowExample"
-          @keydown.space.stop.prevent="toggleShowExample"
-        >
-          <span class="ex-l">
-            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
-              <path d="M3 4h14v12H3z" fill="none" stroke="currentColor" stroke-width="1.5" />
-              <path d="M3 8h14M7 4v12" fill="none" stroke="currentColor" stroke-width="1.5" />
-            </svg>
-            <span>示例输入 / 场景模板</span>
-            <span v-if="templates.length" class="ex-count">{{ templates.length }} 个模板</span>
-          </span>
-          <span class="arrow" :class="{ open: showExample }">▾</span>
-        </div>
-        <transition name="slide">
-          <div v-if="showExample" class="example-body">
-            <div v-if="templates.length" class="template-grid">
-              <button
-                v-for="tpl in templates"
-                :key="tpl.id"
-                class="template-card"
-                :class="{ active: activeTemplate?.id === tpl.id }"
-                @click="fillTemplate(tpl)"
-                type="button"
-              >
-                <div class="tpl-name">
-                  <span class="tpl-icon">🧩</span>
-                  <span>{{ tpl.name }}</span>
-                </div>
-                <div class="tpl-desc">{{ tpl.description }}</div>
-                <div v-if="tpl.tags?.length" class="tpl-tags">
-                  <span v-for="tag in tpl.tags" :key="tag" class="tpl-tag">{{ tag }}</span>
-                </div>
-              </button>
-            </div>
-
-          </div>
-        </transition>
-      </section>
-
-      <!-- 隐藏的文档上传 file input -->
-      <input
-        ref="fileInput"
-        type="file"
-        :accept="ACCEPT"
-        style="display: none"
-        @change="handleFileSelected"
-      />
+    <!-- 隐藏的文档上传 file input -->
+    <input
+      ref="fileInput"
+      type="file"
+      :accept="ACCEPT"
+      style="display: none"
+      @change="handleFileSelected"
+    />
   </div>
 </template>
 
@@ -325,7 +336,7 @@ async function onPaste(ev, _target) {
     }
     try {
       const dataUri = await readAsDataURI(file)
-      // 去重：与已有 pastedImages 比 SHA-1
+      // 去重：与已有 pastedImages 比 data URI
       if (pastedImages.value.some((p) => p.dataUri === dataUri)) continue
       pastedImages.value.push({
         dataUri,
@@ -476,14 +487,70 @@ const methodologyOptions = [
     label: 'EOP',
     desc: 'OWASP Cornucopia：认证 / 授权 / 密码学 / 会话管理',
   },
+  {
+    value: 'MAESTRO',
+    label: 'MAESTRO',
+    desc: 'OWASP 多智能体框架：目标劫持 / 工具滥用 / 权限扩散 / 记忆投毒',
+  },
 ]
 const methodology = ref('STRIDE')
+
+const currentMethodologyDesc = computed(
+  () => methodologyOptions.find((m) => m.value === methodology.value)?.desc || '',
+)
+
+// —— 左侧「核心能力」条目：标题 + 一句短介绍（≤14 字，保证单行） ——
+const features = [
+  {
+    title: '8 种方法论覆盖',
+    desc: 'STRIDE / LINDDUN / MAESTRO 等',
+    path: 'M2 13V3M2 13h12M4.5 10.5l3-4 2.5 2.5 4.5-5.5',
+  },
+  {
+    title: '文档直接解析',
+    desc: '需求 / 架构文档自动抽取',
+    path: 'M9 1.5H4a1 1 0 00-1 1v11a1 1 0 001 1h8a1 1 0 001-1V5.5L9 1.5zM9 1.5v4h4',
+  },
+  {
+    title: '结果可复现',
+    desc: '固定种子，随时复测比对',
+    path: 'M13.5 8a5.5 5.5 0 11-1.7-3.97M13.5 2v3.5H10',
+  },
+]
+
+// —— 左侧步骤指示器：随输入完成度自动推进 ——
+const railSteps = computed(() => {
+  const hasReq = requirements.value.trim().length >= 10 ||
+    (reqAttachment.value?.image_count || 0) > 0
+  const hasArch = architecture.value.trim().length > 0 ||
+    (archAttachment.value?.image_count || 0) > 0
+  const hasTitle = title.value.trim().length > 0
+  const defs = [
+    { key: 'title', label: '填写标题', hint: '', done: hasTitle, current: !hasTitle },
+    { key: 'req', label: '录入需求文档', hint: '', done: hasReq, current: !hasReq && hasTitle, tip: '≥ 10 字（程序硬约束）' },
+    { key: 'arch', label: '补充架构设计', hint: '', done: hasArch },
+    { key: 'method', label: '选择方法论', hint: '', done: true },
+  ]
+  let currentAssigned = false
+  return defs.map((d) => {
+    let state = 'todo'
+    if (d.done) state = 'done'
+    else if (!currentAssigned) {
+      state = 'current'
+      currentAssigned = true
+    }
+    return { ...d, state }
+  })
+})
 
 function toggleShowExample() {
   showExample.value = !showExample.value
 }
 
 const canAnalyze = computed(() => {
+  // 标题必填（非空白字符）
+  if (title.value.trim().length === 0) return false
+  // 需求文档必填：文本 ≥ 10 字，或附件含文本/图片
   if (requirements.value.trim().length >= 10) return true
   if (reqAttachment.value && (reqAttachment.value.text.trim().length >= 10 || reqAttachment.value.image_count > 0)) return true
   return false
@@ -555,7 +622,11 @@ watch(
 
 async function submit(isReplay = false) {
   if (!canAnalyze.value) {
-    emit('error', '请至少输入 10 个字符的需求文档内容，或上传一份需求文档')
+    if (title.value.trim().length === 0) {
+      emit('error', '请先填写建模标题')
+    } else {
+      emit('error', '请至少输入 10 个字符的需求文档内容，或上传一份需求文档')
+    }
     return
   }
   // P0-4：子组件级防抖——不依赖父组件 disabled（按钮 disabled 是 reactive，
@@ -651,157 +722,552 @@ onMounted(loadTemplates)
 </script>
 
 <style scoped>
+/* ══════════════════════════════════════════════════════════════════
+   设计 token —— 统一色彩 / 圆角 / 描边 / 阴影，避免散落的魔法值
+   ══════════════════════════════════════════════════════════════════ */
 .input-panel {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
+  --c-primary: #2563eb;
+  --c-primary-soft: #eff6ff;
+  --c-primary-line: #bfdbfe;
+  --c-text: #0f172a;
+  --c-text-2: #475569;
+  --c-text-3: #64748b;
+  --c-text-4: #94a3b8;
+  --c-line: #e2e8f0;
+  --c-line-soft: #eef2f7;
+  --c-bg: #ffffff;
+  --c-bg-soft: #f8fafc;
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 12px;
+  --sh-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --sh-2: 0 2px 8px rgba(15, 23, 42, 0.06);
 
-/* —— 头部 —— */
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 10px;
-  padding: 10px 0 12px;
-}
-.head-l {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-.head-icon {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-  color: #fff;
-  box-shadow: 0 3px 10px rgba(59,130,246,0.30);
-}
-.head-text {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.head-text h3 {
-  font-size: 14px;
-  font-weight: 700;
-  color: #1e293b;
-  line-height: 1.2;
-  letter-spacing: 0.1px;
-}
-.head-text p {
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-/* —— 主体 —— */
-.panel-body {
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  min-height: 0;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.field-grow-title {
-  flex-shrink: 0;
-}
-.field-grow-req,
-.field-grow-arch {
-  flex: 1 1 0;
-  min-height: 130px;
-}
-.field-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 2px;
-}
-.field-head-r {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-.field-head label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #475569;
-}
-.field-num {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #94a3b8;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  border-radius: 5px;
-}
-.required {
-  color: #ef4444;
-  font-weight: 700;
-}
-.optional {
-  color: #94a3b8;
-  font-weight: 400;
-  font-size: 11px;
-}
-.char-count {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10.5px;
-  color: #94a3b8;
-}
-.char-count.ok {
-  color: #10b981;
-  font-weight: 600;
-}
-
-.ta-wrap {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  flex: 1;
-  min-height: 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  transition: border-color 0.15s, box-shadow 0.15s;
-  overflow: hidden;
-}
-.ta-wrap:focus-within {
-  border-color: #bfdbfe;
-  box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
-}
-.field textarea {
-  flex: 1;
   width: 100%;
   height: 100%;
-  padding: 8px 12px;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ══════════════════════ 左侧引导栏 ══════════════════════ */
+.guide-rail {
+  width: 232px;
+  flex: none;
+  /* 内容不足时随内容收高，不再被右侧主区拉长留出大片空白 */
+  align-self: flex-start;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px 10px;
+  background: var(--c-bg-soft);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  overflow-y: auto;
+}
+
+.rail-head {
+  display: flex;
+  /* stretch 让 .head-text 撑到与图标同高，h3 贴顶、p 贴底，
+     与图标的视觉基线对齐。 */
+  align-items: stretch;
+  gap: 9px;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid var(--c-line);
+}
+.head-icon {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(37, 99, 235, 0.28);
+}
+/* 让 h3 / p 撑满图标高度(28px)：h3 贴顶、p 贴底，
+   与图标的视觉基线自然对齐，不再"上半高下半空"。 */
+.head-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 28px;
+  flex: 1;
+  min-width: 0;
+}
+.head-text h3 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-text);
+  line-height: 1.25;
+  letter-spacing: 0.1px;
+  margin: 0;
+}
+.head-text p {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--c-text-4);
+  margin: 0;
+}
+
+/* —— 步骤指示器 —— */
+.rail-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rail-step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 6px 6px 2px;
+  border-radius: var(--r-sm);
+}
+/* 步骤连线 */
+.rail-step::after {
+  content: '';
+  position: absolute;
+  left: 14.5px;
+  top: 28px;
+  width: 1.5px;
+  height: calc(100% - 20px);
+  background: var(--c-line);
+}
+.rail-step:last-child::after { display: none; }
+
+.rs-idx {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  /* 待办态：序号 2/3 加深一档，让 4 步节奏均衡，
+     不再被 current 行的蓝底衬得"塌"下去。 */
+  color: var(--c-text-3);
+  background: var(--c-bg);
+  border: 1.5px solid var(--c-line-soft);
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+.rail-step.done .rs-idx {
+  color: #fff;
+  background: #10b981;
+  border-color: #10b981;
+}
+.rail-step.current .rs-idx {
+  color: #fff;
+  background: var(--c-primary);
+  border-color: var(--c-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+.rs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding-top: 1px;
+}
+.rs-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text-2);
+  line-height: 1.35;
+}
+.rail-step.done .rs-label { color: var(--c-text-4); }
+.rail-step.current .rs-label { color: var(--c-primary); }
+.rs-hint {
+  font-size: 11px;
+  color: var(--c-text-4);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 168px;
+}
+
+/* —— 引导栏区块 —— */
+.rail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--c-line);
+  min-height: 0;
+}
+.rb-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+.rb-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--c-text-4);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.rb-count {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--c-text-3);
+  background: #fff;
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+/* —— 场景模板列表 —— */
+.tpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 模板少时按内容高度，模板多时才在栏内滚动 */
+  max-height: min(210px, 32vh);
+  overflow-y: auto;
+  margin: 0 -3px;
+  padding: 0 3px;
+}
+.tpl-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 7px;
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--c-text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tpl-row:hover {
+  color: var(--c-primary);
+  background: #fff;
+  border-color: var(--c-primary-line);
+}
+.tpl-row.active {
+  color: var(--c-primary);
+  font-weight: 600;
+  background: var(--c-primary-soft);
+  border-color: var(--c-primary-line);
+}
+.tpl-dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: #cbd5e1;
+  transition: all 0.15s;
+}
+.tpl-row:hover .tpl-dot,
+.tpl-row.active .tpl-dot {
+  background: var(--c-primary);
+  box-shadow: 0 0 0 2.5px rgba(37, 99, 235, 0.14);
+}
+.tpl-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tpl-arrow {
+  flex: none;
+  opacity: 0;
+  color: var(--c-primary);
+  transition: all 0.15s;
+}
+.tpl-row:hover .tpl-arrow,
+.tpl-row.active .tpl-arrow {
+  opacity: 1;
+  transform: translateX(1px);
+}
+.rail-empty {
+  font-size: 10.5px;
+  color: var(--c-text-4);
+  padding: 2px;
+  line-height: 1.5;
+}
+
+/* —— 核心能力条目 —— */
+.feat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.feat-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.feat-icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  /* 两行文字时图标贴顶会偏上，下移 5px 与标题行视觉居中对齐 */
+  margin-top: 5px;
+  display: grid;
+  place-items: center;
+  color: var(--c-primary);
+  background: var(--c-primary-soft);
+  border: 1px solid var(--c-primary-line);
+  border-radius: 6px;
+}
+.feat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.feat-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--c-text-2);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* 一句短介绍：正常单行；偶发溢出时省略号兜底，不换行撑高 */
+.feat-desc {
+  font-size: 10.5px;
+  color: var(--c-text-4);
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ══════════════════════ 右侧工作区 ══════════════════════ */
+.work-area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* .work-scroll 不再自己滚动，改为让内部卡片按剩余高度弹性分配，
+   使整页刚好占满视口、不出现右侧滚动条。
+   前提：每一层 flex 容器都必须显式 min-height: 0，否则 flex 项默认
+   min-height: auto 会阻止收缩，卡片会被内容顶高、再次溢出。 */
+.work-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  padding: 2px 2px 2px 2px;
+}
+
+/* —— 输入卡片 —— */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--c-bg);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-1);
+  transition: border-color 0.18s, box-shadow 0.18s;
+  flex: none;
+  min-height: 0;
+}
+.card:focus-within {
+  border-color: var(--c-primary-line);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.07), var(--sh-2);
+}
+/* .card--grow: 文档输入卡片。02/03 平分 .work-scroll 的剩余高度
+   （01 标题卡按内容自适应），使整页刚好占满视口。
+   min-height: 0 是必需的：否则 flex 项默认 min-height:auto，
+   卡片会被 textarea 内容顶高，父级再次溢出。 */
+.card--grow {
+  flex: 1 1 0;
+  min-height: 0;
+}
+/* .card--compact: 01 标题卡。只有一行输入，按内容定高、
+   不参与 02/03 的高度平分。 */
+.card--compact {
+  flex: none;
+  gap: 6px;
+  padding: 10px 14px 12px;
+}
+/* 标题行：编号 + 标题/描述 + 右侧操作（字符计数/上传）垂直居中 */
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.card-head-r {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: none;
+}
+.card-num {
+  width: 21px;
+  height: 21px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--c-text-3);
+  background: var(--c-bg-soft);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+}
+.card-num--req {
+  color: var(--c-primary);
+  background: var(--c-primary-soft);
+  border-color: var(--c-primary-line);
+}
+/* 主标题与副标题同行：主标题 + 标签 + 描述 横向排列，整体垂直居中 */
+.card-title-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.card-title-wrap h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--c-text);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.card-sub {
+  font-size: 10.5px;
+  color: var(--c-text-4);
+  line-height: 1.4;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-req,
+.tag-opt {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.5;
+}
+.tag-req {
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+.tag-opt {
+  color: var(--c-text-4);
+  background: var(--c-bg-soft);
+  border: 1px solid var(--c-line);
+}
+
+/* 字符计数 */
+.char-pill {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--c-text-4);
+  background: var(--c-bg-soft);
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  transition: all 0.18s;
+}
+.char-pill i {
+  font-style: normal;
+  opacity: 0.6;
+}
+.char-pill.ok {
+  color: #059669;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+/* —— 输入框容器 —— */
+/* 撑满所属卡片：卡片已被 .card--grow 拉伸到剩余高度，
+   这里用 flex:1 吃掉卡片内除标题外的全部空间，避免卡片下方留空白。
+   min-height 给一个下限，防止窗口很矮时输入区被压扁。 */
+.ta-wrap {
+  display: flex;
+  flex: 1;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-md);
+  background: var(--c-bg);
+  transition: border-color 0.16s, box-shadow 0.16s, background 0.16s;
+  overflow: hidden;
+  min-height: 96px;
+}
+.ta-wrap:hover {
+  border-color: #cbd5e1;
+}
+.ta-wrap:focus-within {
+  border-color: var(--c-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  background: #fff;
+}
+/* 01 标题卡的单行输入：覆盖 .ta-wrap 的 flex:1，按内容定高 */
+.ta-wrap--line {
+  flex: none;
+  min-height: 38px;
+}
+/* textarea 直接挂在 .ta-wrap 下（模板中不存在 .field 容器），
+   因此选择器必须基于 .ta-wrap，否则样式完全不生效——
+   这正是"输入框只占左侧一小块、右侧大片空白"的根因。 */
+.ta-wrap textarea {
+  flex: 1;
+  width: 100%;
+  /* height:100% + min-height:0 让 textarea 严格撑满容器高度，
+     高度由 .ta-wrap 决定，不再撑高父级。 */
+  height: 100%;
+  min-height: 0;
+  padding: 9px 12px;
   border: none;
   outline: none;
   background: transparent;
   resize: none;
   font-size: 12.5px;
-  line-height: 1.6;
+  line-height: 1.65;
   font-family: inherit;
-  color: #334155;
+  color: var(--c-text-2);
+  overflow-y: auto;
+  display: block;
+  box-sizing: border-box;
+}
+.ta-wrap textarea::placeholder {
+  color: #b6c2d2;
+  line-height: 1.65;
 }
 .title-input {
   flex: 1;
@@ -810,57 +1276,60 @@ onMounted(loadTemplates)
   border: none;
   outline: none;
   background: transparent;
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 12.5px;
+  line-height: 1.45;
   font-family: inherit;
-  color: #334155;
+  color: var(--c-text);
+}
+.title-input::placeholder {
+  color: #b6c2d2;
 }
 
-/* —— 上传文档 —— */
+/* —— 上传 / 附件 —— */
 .field-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
   gap: 6px;
-  margin-top: 4px;
+  flex: none;
 }
 .attachment-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  padding: 4px 8px 4px 9px;
-  font-size: 11px;
-  color: #2563eb;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  padding: 3px 7px 3px 8px;
+  font-size: 10.5px;
+  color: var(--c-primary);
+  background: var(--c-primary-soft);
+  border: 1px solid var(--c-primary-line);
   border-radius: 999px;
   overflow: hidden;
 }
 .attachment-chip .att-name {
-  max-width: 180px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
 }
 .attachment-chip .att-imgs {
-  font-size: 10px;
-  color: #94a3b8;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--c-text-3);
   background: #fff;
-  border: 1px solid #e2e8f0;
-  padding: 1px 6px;
+  border: 1px solid var(--c-line);
+  padding: 0 5px;
   border-radius: 999px;
   white-space: nowrap;
 }
 .att-remove {
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
-  font-size: 10px;
+  width: 15px;
+  height: 15px;
+  font-size: 9px;
   line-height: 1;
-  color: #94a3b8;
+  color: var(--c-text-4);
   background: transparent;
   border: none;
   border-radius: 50%;
@@ -875,31 +1344,32 @@ onMounted(loadTemplates)
 .upload-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   padding: 4px 9px;
   font-size: 11px;
   font-weight: 500;
-  color: #475569;
-  background: #f8fafc;
-  border: 1px dashed #e2e8f0;
-  border-radius: 6px;
+  color: var(--c-text-2);
+  background: var(--c-bg-soft);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.16s;
+  flex: none;
 }
 .upload-btn:hover:not(:disabled) {
-  color: #2563eb;
-  border-color: #bfdbfe;
-  background: rgba(59,130,246,0.06);
+  color: var(--c-primary);
+  border-color: var(--c-primary-line);
+  background: var(--c-primary-soft);
 }
 .upload-btn:disabled {
-  opacity: 0.7;
+  opacity: 0.65;
   cursor: not-allowed;
 }
 .mini-spinner {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid #e2e8f0;
-  border-top-color: #2563eb;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--c-line);
+  border-top-color: var(--c-primary);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -907,51 +1377,89 @@ onMounted(loadTemplates)
   to { transform: rotate(360deg); }
 }
 
-/* —— 方法论下拉框（el-select） —— */
-.cta-row {
+/* ══════════════════════ 固定操作条 ══════════════════════ */
+.action-bar {
+  flex: none;
   display: flex;
-  align-items: stretch;
-  gap: 10px;
-  margin-top: 2px;
-  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--c-bg);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2);
 }
-.cta-row .methodology-select {
-  width: 220px;
-  flex-shrink: 0;
+.ab-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.methodology-select {
+  width: 190px;
+  flex: none;
 }
 .methodology-select :deep(.el-input__wrapper) {
-  background: #f8fafc;
-  border-radius: 6px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
+  background: var(--c-bg-soft);
+  border-radius: var(--r-sm);
+  box-shadow: 0 0 0 1px var(--c-line) inset;
+  transition: box-shadow 0.16s;
+}
+.methodology-select :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #cbd5e1 inset;
 }
 .methodology-select :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px #3b82f6 inset, 0 0 0 2px rgba(59,130,246,0.22);
+  box-shadow: 0 0 0 1px var(--c-primary) inset, 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
-/* —— CTA —— */
-.analyze-btn {
+.methodology-select :deep(.el-select__selected-item) {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.ab-method-desc {
   flex: 1;
-  padding: 10px 16px;
-  font-size: 14px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--c-text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— 主 CTA —— */
+.analyze-btn {
+  flex: none;
+  min-width: 186px;
+  padding: 9px 20px;
+  font-size: 13px;
+  font-family: inherit;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   background: linear-gradient(135deg, #3b82f6, #1d4ed8);
   color: #fff;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .analyze-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(59,130,246,0.35);
+  box-shadow: 0 5px 14px rgba(37, 99, 235, 0.36);
+}
+.analyze-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
 }
 .analyze-btn:disabled {
-  opacity: 0.6;
+  background: #cbd5e1;
+  box-shadow: none;
   cursor: not-allowed;
 }
 .cta-content {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   justify-content: center;
 }
 .loading {
@@ -960,28 +1468,24 @@ onMounted(loadTemplates)
   gap: 8px;
 }
 .spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255,255,255,0.3);
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.32);
   border-top-color: #fff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
-/* —— 输入指纹 / 稳定性提示 —— */
-/* 暂时隐藏输入指纹 + 固定种子提示，按用户要求仅保留缓存命中（replay）状态 */
+/* —— 缓存命中提示 —— */
 .fp-hint {
-  display: none;
-}
-.fp-hint.fp-hint--replay {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px 10px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
-  flex-shrink: 0;
+  padding: 8px 11px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: var(--r-md);
 }
 .fp-row {
   display: flex;
@@ -989,248 +1493,86 @@ onMounted(loadTemplates)
   gap: 8px;
 }
 .fp-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   flex: none;
   border-radius: 50%;
-  background: #2563eb;
-  box-shadow: 0 0 0 3px #dbeafe;
+  background: var(--c-primary);
 }
 .fp-dot.same {
   background: #10b981;
   box-shadow: 0 0 0 3px #d1fae5;
 }
 .fp-text {
-  font-size: 11.5px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   line-height: 1.45;
-  color: #475569;
-}
-.fp-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.fp-label {
-  font-size: 10.5px;
-  color: #94a3b8;
-}
-.fp-value {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10.5px;
-  color: #475569;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  padding: 1px 6px;
-  border-radius: 4px;
+  color: #047857;
 }
 .fp-replay {
-  margin-left: auto;
-  font-size: 11px;
+  flex: none;
+  font-size: 10.5px;
   font-weight: 600;
   padding: 3px 9px;
-  color: #059669;
-  background: #d1fae5;
-  border: 1px solid #a7f3d0;
+  color: #fff;
+  background: #059669;
+  border: none;
   border-radius: 999px;
   cursor: pointer;
   transition: all 0.15s;
 }
 .fp-replay:hover {
-  filter: brightness(1.05);
+  background: #047857;
   transform: translateY(-1px);
 }
 
-/* —— 模板抽屉 —— */
-.example-box {
-  flex-shrink: 0;
-  border: 1px solid #e2e8f0;
-  border-top: none;
-  border-radius: 0 0 6px 6px;
-  background: #f8fafc;
-  overflow: hidden;
-}
-.example-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  cursor: pointer;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: #475569;
-  user-select: none;
-  background: transparent;
-  width: 100%;
-  border: none;
-  text-align: left;
-  transition: background 0.18s;
-  outline: none;
-}
-.example-head:focus-visible {
-  outline: 2px solid #3b82f6;
-  outline-offset: -2px;
-}
-.example-head:hover {
-  color: #2563eb;
-  background: #f1f5f9;
-}
-.ex-l {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.ex-count {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: #94a3b8;
-  background: #fff;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid #e2e8f0;
-}
-.arrow {
-  transition: transform 0.2s;
-  font-size: 10px;
-  color: #94a3b8;
-}
-.arrow.open {
-  transform: rotate(180deg);
-}
-
-.example-body {
-  padding: 4px 12px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.template-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  max-height: 240px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-.template-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  text-align: left;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.18s;
-  color: #1e293b;
-}
-.template-card:hover {
-  border-color: #bfdbfe;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-}
-.template-card.active {
-  border-color: #3b82f6;
-  background: #eff6ff;
-  box-shadow: 0 0 0 1px #3b82f6;
-}
-.tpl-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #1e293b;
-}
-.tpl-icon { font-size: 13px; }
-.tpl-desc {
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: #475569;
-}
-.tpl-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
-}
-.tpl-tag {
-  display: inline-block;
-  padding: 1px 7px;
-  font-size: 10.5px;
-  font-weight: 500;
-  border-radius: 999px;
-  background: #06b6d4;
-  color: white;
-  opacity: 0.85;
-}
-
-.tpl-actions {
-  display: flex;
-  justify-content: flex-start;
-  border-top: 1px dashed #e2e8f0;
-  padding-top: 8px;
-}
-.tpl-actions .btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  cursor: pointer;
-}
-.tpl-actions .btn:hover {
-  border-color: #bfdbfe;
-  background: #f8fafc;
-}
-
-/* —— P0-3：粘贴图列表 —— */
+/* —— 粘贴图列表（P0-3） —— */
 .pasted-images {
-  flex-shrink: 0;
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  background: #f8fafc;
+  gap: 7px;
+  padding: 10px 12px;
+  background: var(--c-bg-soft);
   border: 1px dashed #cbd5e1;
-  border-radius: 6px;
+  border-radius: var(--r-md);
 }
 .pi-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11.5px;
-  color: #475569;
+  font-size: 11px;
+  color: var(--c-text-3);
 }
 .pi-title {
-  font-weight: 600;
-  color: #1e293b;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--c-text-2);
 }
 .pi-hint {
-  color: #94a3b8;
   flex: 1;
+  color: var(--c-text-4);
+  font-size: 10.5px;
 }
 .pi-clear {
-  font-size: 10.5px;
+  font-size: 10px;
   color: #ef4444;
-  background: transparent;
+  background: #fff;
   border: 1px solid #fecaca;
   border-radius: 999px;
   padding: 1px 8px;
   cursor: pointer;
+  transition: all 0.15s;
 }
-.pi-clear:hover { background: #fef2f2; }
+.pi-clear:hover {
+  background: #fef2f2;
+}
 .pi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-  gap: 6px;
-  max-height: 120px;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 7px;
+  max-height: 130px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -1238,24 +1580,28 @@ onMounted(loadTemplates)
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 3px;
   background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
   padding: 4px;
   overflow: hidden;
+  transition: all 0.15s;
+}
+.pi-item:hover {
+  border-color: var(--c-primary-line);
+  box-shadow: var(--sh-2);
 }
 .pi-item img {
   width: 100%;
-  height: 56px;
+  height: 54px;
   object-fit: cover;
   border-radius: 4px;
-  background: #f1f5f9;
+  background: var(--c-bg-soft);
 }
 .pi-name {
-  font-size: 10px;
-  color: #64748b;
+  font-size: 9.5px;
+  color: var(--c-text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1263,21 +1609,81 @@ onMounted(loadTemplates)
 }
 .pi-remove {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 16px;
-  height: 16px;
+  top: 3px;
+  right: 3px;
+  width: 15px;
+  height: 15px;
   font-size: 9px;
   line-height: 1;
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #e2e8f0;
+  color: var(--c-text-3);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--c-line);
   border-radius: 50%;
   cursor: pointer;
   display: grid;
   place-items: center;
+  transition: all 0.15s;
 }
-.pi-remove:hover { color: #fff; background: #ef4444; border-color: #ef4444; }
+.pi-remove:hover {
+  color: #fff;
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+/* —— 滚动条精修（商业级细节） —— */
+.work-scroll::-webkit-scrollbar,
+.guide-rail::-webkit-scrollbar,
+.tpl-list::-webkit-scrollbar,
+.pi-grid::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.work-scroll::-webkit-scrollbar-thumb,
+.guide-rail::-webkit-scrollbar-thumb,
+.tpl-list::-webkit-scrollbar-thumb,
+.pi-grid::-webkit-scrollbar-thumb {
+  background: #dbe3ec;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.work-scroll::-webkit-scrollbar-thumb:hover,
+.guide-rail::-webkit-scrollbar-thumb:hover,
+.tpl-list::-webkit-scrollbar-thumb:hover,
+.pi-grid::-webkit-scrollbar-thumb:hover {
+  background: #c3cedb;
+  background-clip: content-box;
+}
+.work-scroll::-webkit-scrollbar-track,
+.guide-rail::-webkit-scrollbar-track,
+.tpl-list::-webkit-scrollbar-track,
+.pi-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* —— 窄屏降级：引导栏收起为横向 —— */
+@media (max-width: 1180px) {
+  .guide-rail {
+    width: 196px;
+  }
+  .ab-method-desc {
+    display: none;
+  }
+}
+@media (max-width: 980px) {
+  .input-panel {
+    flex-direction: column;
+  }
+  .guide-rail {
+    width: 100%;
+    flex: none;
+    align-self: stretch;
+    max-height: 168px;
+  }
+  .tpl-list {
+    max-height: 96px;
+  }
+}
 </style>
 
 <style>
@@ -1297,7 +1703,7 @@ onMounted(loadTemplates)
 .mo-label {
   font-size: 12.5px;
   font-weight: 600;
-  color: #1e293b;
+  color: #0f172a;
 }
 .mo-desc {
   font-size: 11px;

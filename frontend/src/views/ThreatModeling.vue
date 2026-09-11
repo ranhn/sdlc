@@ -3,7 +3,7 @@
     <!-- 顶部工具条 -->
     <div class="threat-toolbar">
       <div class="toolbar-left">
-        <span class="page-title">AI 威胁建模 / {{ pageTitle }}</span>
+        <span class="page-title">{{ pageTitle }}</span>
       </div>
       <div class="toolbar-right">
         <span
@@ -85,7 +85,31 @@
               </span>
             </div>
 
-            <DfdGraph v-if="activeTab === 'analysis'" :key="resultKey" :model="model" :dfd-autofix="lastDfdAutofix" />
+            <!-- 画布工具条：AI 提取的 DFD 必然有误差，允许用户微调布局与元素名 -->
+            <div v-if="activeTab === 'analysis' && model" class="graph-toolbar">
+              <label class="gt-toggle" :title="canvasEditable ? '退出编辑，恢复只读浏览' : '进入编辑：可拖拽节点、双击改名、Delete 删除'">
+                <input v-model="canvasEditable" type="checkbox" />
+                <span>{{ canvasEditable ? '编辑模式' : '只读模式' }}</span>
+              </label>
+              <span v-if="canvasEditable" class="gt-hint">
+                拖拽节点微调布局 · 双击节点改名 · 选中后按 Delete 删除
+              </span>
+              <span v-if="layoutSaving" class="gt-saving">保存中…</span>
+              <button class="gt-btn" :disabled="!canvasEditable || !layoutDirty" @click="saveLayout">保存布局</button>
+            </div>
+
+            <DfdGraph
+              v-if="activeTab === 'analysis'"
+              :key="resultKey"
+              :model="model"
+              :dfd-autofix="lastDfdAutofix"
+              :editable="canvasEditable"
+              :highlight-cell-id="selectedCellId"
+              @select-cell="onSelectCell"
+              @node-moved="onNodeMoved"
+              @node-renamed="onNodeRenamed"
+              @node-removed="onNodeRemoved"
+            />
             <div v-else class="mid-empty">
               <el-icon :size="48" color="#cbd5e1"><DataAnalysis /></el-icon>
               <p>配置输入后点击「开始建模」，将在此绘制 DFD 数据流图</p>
@@ -94,7 +118,15 @@
         </div>
 
         <div class="analysis-col analysis-col-side">
-          <ThreatPanel :model="model" :result-id="lastResultId" :stats="lastSummary?.stats" />
+          <ThreatPanel
+            :model="model"
+            :result-id="lastResultId"
+            :stats="lastSummary?.stats"
+            :selected-threats="selectedThreatsPayload"
+            :current-user="currentUser"
+            @clear-selection="selectedCellId = null"
+            @threat-updated="onThreatUpdated"
+          />
         </div>
       </div>
     </div>
@@ -211,8 +243,11 @@ import {
   getLlmConfig,
   saveLlmConfig as saveLlmConfigApi,
   clearLlmConfig as clearLlmConfigApi,
+  updateLayout,
+  renameElement,
 } from '@/api/threat.js'
 import { useThreatAnalysisStore } from '@/store/threat-analysis.js'
+import { useUserStore } from '@/store/user.js'
 import '@/styles/threat.css'
 
 const pageRef = ref(null)
@@ -271,12 +306,122 @@ const lastSummary = computed(() => store.lastSummary)
 const lastDfdAutofix = computed(() => store.lastDfdAutofix)
 const resultKey = computed(() => store.resultKey)
 
+// ---- 当前登录用户（威胁评审需要记录评审人）----
+const userStore = useUserStore()
+const currentUser = computed(() => ({
+  username: userStore.username,
+  role: userStore.role,
+}))
+
+// ---- 画布选中 → 右侧威胁列表联动 ----
+// 点击 DFD 节点后，右侧只显示该组件的威胁；点空白处恢复全量列表。
+const selectedCellId = ref(null)
+
+/** 把选中元素的信息 + 其威胁装成 ThreatPanel 期望的结构 */
+const selectedThreatsPayload = computed(() => {
+  const id = selectedCellId.value
+  if (!id) return null
+  const cells = store.model?.detail?.diagrams?.[0]?.cells || []
+  const cell = cells.find((c) => String(c.id) === String(id))
+  if (!cell) return null
+  return {
+    cellId: cell.id,
+    cellName: cell.data?.name || '未命名元素',
+    threats: cell.threats || [],
+  }
+})
+
+// ---- DFD 画布编辑 ----
+// AI 提取的 DFD 必然有误差（组件名不准、布局拥挤），这里允许用户：
+//   1) 拖拽节点微调布局（本地即时生效，点「保存布局」才落库）
+//   2) 双击节点改名（立即落库）
+//   3) 选中节点按 Delete 删除（仅从画布移除，不改后端模型，避免破坏数据）
+// 默认只读，避免误操作破坏 AI 生成的模型。
+const canvasEditable = ref(false)
+const layoutSaving = ref(false)
+const layoutDirty = ref(false)
+// cellId -> {x, y}，累积待保存的坐标
+const pendingPositions = ref({})
+
+function onSelectCell(cellId) {
+  selectedCellId.value = cellId || null
+}
+
+/** 威胁发生变更（新增/编辑/删除）后，从后端重新拉取模型以保持数据一致 */
+async function onThreatUpdated() {
+  const rid = lastResultId.value
+  if (!rid) return
+  try {
+    const detail = await getResultDetail(rid)
+    store.setResult(detail)
+  } catch (e) {
+    console.warn('[onThreatUpdated]', e)
+  }
+}
+
+function onNodeMoved({ cellId, x, y }) {
+  pendingPositions.value = { ...pendingPositions.value, [cellId]: { x, y } }
+  layoutDirty.value = true
+}
+
+async function saveLayout() {
+  const rid = lastResultId.value
+  if (!rid || !Object.keys(pendingPositions.value).length) return
+  layoutSaving.value = true
+  try {
+    await updateLayout(rid, pendingPositions.value)
+    pendingPositions.value = {}
+    layoutDirty.value = false
+    ElMessage.success('布局已保存')
+  } catch (e) {
+    ElMessage.error('保存布局失败：' + (e?.response?.data?.detail || e?.message))
+  } finally {
+    layoutSaving.value = false
+  }
+}
+
+async function onNodeRenamed({ cellId, name }) {
+  const rid = lastResultId.value
+  if (!rid) return
+  try {
+    await renameElement(rid, cellId, name)
+    // 同步内存中的模型，避免切 tab 回来又变回旧名字
+    syncElementName(cellId, name)
+    ElMessage.success('已重命名')
+  } catch (e) {
+    ElMessage.error('重命名失败：' + (e?.response?.data?.detail || e?.message))
+  }
+}
+
+/** 把新的元素名写回 store 中的模型（保持前端状态与后端一致） */
+function syncElementName(cellId, name) {
+  const m = store.model
+  const cells = m?.detail?.diagrams?.[0]?.cells
+  if (!Array.isArray(cells)) return
+  const cell = cells.find((c) => String(c.id) === String(cellId))
+  if (cell) {
+    if (!cell.data) cell.data = {}
+    cell.data.name = name
+  }
+}
+
+function onNodeRemoved({ cellId }) {
+  // 只从画布移除，不落库：删除元素会连带影响威胁归属与数据流，
+  // 属于高风险操作，需要用户重新建模才能生成一致的模型。
+  ElMessage.warning('节点已从画布移除（未同步到后端，刷新后恢复）')
+  // 取消该节点待保存的坐标，避免保存已不存在的元素
+  const next = { ...pendingPositions.value }
+  delete next[cellId]
+  pendingPositions.value = next
+  if (!Object.keys(next).length) layoutDirty.value = false
+}
+
 // ---- 弹窗 ----
 const promptVisible = ref(false)
 const promptContent = ref('')
 const promptLoading = ref(false)
 const promptMethodology = ref('STRIDE')
-const methodologies = ['STRIDE', 'STRIDE-AI', 'CIA', 'CIADIE', 'LINDDUN', 'PLOT4ai', 'EOP']
+const methodologies = ['STRIDE', 'STRIDE-AI', 'CIA', 'CIADIE', 'LINDDUN', 'PLOT4ai', 'EOP', 'MAESTRO']
 
 const settingsVisible = ref(false)
 const settingsSaving = ref(false)
@@ -501,6 +646,17 @@ function startTaskPolling(taskId) {
       } else if (status === 'cancelled' || status === 'canceled') {
         store.cancelAnalysis()
         ElMessage.info('任务已取消')
+      } else if (status === 'interrupted') {
+        // 后端重启导致任务中断：与业务失败区分开，给出可执行的指引，
+        // 而不是让进度条永远停在原地。
+        store.interruptAnalysis(
+          t?.error || '服务重启导致任务中断，请重新发起建模'
+        )
+        ElMessage.warning({
+          message: t?.error || '任务已中断：后端服务重启。请回到「建模输入」重新发起。',
+          duration: 6000,
+          showClose: true,
+        })
       }
     } catch (err) {
       // P2-X-2：不要静默吞错误。404 = 后端 task 已不存在（reload / 过期清理 / 后端
@@ -711,9 +867,14 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* Tab 1: 建模输入 */
+/* Tab 1: 建模输入
+   .threat-tab 是 block（不是 flex 容器），InputPanel 的 height: 100% 需要一个
+   有确定高度的父级才能撑满。这里显式给 height 并去掉左右 padding，
+   由 InputPanel 内部的引导栏/工作区自己控制留白。 */
 .threat-input-tab {
-  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
 }
 
 /* Tab 2: 数据流图与威胁分析 */
@@ -806,6 +967,57 @@ onUnmounted(() => {
 .mid-progress {
   gap: 14px;
   padding: 24px;
+}
+/* 画布编辑工具条 */
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-light, #e2e8f0);
+  background: #f8fafc;
+  flex-shrink: 0;
+  font-size: 11.5px;
+}
+.gt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: #475569;
+  font-weight: 500;
+  user-select: none;
+}
+.gt-toggle input {
+  cursor: pointer;
+  accent-color: #7c3aed;
+}
+.gt-hint {
+  color: #94a3b8;
+  font-size: 11px;
+}
+.gt-saving {
+  color: #d97706;
+  font-size: 11px;
+}
+.gt-btn {
+  margin-left: auto;
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+.gt-btn:hover:not(:disabled) {
+  border-color: #7c3aed;
+  color: #7c3aed;
+}
+.gt-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .progress-head {
   display: flex;

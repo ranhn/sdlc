@@ -9,7 +9,7 @@
 | 模块 | 主要功能 |
 |---|---|
 | **整体概览** | 风险热力、个人 / 部门 / 项目维度统计 |
-| **威胁建模** | AI 驱动的 STRIDE / VAST / PASTA / LINDDUN / AttackTree 自动建模 |
+| **威胁建模** | AI 驱动的 STRIDE / STRIDE-AI / CIA / CIADIE / LINDDUN / PLOT4ai / EOP(Cornucopia) / MAESTRO 自动建模，含 MITRE ATLAS 映射与威胁评审工作流 |
 | **漏洞管理** | 漏洞录入、状态机流转、评论、附件截图 |
 | **安全基线** | 五大基线（需求 / APP / 前端 / 后端 / 固件）检查项与扫描 |
 | **安全培训** | 课程中心、附件在线学习、我的进度、题库练习 |
@@ -233,6 +233,16 @@ PATCH /threat/api/results/{id}/threats/{tid}  更新处置状态
 ```
 
 LLM 分析支持缓存：相同输入（指纹一致）直接返回历史结果。
+
+任务进度保存在进程内（``TaskManager``），**同时落盘快照**到
+``backend/threat/data/threat_tasks/``（可用 ``THREAT_TASKS_DIR`` 覆盖）。
+后端重启后：
+
+- 已完成的任务保留结果，前端仍可查询；
+- 重启前处于 ``pending`` / ``running`` 的任务被标记为 ``interrupted``
+  （而非直接消失），前端据此提示「服务重启，请重新发起」，避免进度条卡死。
+
+任务快照在超过 ``RESULT_TTL``（30 分钟）后随清理一并删除，不会无限增长。
 
 ## 8. 扩展点
 

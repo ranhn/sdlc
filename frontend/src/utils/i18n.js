@@ -62,6 +62,17 @@ export const THREAT_TYPE_MAP = {
   Cryptography: '密码学',
   'Data Validation & Encoding': '数据校验与编码',
   'Session Management': '会话管理',
+  // MAESTRO（多智能体）
+  GoalHijacking: '目标劫持',
+  ToolMisuse: '工具滥用',
+  PrivilegeAmplification: '权限扩散',
+  MemoryPoisoning: '记忆投毒',
+  InterAgentDeception: '智能体间欺骗',
+  AutonomyRunaway: '自主失控',
+  InsecureOrchestration: '编排不安全',
+  ObservabilityGap: '可观测性缺失',
+  SupplyChainCompromise: '供应链投毒',
+  DataLeakage: '数据泄露',
 }
 
 // 方法论：顶层标签（用于 build 页 "采用 XX 方法论" 等场景）
@@ -73,6 +84,7 @@ export const METHODOLOGY_MAP = {
   LINDDUN: 'LINDDUN（隐私威胁）',
   PLOT4ai: 'PLOT4ai（AI 系统威胁）',
   EOP: 'EOP（OWASP 顶级 Web 威胁）',
+  MAESTRO: 'MAESTRO（多智能体/Agentic AI 威胁）',
 }
 
 export function tSeverity(s) {

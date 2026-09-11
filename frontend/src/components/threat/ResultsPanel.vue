@@ -244,6 +244,7 @@ const methodologyOptions = [
   { value: 'LINDDUN', label: 'LINDDUN' },
   { value: 'PLOT4ai', label: 'PLOT4ai' },
   { value: 'EOP', label: 'EOP' },
+  { value: 'MAESTRO', label: 'MAESTRO' },
 ]
 
 function fmtTime(epoch) {

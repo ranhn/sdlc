@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -34,13 +35,40 @@ logger = logging.getLogger(__name__)
 # 结果目录：backend/data/results/
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 RESULTS_DIR = DATA_DIR / "results"
+# 归档目录：backend/data/results-archive/
+# 超出 MAX_RESULTS 的旧结果会移到这里（而非直接删除），避免用户数据静默丢失。
+ARCHIVE_DIR = DATA_DIR / "results-archive"
 
-# 历史结果最大保留条数（超出后删除最旧的）
-MAX_RESULTS = 200
+# 历史结果最大保留条数（超出后归档最旧的）
+MAX_RESULTS = int(os.getenv("THREAT_MAX_RESULTS", "200"))
 
 # result_id 白名单：仅允许「日期-时间-短uuid」格式（如 20260819-153000-abc123），
 # 用于防御路径穿越（../ 越权读取/删除磁盘文件）。
 _RESULT_ID_RE = re.compile(r"^[0-9A-Za-z-]{16,40}$")
+
+# 威胁处置状态白名单。
+# 之前 update_threat_status 直接接受任意字符串（见 schemas.ThreatStatusUpdate 的
+# 注释里写的 Open/Mitigated/Accepted/In Progress），导致写入脏数据。
+# 这里以 Threat Dragon 官方状态机为基础，并保留平台前端已提供的两个扩展态。
+THREAT_STATUSES: tuple[str, ...] = (
+    "Open",
+    "In Progress",
+    "Mitigated",
+    "Accepted",
+    "NotApplicable",
+)
+
+# 威胁评审结论白名单。
+# 对应 Threat Modeling Manifesto 原则 4「威胁建模是一个持续的过程」：
+# AI 识别出的威胁需要有人**确认或推翻**，否则大量误报会淹没真实风险，
+# 团队会逐渐不再信任这份模型。评审结论与处置状态（status）是两个正交维度：
+#   - status    回答"这条威胁我们打算怎么处理"
+#   - review    回答"我们是否认可这条威胁成立"
+REVIEW_STATES: tuple[str, ...] = (
+    "Pending",     # 待评审（默认）
+    "Confirmed",   # 已确认：认可威胁成立，需跟进处置
+    "Rejected",    # 已驳回：误报或经评估不成立
+)
 
 
 class ResultStore:
@@ -336,6 +364,10 @@ class ResultStore:
         if new_status is None and out_of_scope is None:
             # 没有要更新的内容，仍按"无更新"处理
             return True
+        if new_status is not None and new_status not in THREAT_STATUSES:
+            raise ValueError(
+                f"非法的威胁状态：{new_status!r}，可选值：{'/'.join(THREAT_STATUSES)}"
+            )
         with self._lock:
             path = self._path(result_id)
             if not path.exists():
@@ -370,6 +402,402 @@ class ResultStore:
                 out_of_scope,
             )
             return True
+
+    # ------------------------------------------------------------------
+    # 威胁评审（确认 / 驳回）
+    # ------------------------------------------------------------------
+    def review_threat(
+        self,
+        result_id: str,
+        threat_id: str,
+        state: str,
+        comment: str | None = None,
+        reviewer: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """给一条威胁写入评审结论（确认 / 驳回）。
+
+        AI 识别的威胁必然包含误报，需要人工确认或推翻：
+        - ``Confirmed``：认可威胁成立，推进到整改流程；
+        - ``Rejected``：误报或经评估不成立，避免污染后续风险统计。
+
+        评审结论与处置状态（status）正交：承认威胁成立（Confirmed）
+        不代表已经缓解（Mitigated）。
+
+        Args:
+            state: ``REVIEW_STATES`` 之一。
+            comment: 可选评审意见。
+            reviewer: 评审人（来自 JWT），记录 username 以便追溯。
+
+        Returns:
+            更新后的评审信息字典；找不到返回 None。
+        """
+        if state not in REVIEW_STATES:
+            raise ValueError(
+                f"非法的评审结论：{state!r}，可选值：{'/'.join(REVIEW_STATES)}"
+            )
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return None
+            record = self._load(path)
+            if record is None:
+                return None
+            model = record.get("model") or {}
+            diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+            for diagram in diagrams:
+                for cell in diagram.get("cells") or []:
+                    for threat in cell.get("threats") or []:
+                        cur_id = threat.get("id") or threat.get("threatId")
+                        if cur_id != threat_id:
+                            continue
+                        review = {
+                            "state": state,
+                            "comment": (comment or "").strip(),
+                            "reviewer": (reviewer or {}).get("username") or "",
+                            "reviewer_id": (reviewer or {}).get("user_id"),
+                            "reviewed_at": int(time.time()),
+                        }
+                        threat["review"] = review
+                        # 驳回的威胁不应继续留在待办里：同步把 status 收敛，
+                        # 让下游按 status 统计的报表不会把误报算作待处理。
+                        if state == "Rejected":
+                            threat["status"] = "NotApplicable"
+                        self._write(record)
+                        logger.info(
+                            "结果 %s 威胁 %s 评审为 %s（%s）",
+                            result_id, threat_id, state, review["reviewer"],
+                        )
+                        return review
+        return None
+
+    def review_summary(
+        self,
+        result_id: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """统计某结果的评审进度，用于回答「评审做完了吗」。"""
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return None
+            record = self._load(path)
+            if record is None:
+                return None
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权访问该威胁建模结果")
+            model = record.get("model") or {}
+            diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+            counts = {s: 0 for s in REVIEW_STATES}
+            reviewers: set[str] = set()
+            total = 0
+            for diagram in diagrams:
+                for cell in diagram.get("cells") or []:
+                    for threat in cell.get("threats") or []:
+                        total += 1
+                        # 未评审的威胁没有 review 字段，计入 Pending
+                        state = ((threat.get("review") or {}).get("state")) or "Pending"
+                        if state not in counts:
+                            state = "Pending"
+                        counts[state] += 1
+                        who = (threat.get("review") or {}).get("reviewer")
+                        if who:
+                            reviewers.add(who)
+            reviewed = counts["Confirmed"] + counts["Rejected"]
+            return {
+                "total": total,
+                "pending": counts["Pending"],
+                "confirmed": counts["Confirmed"],
+                "rejected": counts["Rejected"],
+                "reviewed": reviewed,
+                # 评审完成率：0~1，前端用于进度条
+                "reviewRate": round(reviewed / total, 3) if total else 0.0,
+                "reviewers": sorted(reviewers),
+            }
+
+    # ------------------------------------------------------------------
+    # 威胁的手工编辑（AI 提取必然有遗漏，需要允许安全工程师补充）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _find_cell_by_element(model: dict[str, Any], element_id: str) -> dict[str, Any] | None:
+        """按 cell.id 或 cell.data.name 定位元素 cell。"""
+        diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+        wanted = str(element_id or "").strip()
+        if not wanted:
+            return None
+        for diagram in diagrams:
+            cells = diagram.get("cells") or []
+            # 先按 cell.id 精确匹配
+            for cell in cells:
+                if str(cell.get("id") or "") == wanted:
+                    return cell
+            # 再按组件名匹配（前端常用名字而非随机 uuid 定位）
+            for cell in cells:
+                name = str(((cell.get("data") or {}).get("name")) or "")
+                if name and name == wanted:
+                    return cell
+        return None
+
+    def add_threat(
+        self,
+        result_id: str,
+        element_id: str,
+        payload: dict[str, Any],
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """在指定元素下手工新增一条威胁。
+
+        Args:
+            element_id: 目标元素的 ``cell.id`` 或组件名。
+            payload: 威胁字段（title 必填，其余可选）。
+            user: 当前操作人；非 owner 且非 admin/secops 时抛 ``PermissionError``。
+
+        Returns:
+            新增的威胁字典（含生成的 threatId），失败返回 None。
+        """
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise ValueError("威胁标题不能为空")
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return None
+            record = self._load(path)
+            if record is None:
+                return None
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权修改该威胁建模结果")
+            model = record.get("model") or {}
+            cell = self._find_cell_by_element(model, element_id)
+            if cell is None:
+                return None
+
+            threats = cell.setdefault("threats", [])
+            # number 是全局递增序号，取当前最大值 +1 保持连续
+            top = ((model.get("detail") or {}).get("threatTop")) or 0
+            new_number = int(top) + 1
+            threat = {
+                "id": uuid.uuid4().hex,
+                "threatId": uuid.uuid4().hex,
+                "number": new_number,
+                "title": title,
+                "type": str(payload.get("type") or "Other"),
+                "severity": str(payload.get("severity") or "Medium"),
+                "status": str(payload.get("status") or THREAT_STATUSES[0]),
+                "description": str(payload.get("description") or ""),
+                "mitigation": str(payload.get("mitigation") or ""),
+                "cwe": str(payload.get("cwe") or ""),
+                "outOfScope": bool(payload.get("outOfScope")),
+                # 标记来源，便于与 AI 识别的威胁区分
+                "source": "manual",
+            }
+            if threat["status"] not in THREAT_STATUSES:
+                raise ValueError(f"非法的威胁状态：{threat['status']!r}")
+            threats.append(threat)
+            # 更新全局威胁计数，保持 hasOpenThreats 等派生字段一致
+            detail = model.setdefault("detail", {})
+            detail["threatTop"] = new_number
+            cell.setdefault("data", {})["hasOpenThreats"] = True
+            self._write(record)
+            logger.info("已在结果 %s 的元素 %s 新增威胁「%s」", result_id, element_id, title)
+            return threat
+
+    def update_threat(
+        self,
+        result_id: str,
+        threat_id: str,
+        payload: dict[str, Any],
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """编辑一条威胁的可写字段（标题/描述/缓解措施/类型/严重度/状态/CWE）。
+
+        与 ``update_threat_status`` 的区别：那个只改状态与范围外标记（普通用户
+        也能用），这个允许改写内容，属于"安全工程师补充完善"的场景。
+        """
+        editable = {
+            "title", "description", "mitigation", "type",
+            "severity", "status", "cwe", "outOfScope",
+        }
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return None
+            record = self._load(path)
+            if record is None:
+                return None
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权修改该威胁建模结果")
+            if payload.get("status") is not None and payload["status"] not in THREAT_STATUSES:
+                raise ValueError(f"非法的威胁状态：{payload['status']!r}")
+            model = record.get("model") or {}
+            diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+            for diagram in diagrams:
+                for cell in diagram.get("cells") or []:
+                    for threat in cell.get("threats") or []:
+                        cur_id = threat.get("id") or threat.get("threatId")
+                        if cur_id != threat_id:
+                            continue
+                        for field in editable:
+                            if field in payload and payload[field] is not None:
+                                if field == "outOfScope":
+                                    threat[field] = bool(payload[field])
+                                elif field == "title":
+                                    text = str(payload[field]).strip()
+                                    if not text:
+                                        raise ValueError("威胁标题不能为空")
+                                    threat[field] = text
+                                else:
+                                    threat[field] = payload[field]
+                        self._write(record)
+                        logger.info("已编辑结果 %s 的威胁 %s", result_id, threat_id)
+                        return threat
+        return None
+
+    def update_layout(
+        self,
+        result_id: str,
+        positions: dict[str, dict[str, float]],
+        user: dict[str, Any] | None = None,
+    ) -> int:
+        """批量更新 DFD 元素的坐标（用户拖动微调布局后持久化）。
+
+        Args:
+            positions: ``{cell_id: {"x": float, "y": float}}``。
+            user: 当前操作人；非 owner 且非 admin/secops 时抛 ``PermissionError``。
+
+        Returns:
+            实际更新的元素数量。
+        """
+        if not positions:
+            return 0
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return 0
+            record = self._load(path)
+            if record is None:
+                return 0
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权修改该威胁建模结果")
+            model = record.get("model") or {}
+            diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+            updated = 0
+            for diagram in diagrams:
+                for cell in diagram.get("cells") or []:
+                    pos = positions.get(str(cell.get("id") or ""))
+                    if not pos:
+                        continue
+                    try:
+                        cell["position"] = {"x": float(pos["x"]), "y": float(pos["y"])}
+                        updated += 1
+                    except (KeyError, TypeError, ValueError):
+                        continue
+            if updated:
+                self._write(record)
+                logger.info("已更新结果 %s 的 %d 个元素坐标", result_id, updated)
+            return updated
+
+    def rename_element(
+        self,
+        result_id: str,
+        element_id: str,
+        name: str,
+        user: dict[str, Any] | None = None,
+    ) -> bool:
+        """重命名一个 DFD 元素（组件/数据流）。
+
+        AI 提取的组件名常有偏差（如把"用户认证服务"写成"认证模块"），
+        允许用户直接改写名称，无需重新建模。
+        """
+        new_name = str(name or "").strip()
+        if not new_name:
+            raise ValueError("元素名称不能为空")
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return False
+            record = self._load(path)
+            if record is None:
+                return False
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权修改该威胁建模结果")
+            model = record.get("model") or {}
+            cell = self._find_cell_by_element(model, element_id)
+            if cell is None:
+                return False
+            cell.setdefault("data", {})["name"] = new_name
+            self._write(record)
+            logger.info("已重命名结果 %s 的元素 %s 为「%s」", result_id, element_id, new_name)
+            return True
+
+    def delete_threat(
+        self,
+        result_id: str,
+        threat_id: str,
+        user: dict[str, Any] | None = None,
+    ) -> bool:
+        """删除一条威胁（例如 AI 误报、经评估不适用）。"""
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return False
+            record = self._load(path)
+            if record is None:
+                return False
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权修改该威胁建模结果")
+            model = record.get("model") or {}
+            diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+            for diagram in diagrams:
+                for cell in diagram.get("cells") or []:
+                    threats = cell.get("threats") or []
+                    for i, threat in enumerate(threats):
+                        cur_id = threat.get("id") or threat.get("threatId")
+                        if cur_id == threat_id:
+                            threats.pop(i)
+                            self._write(record)
+                            logger.info("已删除结果 %s 的威胁 %s", result_id, threat_id)
+                            return True
+        return False
+
+    def get_threat(
+        self,
+        result_id: str,
+        threat_id: str,
+        user: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """读取指定结果中的某条威胁，并补上所在组件信息。
+
+        Args:
+            user: 当前操作人；非 owner 且非 admin/secops 时抛 ``PermissionError``
+
+        Returns:
+            威胁字典（附 ``componentId`` / ``componentName`` / ``componentType``），
+            找不到返回 None。
+        """
+        with self._lock:
+            path = self._path(result_id)
+            if not path.exists():
+                return None
+            record = self._load(path)
+            if record is None:
+                return None
+            if user is not None and not self._can_view(record, user):
+                raise PermissionError("无权访问该威胁建模结果")
+            model = record.get("model") or {}
+            diagrams = ((model.get("detail") or {}).get("diagrams")) or []
+            for diagram in diagrams:
+                for cell in diagram.get("cells") or []:
+                    for threat in cell.get("threats") or []:
+                        cur_id = threat.get("id") or threat.get("threatId")
+                        if cur_id != threat_id:
+                            continue
+                        enriched = dict(threat)
+                        data = cell.get("data") or {}
+                        enriched.setdefault("componentId", cell.get("id"))
+                        enriched.setdefault("componentName", data.get("name"))
+                        enriched.setdefault("componentType", data.get("type"))
+                        return enriched
+        return None
 
     def rename(
         self,
@@ -428,17 +856,85 @@ class ResultStore:
             return None
 
     def _prune(self) -> None:
-        """超过最大条数时删除最旧的结果。"""
+        """超过最大条数时把最旧的结果**归档**（移入 results-archive/）。
+
+        历史行为是直接 unlink 删除，用户不会收到任何提示，存在数据静默丢失风险。
+        现在改为移动到归档目录：主列表不再显示，但数据仍在磁盘上可追溯。
+        """
         files = sorted(
             self._dir.glob("*.json"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        for old in files[MAX_RESULTS:]:
+        overflow = files[MAX_RESULTS:]
+        if not overflow:
+            return
+        try:
+            self._archive_dir().mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("创建归档目录失败，跳过本次归档：%s", exc)
+            return
+        for old in overflow:
             try:
-                old.unlink()
-            except OSError:
-                pass
+                # 目标同名文件已存在时加时间戳后缀，避免覆盖既有归档
+                dest = self._archive_dir() / old.name
+                if dest.exists():
+                    dest = self._archive_dir() / f"{old.stem}-{int(old.stat().st_mtime)}{old.suffix}"
+                old.replace(dest)
+                logger.info("结果 %s 超出保留上限(%d)，已归档至 %s", old.stem, MAX_RESULTS, dest.name)
+            except OSError as exc:
+                logger.warning("归档结果文件 %s 失败：%s", old.name, exc)
+
+    # ------------------------------------------------------------------
+    # 归档
+    # ------------------------------------------------------------------
+    def _archive_dir(self) -> Path:
+        """归档目录（与结果目录同级，便于整体备份）。"""
+        if self._dir == RESULTS_DIR:
+            return ARCHIVE_DIR
+        # 自定义目录场景（测试）下，归档到同级 results-archive/
+        return self._dir.parent / f"{self._dir.name}-archive"
+
+    def list_archived(self) -> list[dict[str, Any]]:
+        """列出已归档的结果元数据，按创建时间倒序。"""
+        rows: list[dict[str, Any]] = []
+        adir = self._archive_dir()
+        if not adir.exists():
+            return rows
+        for p in adir.glob("*.json"):
+            if p.name.startswith("."):
+                continue
+            rec = self._load(p)
+            if rec:
+                meta = self._meta(rec)
+                meta["archived"] = True
+                rows.append(meta)
+        rows.sort(key=lambda r: r.get("created_at", 0), reverse=True)
+        return rows
+
+    def restore_archived(self, result_id: str) -> bool:
+        """把某条归档结果恢复到主结果目录。成功返回 True。"""
+        if not _RESULT_ID_RE.fullmatch(str(result_id or "")):
+            return False
+        with self._lock:
+            adir = self._archive_dir()
+            if not adir.exists():
+                return False
+            # 归档文件名可能带时间戳后缀，需要模糊匹配前缀
+            candidates = [
+                p for p in adir.glob(f"{result_id}*.json") if not p.name.startswith(".")
+            ]
+            if not candidates:
+                return False
+            src = candidates[0]
+            dest = self._dir / f"{result_id}.json"
+            try:
+                src.replace(dest)
+                logger.info("已从归档恢复结果 %s", result_id)
+                return True
+            except OSError as exc:
+                logger.warning("恢复归档结果 %s 失败：%s", result_id, exc)
+                return False
 
 
 # 全局单例

@@ -115,7 +115,7 @@ class Vuln(Base):
     cvss = Column(String(10), nullable=True)
     vuln_type = Column(String(50), nullable=True)     # 二级分类：如 SQL注入 / XSS / 水平越权(IDOR)
     vuln_category = Column(String(50), nullable=True)  # 一级大类：如 注入类 / 访问控制 / 信息泄露
-    source = Column(String(20), default="manual")     # manual/manual_scan/ci_scan
+    source = Column(String(20), default="manual")     # manual/manual_scan/ci_scan/threat_model
     # 漏洞来源：False=内部提交（默认），True=外部报告
     is_external = Column(Boolean, default=False, nullable=False)
     external_source = Column(String(100), nullable=True)  # 外部来源描述，如 CNVD编号/渗透测试/SRC平台

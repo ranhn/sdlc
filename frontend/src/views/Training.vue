@@ -1,7 +1,7 @@
 <template>
   <div class="training">
     <div class="page-header">
-      <span class="page-title">安全培训 / {{ pageTitle }}</span>
+      <span class="page-title">{{ pageTitle }}</span>
       <el-button v-if="isSecops && tab === 'courses'" type="primary" @click="openCourse()">
         <el-icon><Plus /></el-icon>&nbsp;新建课程
       </el-button>

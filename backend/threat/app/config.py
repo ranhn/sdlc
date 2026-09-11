@@ -14,7 +14,9 @@ from typing import Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-# 加载项目根目录下的 .env 文件
+# 加载 .env 文件。
+# parents[2] = backend/（本文件为 backend/threat/app/config.py），
+# 即读取 backend/.env —— 与 SDLC 业务后端共用同一份配置。
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 

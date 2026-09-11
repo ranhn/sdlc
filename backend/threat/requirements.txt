@@ -8,3 +8,11 @@ python-dotenv==1.0.1
 python-multipart==0.0.20
 # PDF 解析（document_extractor.py 用了 pypdf.PdfReader，漏装会导致上传 PDF 422）
 pypdf==4.3.1
+# DOCX 解析与导出（document_extractor.py 读 docx；result_exporter.py 生成 Word 报告）
+# 漏装会导致「导出 DOCX」接口 500
+python-docx==1.1.2
+# JWT 鉴权（core/auth.py 复用 SDLC 的 token 校验）
+# 独立部署本子应用时必需，否则 import 阶段直接失败
+python-jose[cryptography]==3.3.0
+# 上传文档内嵌图片抽取（document_extractor.py 需要 Pillow 读取图片尺寸/格式）
+Pillow==11.0.0

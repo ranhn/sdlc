@@ -45,7 +45,7 @@ def _decode_sdlc_token(token: str) -> dict:
             detail="无效的认证凭据",
         )
     return {
-        "user_id": int(sub) if str(sub).isdigit() else None,
+        "user_id": int(sub) if str(sub).lstrip("-").isdigit() else None,
         "username": payload.get("username") or "",
         "role": payload.get("role") or "user",
     }
@@ -65,10 +65,23 @@ def get_sdlc_user(authorization: Optional[str] = Header(None)) -> dict:
     return _decode_sdlc_token(parts[1].strip())
 
 
-def require_login(user: dict = None, authorization: Optional[str] = Header(None)) -> dict:
-    """强制要求已登录的 FastAPI 依赖：未登录直接 401。"""
-    current = user or get_sdlc_user(authorization)
-    if not current.get("user_id") or not current.get("username"):
+def require_login(authorization: Optional[str] = Header(None)) -> dict:
+    """强制要求已登录的 FastAPI 依赖：未登录直接 401。
+
+    两个必须遵守的约束（都是踩过的坑）：
+
+    1. ``user_id`` 必须用 ``is None`` 判断，不能用真值判断 ——
+       首个管理员账号的 id 就是 0，``not 0`` 为 True 会把已登录的管理员
+       误判为未登录，导致评审/改名/保存布局等写操作全部返回 401。
+
+    2. 函数签名里**不能出现未被 Depends/Header/Path 等标记的复合类型参数**
+       （如历史上写过的 ``user: dict = None``）。FastAPI 会把裸 ``dict``
+       注解当作请求体模型，于是所有使用本依赖的路由都要求请求体额外包含
+       一个 ``user`` 字段，前端只发业务字段时直接 422
+       （报错形如 ``{"loc": ["body", "body"], "msg": "Field required"}``）。
+    """
+    current = get_sdlc_user(authorization)
+    if current.get("user_id") is None or not current.get("username"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="请先登录 SDLC 平台后再使用威胁建模",
