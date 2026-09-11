@@ -46,26 +46,39 @@
         <div class="analysis-col analysis-col-main">
           <!-- 分析进度 -->
           <div v-if="analyzing" class="mid-progress">
-            <div class="progress-head">
-              <span class="progress-title">AI 威胁建模分析中…</span>
-              <span class="progress-stage">{{ analyzeStage || '处理中…' }}</span>
+            <header class="progress-head">
+              <div class="head-l">
+                <span class="head-pulse" aria-hidden="true" />
+                <span class="progress-title">AI 威胁建模分析中…</span>
+                <span class="progress-stage">{{ analyzeStage || '处理中…' }}</span>
+              </div>
+              <el-button class="cancel-btn" size="small" type="danger" @click="onCancelAnalyze">
+                <el-icon class="cancel-ico"><Close /></el-icon>
+                <span>取消建模</span>
+              </el-button>
+            </header>
+            <div class="progress-bar-wrap">
+              <el-progress
+                :percentage="analyzeProgress"
+                :stroke-width="6"
+                :color="'var(--primary)'"
+                :show-text="false"
+              />
+              <span class="progress-bar-num">{{ analyzeProgress }}%</span>
             </div>
-            <el-progress
-              :percentage="analyzeProgress"
-              :stroke-width="8"
-              :color="'var(--primary)'"
-              :show-text="true"
-            />
             <div class="progress-log">
-              <div v-for="(log, i) in analyzeLogs" :key="i" class="log-row">
+              <div
+                v-for="(log, i) in analyzeLogs"
+                :key="i"
+                class="log-row"
+                :class="['log-' + classifyLog(log.msg), { 'log-latest': i === analyzeLogs.length - 1 && analyzing }]"
+              >
+                <span class="log-dot" aria-hidden="true">{{ logIcon(log.msg) }}</span>
                 <span class="log-time">{{ log.time }}</span>
                 <span class="log-text">{{ log.msg }}</span>
               </div>
               <span v-if="!analyzeLogs.length" class="log-empty">准备建模…</span>
             </div>
-            <el-button class="cancel-btn" size="small" plain type="danger" @click="onCancelAnalyze">
-              取消建模
-            </el-button>
           </div>
 
           <!-- DFD 图区域 -->
@@ -222,7 +235,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Document, Download, DataAnalysis } from '@element-plus/icons-vue'
+import { Document, Download, DataAnalysis, Close } from '@element-plus/icons-vue'
 
 import InputPanel from '../components/threat/InputPanel.vue'
 import DfdGraph from '../components/threat/DfdGraph.vue'
@@ -704,6 +717,27 @@ async function onAnalyzeRequest(payload) {
   }
 }
 
+// ---- 进度日志视觉分类 ----
+// 按消息文本推断语义（不依赖 store 改 schema），
+// 给每行加左侧图标 + 颜色 + 最新行高亮，把「文本流」变成「步骤列表」。
+function classifyLog(msg) {
+  const m = String(msg || '')
+  if (/失败|错误|中断/.test(m)) return 'err'
+  if (/已识别|已解析|已生成|已建立|已提交|已就绪|完成/.test(m)) return 'ok'
+  if (/排队中/.test(m)) return 'wait'
+  if (/正在|解析|识别|提取|建立|调用/.test(m)) return 'doing'
+  return 'info'
+}
+function logIcon(msg) {
+  switch (classifyLog(msg)) {
+    case 'ok':   return '✓'
+    case 'err':  return '✕'
+    case 'wait': return '⏳'
+    case 'doing':return '⋯'
+    default:     return '·'
+  }
+}
+
 async function onCancelAnalyze() {
   const tid = store.currentTaskId
   if (tid) {
@@ -965,8 +999,92 @@ onUnmounted(() => {
   flex: 1;
 }
 .mid-progress {
+  /* 分析进度面板：纵向三段——头部（标题+取消按钮） / 进度条 / 日志列表。
+     三段独立卡片化，避免「一大块白板」造成的视觉坍塌。 */
+  display: flex;
+  flex-direction: column;
   gap: 14px;
-  padding: 24px;
+  padding: 18px 20px;
+  min-height: 0;
+  flex: 1;
+}
+.progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.head-l {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* 脉冲小圆点：跟「AI 分析中」标题绑定，强调「正在运行」。 */
+.head-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--primary, #2563eb);
+  box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45);
+  flex-shrink: 0;
+  animation: head-pulse 1.6s ease-out infinite;
+}
+@keyframes head-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(37, 99, 235, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+}
+.progress-title {
+  font-weight: 600;
+  color: var(--text, #1e293b);
+  font-size: 14px;
+}
+.progress-stage {
+  font-size: 12px;
+  color: var(--text-faint, #64748b);
+  background: var(--c-bg-soft, #f1f5f9);
+  border: 1px solid var(--c-line, #e2e8f0);
+  padding: 2px 9px;
+  border-radius: 999px;
+  max-width: 60%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 取消按钮：放在头部右侧对齐，跟标题同基线。
+   实心 type="danger"（红底白字）+ 阴影 + hover 加深，
+   高亮"这是个会立即终止流程的危险操作"。 */
+.cancel-btn {
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.25);
+}
+.cancel-btn:hover {
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.35);
+}
+.cancel-btn .cancel-ico {
+  margin-right: 4px;
+  font-size: 13px;
+}
+.progress-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.progress-bar-wrap :deep(.el-progress) {
+  flex: 1;
+}
+.progress-bar-num {
+  font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary, #2563eb);
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 /* 画布编辑工具条 */
 .graph-toolbar {
@@ -1036,24 +1154,94 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 日志列表：深色终端风格背景（用户偏好）。
+     深蓝���底 + 浅色文本 + 细边框，让分类色（绿/红/蓝/黄）的图标更跳。 */
   background: #0f172a;
-  border-radius: 8px;
-  padding: 12px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12px;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+.progress-log::-webkit-scrollbar {
+  width: 6px;
+}
+.progress-log::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+.progress-log::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
 }
 .log-row {
+  /* 每行三段：图标圆点 + 时间戳 + 文本。
+     深色背景下用浅色文本；分类图标自带浅色发光边框，确保绿/红/蓝/黄
+     在 #0f172a 上仍可识别。 */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: #cbd5e1;
+  transition: background 0.15s;
+}
+.log-row + .log-row {
+  margin-top: 1px;
+}
+.log-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.log-row.log-latest {
+  /* 最新一行（仅建模中）：左侧 2px 蓝色竖条 + 深蓝半透背景，
+     让用户一眼能定位"现在跑到哪了"。 */
+  background: rgba(37, 99, 235, 0.18);
+  border-left: 2px solid #60a5fa;
+  padding-left: 6px;
+  color: #f1f5f9;
+  font-weight: 500;
+}
+/* 分类图标圆点：深色背景版用饱和度更高的描边色 + 半透明背景 */
+.log-dot {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  background: #1e293b;
+  border: 1px solid #334155;
   color: #94a3b8;
-  line-height: 1.7;
+}
+.log-ok    .log-dot { color: #34d399; border-color: #065f46; background: rgba(16, 185, 129, 0.12); }
+.log-err   .log-dot { color: #f87171; border-color: #991b1b; background: rgba(239, 68, 68, 0.12); }
+.log-doing .log-dot { color: #60a5fa; border-color: #1d4ed8; background: rgba(37, 99, 235, 0.16); }
+.log-wait  .log-dot { color: #fbbf24; border-color: #92400e; background: rgba(245, 158, 11, 0.14); }
+/* doing 行的 ⋯ 抖动一下，提示"仍在进行" */
+@keyframes log-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+.log-doing .log-dot {
+  animation: log-dot-pulse 1.2s ease-in-out infinite;
 }
 .log-time {
   color: #64748b;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 48px;
 }
 .log-text {
-  color: #cbd5e1;
+  color: #e2e8f0;
+  word-break: break-word;
 }
 .log-empty {
   color: #64748b;
+  padding: 6px 8px;
 }
 .cancel-btn {
   align-self: flex-start;

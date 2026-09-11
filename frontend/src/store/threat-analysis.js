@@ -77,6 +77,16 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeStage.value = '正在提交任务…'
     analyzeSteps.value = []
     analyzeLogs.value = []
+    // 重要：开始新建模时清掉上次的结果数据。
+    // 否则分析页右栏 ThreatPanel 会一直展示「上一次的」KPI/严重度/威胁列表，
+    // 与左侧正在跑的新任务脱节，给用户「数据不一致」的错觉。
+    // 注意：failAnalysis 不清——失败时保留旧结果给用户作回退。
+    // cancelAnalysis 也不清——用户主动取消时可继续看上次结果。
+    model.value = null
+    lastResultId.value = ''
+    lastSummary.value = null
+    lastDfdAutofix.value = []
+    resultKey.value = Date.now()
     // P2-X-1：写 sessionStorage，F5 刷新后 ThreatModeling.vue 的 onMounted
     // 会读到该 key 并自动恢复轮询
     _savePersistedTaskId(taskId)
