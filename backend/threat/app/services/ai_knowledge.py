@@ -126,35 +126,10 @@ INDUSTRY_TEMPLATES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# ---------------------------------------------------------------------------
-# 合规映射（AI 治理 / 数据 / 内容标识）
-# ---------------------------------------------------------------------------
-COMPLIANCE_MAPPING: List[Dict[str, str]] = [
-    {
-        "code": "CN-AI",
-        "label": "算法备案与深度合成标识（境内）",
-        "threat_types": ["Spoofing", "Information Disclosure", "Tampering"],
-        "note": "提供 AI 生成内容标识、深度合成检测，规避仿冒与误导。",
-    },
-    {
-        "code": "CN-DATA",
-        "label": "数据安全与个人信息保护合规（境内）",
-        "threat_types": ["Information Disclosure", "Identifiability", "Linkability"],
-        "note": "限制 RAG 越权检索，保护训练数据与个人信息。",
-    },
-    {
-        "code": "EU-AIA",
-        "label": "EU AI Act 分级治理",
-        "threat_types": ["Information Disclosure", "Tampering", "Repudiation"],
-        "note": "高风险 AI 系统需可审计、可追溯、缓解偏见。",
-    },
-    {
-        "code": "NIST-RMF",
-        "label": "NIST AI RMF 风险管理",
-        "threat_types": ["Information Disclosure", "Elevation of Privilege", "Denial of Service"],
-        "note": "覆盖 AI 系统的衡量、治理、映射、管理全过程。",
-    },
-]
+# 注：合规映射已迁至 ``compliance_catalog.py``。
+# 原 ``COMPLIANCE_MAPPING`` 的 threat_types 只写 STRIDE 词汇且字段名为 covered，
+# 导致非 STRIDE 方法论恒判 0/4、且语义被误读为"合规达标"；新模块通过
+# ``TYPE_TO_STRIDE`` 做跨方法论归一，并输出语义准确的合规影响面。
 
 
 def get_owasp_llm_list() -> List[Dict[str, str]]:
@@ -361,9 +336,6 @@ def map_threat_to_atlas(threat_type: str, text_blob: str = "") -> List[Dict[str,
     return [t for _, t in scored[:3]]
 
 
-def get_compliance_mapping() -> List[Dict[str, str]]:
-    """返回合规映射清单。"""
-    return COMPLIANCE_MAPPING
 
 
 def get_industry_template(key: str | None) -> Dict[str, Any] | None:

@@ -93,10 +93,16 @@ def render_result_markdown(record: dict[str, Any]) -> str:
             lines.append(f"- OWASP Top10 for LLM 覆盖：{_pct(llm_cov)}（{', '.join(covered) if covered else '无'}）")
         compliance = metrics.get("compliance")
         if compliance:
-            lines.append("- 合规映射：")
+            lines.append("- 合规影响面（仅表示威胁触达的法规域，不代表合规结论）：")
             for item in compliance:
-                mark = "✓" if item.get("covered") else "✗"
-                lines.append(f"  - {mark} {item['code']} {item['label']}")
+                mark = "●" if item.get("hit") else "○"
+                cnt = item.get("relatedThreatCount") or 0
+                tail = f"（关联威胁 {cnt} 条）" if cnt else ""
+                lines.append(f"  - {mark} {item['code']} {item['label']}{tail}")
+                basis = item.get("basis") or ""
+                version = item.get("version") or ""
+                if basis:
+                    lines.append(f"      依据：{basis}{f'（{version}）' if version else ''}")
         lines.append("")
 
     # 威胁明细
@@ -313,10 +319,22 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         if compliance:
             doc.add_paragraph()
             p = doc.add_paragraph()
-            p.add_run("合规映射：").bold = True
+            p.add_run("合规影响面（仅表示威胁触达的法规域，不代表合规结论）：").bold = True
             for item in compliance:
-                mark = "✓" if item.get("covered") else "✗"
-                doc.add_paragraph(f"  {mark} {item.get('code', '')} {item.get('label', '')}", style="List Bullet")
+                mark = "●" if item.get("hit") else "○"
+                cnt = item.get("relatedThreatCount") or 0
+                tail = f"（关联威胁 {cnt} 条）" if cnt else ""
+                doc.add_paragraph(
+                    f"  {mark} {item.get('code', '')} {item.get('label', '')}{tail}",
+                    style="List Bullet",
+                )
+                basis = item.get("basis") or ""
+                version = item.get("version") or ""
+                if basis:
+                    doc.add_paragraph(
+                        f"依据：{basis}{f'（{version}）' if version else ''}",
+                        style="List Bullet 2",
+                    )
 
     # 2、威胁明细
     threats = _collect_threats(model)

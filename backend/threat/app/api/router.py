@@ -774,9 +774,9 @@ def _build_metrics(
     flows: list[dict],
     threats: list[dict],
 ) -> dict[str, Any]:
-    """构建度量指标：覆盖度 / 风险收敛率 / DREAD 均值 / OWASP LLM 覆盖 / 合规映射。"""
+    """构建度量指标：覆盖度 / 风险收敛率 / DREAD 均值 / OWASP LLM 覆盖 / 合规影响面。"""
     metrics: dict[str, Any] = {}
-    from ..services.ai_knowledge import get_compliance_mapping
+    from ..services.compliance_catalog import build_compliance_impact
 
     # 覆盖度：已建模元素（组件 + 数据流）中有威胁的元素占比。
     # 威胁既可挂在组件上也可挂在数据流上，分母必须包含两者，否则会虚高甚至 >100%。
@@ -837,18 +837,12 @@ def _build_metrics(
         metrics["owaspLlmCovered"] = covered
         metrics["owaspLlmCoverRate"] = round(len(covered) / len(llm_items), 3) if llm_items else 0
 
-    # 合规映射
-    comp = get_compliance_mapping()
-    threat_types = set(t.get("type", "") for t in threats)
-    mapped = [
-        {
-            "code": c["code"],
-            "label": c["label"],
-            "covered": bool(set(c["threat_types"]) & threat_types),
-        }
-        for c in comp
-    ]
-    metrics["compliance"] = mapped
+    # 合规影响面：把威胁类型归一为 STRIDE 维度后映射到各合规域。
+    # 早期实现直接在 COMPLIANCE_MAPPING 里用 STRIDE 词汇求交集，导致
+    # CIA / LINDDUN / PLOT4ai / EOP / MAESTRO 等方法论的合规判定恒为 0/4；
+    # 且字段名 covered 会被误读成"合规达标"。这里改为输出"影响面"，
+    # 字段为 hit / relatedThreatCount，语义为"本次建模是否触达该合规域"。
+    metrics["compliance"] = build_compliance_impact(threats)
 
     # MITRE ATLAS 覆盖：把威胁映射到 AI 对抗技术，对齐业界通用攻击语言。
     # 主要用于 STRIDE-AI 场景，但 STRIDE/CIA 等也可用（只要有 STRIDE 类型）。
