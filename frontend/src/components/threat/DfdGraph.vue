@@ -1,72 +1,53 @@
 <template>
   <div class="graph-wrap">
-    <!-- 顶部工具栏 -->
-    <header class="graph-head">
-      <button
-        v-if="props.dfdAutofix && props.dfdAutofix.length"
-        class="autofix-chip"
-        type="button"
-        title="查看自动纠错明细"
-        @click="autofixOpen = !autofixOpen"
-      >
-        <svg viewBox="0 0 20 20" width="13" height="13" aria-hidden="true">
-          <path d="M10 2 L18 17 H2 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
-          <path d="M10 8 V12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          <circle cx="10" cy="14.5" r="0.9" fill="currentColor" />
-        </svg>
-        <span>已自动纠错 {{ props.dfdAutofix.length }} 项</span>
-      </button>
-      <div v-if="model" class="head-r">
-        <div
-          class="kpi"
-          :class="{ active: activeHighlight === 'process' }"
-          title="点击高亮所有进程节点"
-          @click="toggleHighlight('process')"
-        >
-          <span class="kpi-num">{{ cellCounts.process }}</span>
-          <span class="kpi-lbl">处理</span>
-        </div>
-        <div
-          class="kpi"
-          :class="{ active: activeHighlight === 'store' }"
-          title="点击高亮所有存储节点"
-          @click="toggleHighlight('store')"
-        >
-          <span class="kpi-num">{{ cellCounts.store }}</span>
-          <span class="kpi-lbl">存储</span>
-        </div>
-        <div
-          class="kpi"
-          :class="{ active: activeHighlight === 'actor' }"
-          title="点击高亮所有实体节点"
-          @click="toggleHighlight('actor')"
-        >
-          <span class="kpi-num">{{ cellCounts.actor }}</span>
-          <span class="kpi-lbl">实体</span>
-        </div>
-        <div
-          class="kpi flow"
-          :class="{ active: activeHighlight === 'flow' }"
-          title="点击高亮所有数据流"
-          @click="toggleHighlight('flow')"
-        >
-          <span class="kpi-num">{{ cellCounts.flow }}</span>
-          <span class="kpi-lbl">流</span>
-        </div>
-        <button class="btn btn-ghost btn-sm" @click="fitView" title="适配视图">
-          <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
-            <path d="M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
-          </svg>
-        </button>
-      </div>
-    </header>
+    <!-- 适配视图按钮已迁到 ThreatModeling.vue 的 .gt-right（与「保存布局 / 折叠右栏」并列），
+         自动纠错提示改为画布内的右上浮层（不占独立行高度，画布可多 30+px 垂直空间）。
+         原 .graph-head 整块移除。 -->
 
-    <!-- 图例 -->
+    <!-- 图例：节点类型项同时是高亮开关（点击切换），
+         与只读的线条图例区分 —— 前者是可点按钮，后者是纯展示。
+         这样原来独立的 .filter-chip 行与之合并，消除重复。 -->
     <div v-if="model" class="legend">
-      <span class="lg-item"><i class="dot actor" /> 外部实体</span>
-      <span class="lg-item"><i class="dot process" /> 处理</span>
-      <span class="lg-item"><i class="dot store" /> 数据存储</span>
+      <button
+        type="button"
+        class="lg-item lg-toggle"
+        :class="{ active: activeHighlight === 'actor' }"
+        title="点击高亮所有外部实体"
+        @click="toggleHighlight('actor')"
+      >
+        <i class="dot actor" /> 外部实体
+      </button>
+      <button
+        type="button"
+        class="lg-item lg-toggle"
+        :class="{ active: activeHighlight === 'process' }"
+        title="点击高亮所有处理节点"
+        @click="toggleHighlight('process')"
+      >
+        <i class="dot process" /> 处理
+      </button>
+      <button
+        type="button"
+        class="lg-item lg-toggle"
+        :class="{ active: activeHighlight === 'store' }"
+        title="点击高亮所有数据存储"
+        @click="toggleHighlight('store')"
+      >
+        <i class="dot store" /> 数据存储
+      </button>
       <span class="lg-item"><i class="dot ai" /> AI 组件</span>
+      <button
+        type="button"
+        class="lg-item lg-toggle"
+        :class="{ active: activeHighlight === 'flow' }"
+        title="点击高亮所有数据流"
+        @click="toggleHighlight('flow')"
+      >
+        <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
+          <line x1="0" y1="5" x2="18" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        数据流
+      </button>
       <span class="lg-sep"></span>
       <span class="lg-item">
         <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
@@ -98,7 +79,20 @@
         </svg>
         <span class="lg-label">跨边界+公网</span>
       </span>
-      <span class="lg-hint">点击任一数据流查看详情</span>
+    </div>
+
+    <!-- 自动纠错明细（仅在有纠正项时显示） -->
+    <div
+      v-if="props.dfdAutofix && props.dfdAutofix.length && autofixOpen"
+      class="autofix-panel"
+    >
+      <div class="autofix-title">DFD 自动纠错明细</div>
+      <ul class="autofix-list">
+        <li v-for="(msg, i) in props.dfdAutofix" :key="i">{{ msg }}</li>
+      </ul>
+      <p class="autofix-tip">
+        AI 自动建模偶尔会误判组件类型或漏标敏感数据流的加密属性，后端已按常见规则自动修复。
+      </p>
     </div>
 
     <!-- 自动纠错明细（仅在有纠正项时显示） -->
@@ -117,6 +111,22 @@
 
     <!-- 主图区 -->
     <div class="graph-body">
+      <!-- 自动纠错提示：浮在画布右上角，不占独立行；
+           无纠错项时不渲染，避免空白。 -->
+      <button
+        v-if="props.dfdAutofix && props.dfdAutofix.length"
+        class="autofix-fab"
+        type="button"
+        title="查看自���纠错明细"
+        @click="autofixOpen = !autofixOpen"
+      >
+        <svg viewBox="0 0 20 20" width="13" height="13" aria-hidden="true">
+          <path d="M10 2 L18 17 H2 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+          <path d="M10 8 V12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <circle cx="10" cy="14.5" r="0.9" fill="currentColor" />
+        </svg>
+        <span>已自动纠错 {{ props.dfdAutofix.length }} 项</span>
+      </button>
       <div v-if="!model" class="empty-state">
         <div class="empty-illust">
           <svg viewBox="0 0 240 160" width="240" height="160" aria-hidden="true">
@@ -281,6 +291,8 @@ import { tSeverity } from '../../utils/i18n.js'
 const props = defineProps({
   model: { type: Object, default: null },
   highlightCellId: { type: String, default: null },
+  // 外部"定位"按钮每次点击递增；用于同一 cell 重复定位时强制重新居中
+  locateNonce: { type: Number, default: 0 },
   // DFD 自动纠错日志（后端在 LLM 输出明显错误时自动修正，并记录到这里）
   dfdAutofix: { type: Array, default: () => [] },
   // 编辑模式：开启后可拖拽节点、改名、删除节点、拉线连接
@@ -299,31 +311,11 @@ const flowDetail = ref(null)
 // 当前选中的边 id;null = 未选中（与 flowDetail 同步）
 const selectedEdgeId = ref(null)
 
-// 节点数量统计
 const autofixOpen = ref(false)
 
-// 节点数量统计
-const cellCounts = computed(() => {
-  const out = { process: 0, store: 0, actor: 0, flow: 0, boundary: 0 }
-  const d = props.model?.detail?.diagrams?.[0]
-  if (!d) return out
-  for (const c of d.cells || []) {
-    if (c.shape === 'tm.Flow') out.flow += 1
-    else if (c.shape === 'tm.Actor') out.actor += 1
-    else if (c.shape === 'tm.Store') out.store += 1
-    else if (c.shape === 'tm.BoundaryBox') out.boundary += 1
-    else if (c.shape === 'tm.Process') {
-      // data.type 已是 TD-可识别的形状（tm.Process/tm.Store/tm.Actor），
-      // AI 子类型从 data.aiElementType 读取 —— 此处仅按形状归档，
-      // 视觉样式（图标/边框）由 addNode 用 aiElementType 决定。
-      const t = c.data?.type
-      if (t === 'tm.Store') out.store += 1
-      else if (t === 'tm.Actor') out.actor += 1
-      else out.process += 1
-    }
-  }
-  return out
-})
+// 注：原先这里维护过 cellCounts（按形状统计节点数）用于头部 KPI 数字格。
+// 该数字格与右侧 ThreatPanel 的 KPI 视觉同形、易被误读为两套统计口径，
+// 已改为无计数的筛选 chip，统计逻辑一并移除。
 
 const activeHighlight = ref(null)
 
@@ -571,7 +563,10 @@ function initGraph() {
 
   graph.on('node:click', ({ node }) => {
     if (isLaneNode(node)) return
-    graph.resetSelection([node.id])
+    // X6 v2 的"选中" API 是 graph.select(...)，不是 resetSelection。
+    // 原代码用 resetSelection 在 v2 会抛 TypeError(在控制台看到但用户感知不到)
+    // —— 这也是点击节点不出现内置选中框的原因。
+    graph.select([node.id])
     emit('select-cell', node.id)
   })
   graph.on('edge:click', ({ edge }) => {
@@ -713,10 +708,104 @@ watch(
 watch(
   () => props.highlightCellId,
   (id) => {
-    if (!graph) return
-    if (id) graph.resetSelection([id])
+    focusCell(id)
   }
 )
+
+// 同一 cell 重复定位时 highlightCellId 不变，watch 不会触发；
+// 父组件用 locateNonce 递增强制驱动一次（解决"点了没反应"）。
+watch(
+  () => props.locateNonce,
+  () => {
+    focusCell(props.highlightCellId)
+  }
+)
+
+/**
+ * 把指定 cell 高亮并滚动到视口中央。
+ * 仅 resetSelection 不改视图，节点也没有 selected 视觉样式，
+ * 所以用户点"定位"会感觉"没反应"。这里做三件事：
+ *   1) resetSelection 让 X6 选中该 cell
+ *   2) 平移视图到该 cell（centerCell 优先，保持缩放）
+ *   3) 节点脉冲强调 1.2s（紫色描边加粗 + 光晕），给明确的视觉反馈
+ */
+function focusCell(id) {
+  if (!graph || !id) return
+  const cell = graph.getCellById(id)
+  if (!cell) {
+    console.warn('[DfdGraph] focusCell: 找不到 cell', id)
+    return
+  }
+  // 不调用 graph.resetSelection —— 这版 X6 在某些路径上
+  // 抛 TypeError(graph.resetSelection is not a function),整条 watcher 链路都被
+  // Vue 吞掉,导致 emphasisCell/centerCell 全部不执行,体感"点了没反应"。
+  // emphasisCell 已经提供视觉反馈,不需要内置选中。
+  emphasisCell(cell)
+  // 优先 centerCell：纯平移，保持当前缩放
+  if (typeof graph.centerCell === 'function') {
+    try {
+      graph.centerCell(cell)
+      return
+    } catch (e) {
+      console.warn('[DfdGraph] centerCell 失败，回退 zoomTo:', e?.message || e)
+    }
+  }
+  // 兜底：zoomTo 会顺便调整缩放，但至少能把节点带进视野
+  try {
+    const bbox = cell.getBBox?.()
+    if (bbox && typeof graph.zoomTo === 'function') {
+      // pad 24 让节点不贴边；min 0.5 / max 1.5 防过缩或过放大
+      graph.zoomTo(bbox, { padding: 24, minScale: 0.5, maxScale: 1.5 })
+    }
+  } catch (e) {
+    // 居中失败不影响高亮本身
+    console.warn('[DfdGraph] focusCell zoomTo 失败:', e?.message || e)
+  }
+}
+
+// 当前正在做强调动画的 cell id 与其原始描边，用于动画结束后还原
+let emphasisTimer = null
+let emphasisOriginal = null
+
+/**
+ * 节点脉冲强调：描边加粗变紫 + 轻微放大，1.2s 后还原。
+ * 解决"resetSelection 无视觉反馈"的问题——用户能明确看到定位到了哪个节点。
+ */
+function emphasisCell(cell) {
+  if (!cell?.isNode?.()) return
+  try {
+    // 连续点击时先还原上一个，避免样式叠加残留
+    if (emphasisTimer) {
+      clearTimeout(emphasisTimer)
+      emphasisTimer = null
+    }
+    if (emphasisOriginal) {
+      const prev = graph?.getCellById?.(emphasisOriginal.id)
+      if (prev) {
+        prev.attr('body/stroke', emphasisOriginal.stroke)
+        prev.attr('body/strokeWidth', emphasisOriginal.strokeWidth)
+      }
+      emphasisOriginal = null
+    }
+    const stroke = cell.attr('body/stroke')
+    const strokeWidth = cell.attr('body/strokeWidth')
+    emphasisOriginal = { id: cell.id, stroke, strokeWidth }
+    cell.attr('body/stroke', '#7c3aed')
+    cell.attr('body/strokeWidth', 3)
+    emphasisTimer = setTimeout(() => {
+      // 还原时需要重新取 cell（避免持有已销毁引用）
+      const c = graph?.getCellById?.(emphasisOriginal?.id)
+      if (c && emphasisOriginal) {
+        c.attr('body/stroke', emphasisOriginal.stroke)
+        c.attr('body/strokeWidth', emphasisOriginal.strokeWidth)
+      }
+      emphasisOriginal = null
+      emphasisTimer = null
+    }, 1200)
+  } catch (e) {
+    console.warn('[DfdGraph] emphasisCell 失败:', e?.message || e)
+  }
+}
 
 // 编辑模式切换：开启后允许从锚点拉线新建数据流
 watch(
@@ -786,8 +875,9 @@ function addNode(cell) {
   const openThreats = (cell.threats || []).filter((t) => t.status !== 'Mitigated')
   const threatCount = openThreats.length
   const icon = aiStyleKey ? AI_ICON[aiStyleKey] + ' ' : ''
-  const typeTag = aiStyleKey ? `\n[${aiType}]` : ''
-  const threatBadge = threatCount > 0 ? `\n🔴 ${threatCount} 个未缓解威胁` : ''
+  // 威胁数不再拼进 label（会顶出节点高度、把字号挤小）。
+  // 改为节点下方独立的小徽标：名称保持 12px 可读，徽标作次要信息。
+  const typeTag = aiStyleKey ? ` [${aiType}]` : ''
 
   // 空 trust boundary：LLM 偶尔会生成没有 child 的边界容器（噪音），画出来只会让图更乱，直接隐藏。
   const innerCount = isBoundary
@@ -797,6 +887,12 @@ function addNode(cell) {
       }).length
     : 0
   const isEmptyBoundary = isBoundary && innerCount === 0
+
+  // 威胁徽标画进节点自身 markup（而不是独立 cell）：
+  // 独立 cell 会被框选/fitView/allCellsRef 当成真实元素，还会在拖动时滞留原地，
+  // 用 markup 追加一个 <rect>+<text> 最省事——自动跟随节点、不污染数据。
+  const showBadge = threatCount > 0 && !isEmptyBoundary
+  const badgeText = threatCount > 9 ? '9+' : String(threatCount)
 
   graph.addNode({
     id: cell.id,
@@ -809,6 +905,19 @@ function addNode(cell) {
     zIndex: cell.zIndex ?? 200,
     visible: !isEmptyBoundary,
     data: { tdCell: cell },
+    // 追加 badge 节点：position 用 relative，坐标以节点左上角为原点。
+    markup: [
+      { tagName: 'rect', selector: 'body' },
+      { tagName: 'text', selector: 'label' },
+      {
+        tagName: 'g',
+        selector: 'badgeGroup',
+        children: [
+          { tagName: 'rect', selector: 'badgeBody' },
+          { tagName: 'text', selector: 'badgeText' },
+        ],
+      },
+    ],
     attrs: {
       body: {
         fill: isEmptyBoundary ? 'transparent' : s.fill,
@@ -820,11 +929,39 @@ function addNode(cell) {
         ry: shape === 'tm.Actor' ? 26 : isBoundary ? 6 : 8,
       },
       label: {
-        text: icon + wrapLabel(name, 16) + typeTag + threatBadge,
+        text: icon + wrapLabel(name, 16) + typeTag,
         fill: s.text,
         fontSize: 12,
-        fontWeight: threatCount > 0 ? 700 : 400,
-        lineHeight: 18,
+        // 有未缓解威胁时加粗，作为"整体扫视"的粗粒度信号；
+        // 精确条数由右下角徽标承担，不需再靠字重区分。
+        fontWeight: threatCount > 0 ? 700 : 500,
+        lineHeight: 17,
+      },
+      // 徽标整组贴在右下角：refX/refY 相对节点宽高定位，
+      // 节点被 resize 时 X6 会自动重算，不需要额外监听。
+      badgeGroup: {
+        // 用 ref 定位而不是绝对坐标，随节点尺寸自适应
+        display: showBadge ? 'block' : 'none',
+        refX: size.width - (badgeText.length > 1 ? 30 : 22),
+        refY: size.height - 18,
+      },
+      badgeBody: {
+        width: badgeText.length > 1 ? 28 : 20,
+        height: 14,
+        rx: 7,
+        ry: 7,
+        fill: '#dc2626',
+        stroke: 'none',
+      },
+      badgeText: {
+        text: '⚠' + badgeText,
+        fill: '#fff',
+        fontSize: 9.5,
+        fontWeight: 700,
+        refX: badgeText.length > 1 ? 14 : 10,
+        refY: 7,
+        textAnchor: 'middle',
+        textVerticalAnchor: 'middle',
       },
     },
   })
@@ -1091,7 +1228,8 @@ function selectEdge(edgeId) {
   const cell = edge.getData()?.tdCell
   if (!cell) return
   selectedEdgeId.value = edgeId
-  graph.resetSelection([edgeId])
+  // X6 v2 用 graph.select 代替 resetSelection
+  graph.select([edgeId])
   applySelectedEdgeStyle(edge, cell)
   // 构造详情面板数据
   const openThreats = (cell.threats || []).filter((t) => t.status !== 'Mitigated')
@@ -1217,108 +1355,42 @@ defineExpose({ fitView })
   background: var(--bg-panel);
   border-radius: var(--radius-sm);
 }
-
-/* —— 头部 —— */
-.graph-head {
+/* graph-body 是 graph-wrap 的 flex 子项：必须显式 flex:1 + flex column，
+   否则作为 block 元素它"内容撑开"宽高，内部的 .graph-container 即使写了
+   width:100% 也跟着固化为初始尺寸，折叠右栏时画布不会跟着扩展。 */
+.graph-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: linear-gradient(180deg, var(--bg-panel-2), transparent);
+  flex-direction: column;
 }
-.head-l {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-.head-icon {
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border-radius: 9px;
-  background: var(--primary-gradient-soft);
-  color: var(--primary);
-  border: 1px solid var(--primary-border);
-}
-.head-text h3 {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-  line-height: 1.2;
-}
-.head-text p {
-  font-size: 11px;
-  color: var(--text-faint);
-  margin-top: 2px;
-}
-
-/* 画布计数：做成「横向分段 chip」而非竖向数字卡。
-   原先与右侧 ThreatPanel 的 .kpi-card（大数字+小标签的方格）几乎同形，
-   同一屏出现两组「4 个数字格」会被误读为重复指标；
-   这里改为一行可点击的分段器，语义回到「画布筛选工具」。
-   计数与后端的 stats.componentCount / flowCount 同源，
-   故右侧不再重复展示组件数、数据流数。 */
-.head-r {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.kpi {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--c-bg-soft, #f8fafc);
-  border: 1px solid var(--c-line, #e2e8f0);
-  transition: all 0.16s;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.kpi:hover {
-  border-color: var(--c-primary-line, #bfdbfe);
-  background: var(--c-primary-soft, #eff6ff);
-}
-.kpi-num {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--c-text, #0f172a);
-  line-height: 1.2;
-  font-family: var(--font-mono);
-}
-.kpi-lbl {
-  font-size: 10.5px;
-  color: var(--c-text-3, #64748b);
-  font-weight: 500;
-}
-.kpi.flow .kpi-num { color: var(--c-primary, #2563eb); }
-.kpi.active {
-  border-color: var(--c-primary, #2563eb);
-  background: var(--c-primary-soft, #eff6ff);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
-}
-.kpi.active .kpi-lbl { color: var(--c-primary, #2563eb); }
 
 /* —— 图例 —— */
 .legend {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 7px 16px;
+  /* 两排"圆点圆心"对齐到同一垂直线 (x ≈ 27px)：
+     - 第 1 排 .gt-title-dot  圆心 = 14(.graph-toolbar) + 8(.gt-title) + 3(半径) = 25
+     - 第 2 排 .lg-item .dot  圆心 = pad-left(.legend) + 5 = 27 → pad-left = 22
+     （原第 2 排 .filter-chip 已并入本图例，该行不再存在。） */
+  padding: 7px 16px 7px 22px;
   font-size: 11px;
   color: var(--c-text-3, #64748b);
   border-bottom: 1px solid var(--c-line, #e2e8f0);
   background: var(--c-bg-soft, #f8fafc);
   flex-wrap: wrap;
+  gap: 10px;
 }
-.autofix-chip {
+/* 浮在画布右上角的纠错提示按钮：绝对定位，不占任何行高度；
+   无内容时不渲染（模板里 v-if），不需要为空占位。 */
+.autofix-fab {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  z-index: 20;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
-  margin-right: 16px;
   padding: 4px 10px;
   border: 1px solid var(--warning);
   border-radius: 999px;
@@ -1326,19 +1398,30 @@ defineExpose({ fitView })
   color: var(--warning);
   font-size: 11px;
   font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s ease;
+  box-shadow: 0 1px 3px rgba(217, 119, 6, 0.16);
+  transition: background 0.15s ease, transform 0.15s;
 }
-.autofix-chip:hover {
+.autofix-fab:hover {
   background: rgba(217, 119, 6, 0.18);
+  transform: translateY(-1px);
 }
+/* 浮层细节面板：从右上角向下展开，避免遮挡画布节点 */
 .autofix-panel {
-  margin: 0 16px 8px;
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  z-index: 21;
+  width: 320px;
+  max-height: 260px;
+  overflow-y: auto;
   padding: 10px 12px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel-2);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(15, 23, 42, 0.12));
 }
 .autofix-title {
   font-size: 12px;
@@ -1383,6 +1466,30 @@ defineExpose({ fitView })
   height: 0;
   border-top: 2px dashed var(--text-dim);
 }
+/* 可点击的图例项（节点类型高亮开关）：
+   默认与只读图例同款式，靠 hover/active 反馈表明可点，不额外加边框以免图例变噪。 */
+.lg-toggle {
+  padding: 2px 6px;
+  margin: -2px -6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.lg-toggle:hover {
+  background: var(--bg-active);
+  color: var(--primary);
+}
+.lg-toggle.active {
+  background: var(--primary);
+  color: #fff;
+}
+/* active 时色块需在白底上仍可辨：加深描边 */
+.lg-toggle.active i.dot {
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85);
+}
 
 /* —— 主图区 —— */
 .graph-body {
@@ -1398,8 +1505,11 @@ defineExpose({ fitView })
   background-position: 0 0, 0 9px, 9px -9px, -9px 0;
 }
 .graph-container {
-  width: 100%;
-  height: 100%;
+  /* X6 内部会通过内联 style 写死宽高（基于初始化时容器尺寸），
+     导致折叠右栏时画布不跟着扩展。用 !important 覆盖，强制随父级 stretch。
+     ResizeObserver 触发后 X6 会再写内联宽高，但下一次也会被这条规则推回去。 */
+  width: 100% !important;
+  height: 100% !important;
 }
 
 /* —— 空态 —— */
@@ -1544,12 +1654,6 @@ defineExpose({ fitView })
   height: 14px;
   background: var(--border);
   margin: 0 4px;
-}
-.lg-hint {
-  margin-left: auto;
-  font-size: 10.5px;
-  color: var(--text-faint);
-  font-style: italic;
 }
 
 /* —— 数据流详情浮层（点击边后浮现） —— */

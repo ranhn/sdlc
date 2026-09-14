@@ -10,6 +10,7 @@
   自动回填；只有当用户主动清空所有业务表（视作"回到首次部署"）才会重新 seed。
 """
 import os
+import sys
 from datetime import datetime, timedelta
 
 from app.database import Base, SessionLocal, engine
@@ -20,6 +21,27 @@ from app.models import (
 from app.security import hash_password
 
 from app.utils import network_clock as nc
+
+
+def _safe_print(*args, **kwargs):
+    """在 Windows GBK 控制台下也能安全打印 emoji 的 print。
+
+    seed 的完成日志带 ✅ / ℹ️，而 Windows 中文环境的 stdout 默认编码是 GBK，
+    直接 print 会抛 `UnicodeEncodeError: 'gbk' codec can't encode character
+    '\\u2705'`，被 app_entry 的 try/except 捕获后表现为"种子数据初始化失败"。
+    这里遇到编码错误时降级为去掉非 GBK 字符后再输出，保证日志不中断启动。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_args = [
+            a.encode(enc, errors="replace").decode(enc, errors="replace")
+            if isinstance(a, str) else a
+            for a in args
+        ]
+        print(*safe_args, **kwargs)
+
 
 ROLES = [
     ("超级管理员", "admin", "平台全部权限"),
@@ -127,10 +149,10 @@ def init():
         and db.query(SBOMComponent).count() == 0
     )
     if not is_first_deploy:
-        print("✅ 种子数据初始化完成")
-        print("   ℹ️  检测到已有业务数据（升级场景），跳过示例/演示数据 seed")
-        print("   管理员: admin / （请通过平台修改初始密码）")
-        print("   其他账号请在'人员管理'页面手动添加")
+        _safe_print("✅ 种子数据初始化完成")
+        _safe_print("   ℹ️  检测到已有业务数据（升级场���），跳过示例/演示数据 seed")
+        _safe_print("   管理员: admin / （请通过平台修改初始密码）")
+        _safe_print("   其他账��请在'人员管理'页面手动添加")
         db.close()
         return
 
@@ -321,10 +343,10 @@ def init():
         ))
         db.commit()
 
-    print("✅ 种子数据初始化完成")
-    print("   管理员: admin / （请通过平台修改初始密码）")
-    print("   其他账号请在'人员管理'页面手动添加")
-    print("   （已移除培训讲师角色；不再自动创建 secops / dev 演示账号）")
+    _safe_print("✅ 种子数据初始化完成")
+    _safe_print("   管理员: admin / （请通过平台修改初始密码）")
+    _safe_print("   其他账号请在'人员管理'页面手动添加")
+    _safe_print("   （已移除培训讲师角色；不再自动创建 secops / dev 演示账号）")
     db.close()
 
 

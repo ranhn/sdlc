@@ -10,8 +10,10 @@
           </svg>
         </div>
         <div class="head-text">
-          <h3>AI 威胁建模</h3>
-          <p>文档 → DFD + 威胁清单</p>
+          <!-- 删掉 <h3>AI 威胁建模</h3>：标题层级由下方步骤标题（.rs-label）
+               承担，避免左栏出现两个同等重量的大标题。
+               保留副标题作为本页功能说明。 -->
+          <p class="head-sub">文档 → DFD + 威胁清单</p>
         </div>
       </div>
 
@@ -36,7 +38,6 @@
       <div class="rail-block">
         <div class="rb-head">
           <span class="rb-title">场景模板</span>
-          <span v-if="templates.length" class="rb-count">{{ templates.length }}</span>
         </div>
         <div v-if="templates.length" class="tpl-list">
           <button
@@ -59,12 +60,24 @@
         <p v-else class="rail-empty">暂无模板，可直接在右侧填写</p>
       </div>
 
-      <!-- 核心能力：把引导栏下方空白填实，同时向用户说明产品价值 -->
+      <!-- 核心能力：默认折叠。
+           之前它是常驻区块，跟"场景模板"抢注意力，但它是"产品介绍"性质
+           而非"可操作项"。折叠后左栏噪声大幅降低，需要时才展开。 -->
       <div class="rail-block">
-        <div class="rb-head">
+        <button
+          class="rb-head rb-head--fold"
+          type="button"
+          :aria-expanded="featOpen"
+          @click="featOpen = !featOpen"
+        >
           <span class="rb-title">核心能力</span>
-        </div>
-        <ul class="feat-list">
+          <span class="rb-count">{{ features.length }}</span>
+          <svg class="rb-chev" :class="{ open: featOpen }" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+            <path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.9"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <ul v-show="featOpen" class="feat-list">
           <li v-for="f in features" :key="f.title" class="feat-row">
             <span class="feat-icon">
               <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor"
@@ -249,6 +262,12 @@
           <span class="ab-method-desc">{{ currentMethodologyDesc }}</span>
         </div>
 
+        <!-- 禁用原因提示：按钮置灰时用户常不知道缺什么，
+             这里直接在按钮左侧写明还差哪一项，减少"点了没反应"的挫败感。 -->
+        <span v-if="!analyzing && !canAnalyze" class="ab-block-reason">
+          {{ blockReason }}
+        </span>
+
         <button
           class="btn btn-primary analyze-btn"
           :disabled="analyzing || !canAnalyze"
@@ -259,7 +278,9 @@
               <path d="M10 2L2 6l8 4 8-4-8-4z" fill="currentColor" opacity="0.85" />
               <path d="M2 10l8 4 8-4M2 14l8 4 8-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
             </svg>
-            <span>开始 AI 威胁建模</span>
+            <!-- 按钮文案带上当前方法论名：用户无需回头确认下拉框选了什么，
+                 也让"开始"这个动作有明确的方法论上下文。 -->
+            <span>用 {{ methodology }} 开始建模</span>
           </span>
           <span v-else class="loading">
             <span class="spinner"></span>
@@ -294,6 +315,8 @@ const requirements = ref('')
 const architecture = ref('')
 const title = ref('')
 const showExample = ref(false)
+// 左栏"核心能力"折叠态：默认收起，减少与"场景模板"的注意力竞争
+const featOpen = ref(false)
 const templates = ref([])
 const activeTemplate = ref(null)
 
@@ -556,6 +579,19 @@ const canAnalyze = computed(() => {
   return false
 })
 
+/** 按钮禁用时告诉用户还差什么，而不是只把按钮变灰让人猜 */
+const blockReason = computed(() => {
+  if (title.value.trim().length === 0) return '还差：建模标题'
+  const reqLen = requirements.value.trim().length
+  const att = reqAttachment.value
+  const attOk = !!att && (att.text.trim().length >= 10 || att.image_count > 0)
+  if (!attOk && reqLen < 10) {
+    // 区分"完全没填"和"填了但太短"，提示更精准
+    return reqLen === 0 ? '还差：系统需求文档' : `需求文档还差 ${10 - reqLen} 字`
+  }
+  return ''
+})
+
 function capAttachmentImages(images) {
   if (!Array.isArray(images) || !images.length) return images
   const out = []
@@ -691,7 +727,10 @@ const EXAMPLE = {
 }
 
 function fillExample() {
-  title.value = ''
+  // 标题也补上示例值：否则用户填完文档还要回头再想标题，
+  // 而且"开始建模"按钮因标题为空仍是禁用态，容易让人困惑。
+  // 已有值时不覆盖，尊重用户已输入的内容。
+  if (!title.value.trim()) title.value = '在线商城系统安全分析（示例）'
   requirements.value = EXAMPLE.requirements
   architecture.value = EXAMPLE.architecture
   showExample.value = false
@@ -813,6 +852,17 @@ onMounted(loadTemplates)
   color: var(--c-text-4);
   margin: 0;
 }
+/* h3 删除后只剩副标题：让它在 28px 图标高度内垂直居中，不塌到顶部。
+   11px/500 在 28px 图标右边显得过细、像注释，提到 12.5px/600 让它
+   承担起「页面主标题」的视觉重量（h3 已删，不再有更重的标题压它）。 */
+.head-text .head-sub {
+  line-height: 28px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--c-text-2, #475569);
+  margin: 0;
+  letter-spacing: 0.01em;
+}
 
 /* —— 步骤指示器 —— */
 .rail-steps {
@@ -880,10 +930,13 @@ onMounted(loadTemplates)
   padding-top: 1px;
 }
 .rs-label {
+  /* 与删掉的 .head-text h3（13px / 700 / --c-text）保持同款规格，
+     让步骤标题成为左栏的视觉主体，替代原来的"AI 威胁建模"大标题。 */
   font-size: 13px;
-  font-weight: 600;
-  color: var(--c-text-2);
+  font-weight: 700;
+  color: var(--c-text);
   line-height: 1.35;
+  letter-spacing: 0.1px;
 }
 .rail-step.done .rs-label { color: var(--c-text-4); }
 .rail-step.current .rs-label { color: var(--c-primary); }
@@ -919,14 +972,40 @@ onMounted(loadTemplates)
   letter-spacing: 0.6px;
   text-transform: uppercase;
 }
+/* 可折叠区块头：hover 变色提示可点，右侧箭头指示展开态 */
+.rb-head--fold {
+  width: 100%;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  border-radius: var(--r-sm);
+  transition: background 0.15s;
+}
+.rb-head--fold:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+.rb-head--fold:hover .rb-title {
+  color: var(--c-text-2);
+}
 .rb-count {
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 600;
-  color: var(--c-text-3);
-  background: #fff;
-  border: 1px solid var(--c-line);
+  color: var(--c-text-4);
+  background: rgba(148, 163, 184, 0.16);
   border-radius: 999px;
-  padding: 0 6px;
+  padding: 0 5px;
+  line-height: 14px;
+}
+.rb-chev {
+  margin-left: auto;
+  color: var(--c-text-4);
+  transition: transform 0.2s;
+}
+.rb-chev.open {
+  transform: rotate(180deg);
 }
 
 /* —— 场景模板列表 —— */
@@ -1285,6 +1364,8 @@ onMounted(loadTemplates)
   color: #b6c2d2;
 }
 
+
+
 /* —— 上传 / 附件 —— */
 .field-actions {
   display: flex;
@@ -1395,6 +1476,18 @@ onMounted(loadTemplates)
   gap: 10px;
   flex: 1;
   min-width: 0;
+}
+/* 禁用原因提示：紧贴按钮左侧，琥珀色弱提示，不抢主 CTA 的视觉权重 */
+.ab-block-reason {
+  flex: none;
+  font-size: 11px;
+  font-weight: 500;
+  color: #b45309;
+  background: rgba(217, 119, 6, 0.09);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
 }
 .methodology-select {
   width: 190px;

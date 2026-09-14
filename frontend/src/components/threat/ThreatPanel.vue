@@ -22,84 +22,101 @@
       </div>
     </header>
 
-    <!-- KPI 卡片 -->
-    <div v-if="stats" class="kpi-grid">
-      <div class="kpi-card">
-        <span class="kpi-num">{{ stats.componentCount || 0 }}</span>
-        <span class="kpi-lbl">组件</span>
-      </div>
-      <div class="kpi-card">
-        <span class="kpi-num">{{ stats.flowCount || 0 }}</span>
-        <span class="kpi-lbl">数据流</span>
-      </div>
-      <div class="kpi-card">
-        <span class="kpi-num">{{ stats.threatCount || 0 }}</span>
-        <span class="kpi-lbl">威胁</span>
-      </div>
-      <div class="kpi-card danger">
-        <span class="kpi-num">{{ highCount }}</span>
-        <span class="kpi-lbl">高危</span>
-      </div>
-    </div>
+    
+    
 
-    <!-- 严重度/类型分布 -->
-    <div v-if="stats" class="distribution">
-      <div class="dist-row">
-        <span class="dist-label">严重度分布</span>
-        <div class="bars">
-          <span
-            v-for="(count, sev) in severityOrdered"
-            :key="sev"
-            class="bar"
-            :class="'sev-' + sevKey(sev)"
-            :style="{ width: pct(sev) + '%' }"
-            :title="`${sev}: ${count}`"
-          ></span>
+
+      <!-- 威胁类别（STRIDE 维度）单卡片展示。
+           严重度统计已并到下方列表头，概览区只剩这张卡片。
+           v-if="stats" 必须保留：stats 为 null 时读 threatCountByType 会抛错。 -->
+      <div v-if="stats" class="ov-card ov-card-solo">
+        <div class="ov-head">
+          <span class="ov-title">威胁类别</span>
+          <span class="ov-total">{{ typeCount }} 类</span>
         </div>
-        <span class="dist-detail">{{ severitySummary }}</span>
-      </div>
-      <div class="dist-row">
-        <span class="dist-label">类型分布</span>
-        <div class="type-chips">
-          <span v-for="(count, type) in stats.threatCountByType || {}" :key="type" class="chip" :title="type">
-            {{ shortType(type) }} <b>{{ count }}</b>
+        <div class="type-list">
+          <span
+            v-for="(count, type) in stats.threatCountByType || {}"
+            :key="type"
+            class="type-row"
+            :title="type"
+          >
+            <span class="type-name">{{ shortType(type) }}</span>
+            <span class="type-track"><i :style="{ width: typePct(count) + '%' }" /></span>
+            <b class="type-num">{{ count }}</b>
           </span>
         </div>
       </div>
+
+    <!-- 列表头 + 快捷筛选：整块 sticky，威胁很多时向下滚动依然能切换筛选 -->
+    <div class="list-head-sticky">
+      <div class="list-head">
+        <h3 v-if="selectedThreats">{{ selectedThreats.cellName }} 的威胁</h3>
+        <h3 v-else>威胁列表</h3>
+        <div class="list-head-actions">
+          <button
+            v-if="selectedThreats"
+            class="btn btn-sm"
+            @click="$emit('clear-selection')"
+          >
+            全部
+          </button>
+          <button
+            v-if="resultId"
+            class="btn btn-sm btn-add-threat"
+            title="AI 识别可能有遗漏，手工补充一条威胁"
+            @click="openAddThreat"
+          >
+            + 新增威胁
+          </button>
+        </div>
+      </div>
+
+      <!-- 筛选条（单行）：快捷筛选（全部/未缓解/待评审） │ 严重度（4 个等级 pill）。
+           顺序上快捷筛选在前、严重度在后；两组正交可叠加。
+           已移除原快捷筛选里的"高危"：它与严重度 pill 的"高危"口径不同
+           （前者按 critical+high 聚合的 38，后者是 stats 里 High 的 29），
+           同屏出现两个高危数字会让用户以为数据错乱。 -->
+      <div v-if="stats || allThreats.length" class="filter-bar">
+        <!-- 组一：快捷筛选（状态 / 处置维度） -->
+        <div v-if="allThreats.length" class="filter-group qf-group">
+          <button
+            v-for="f in filterTabs"
+            :key="f.key"
+            class="qf-chip"
+            :class="{ active: listFilter === f.key, zero: !f.n }"
+            :disabled="!f.n && listFilter !== f.key"
+            :title="`${f.full}（${f.n} 条）`"
+            @click="listFilter = f.key"
+          >
+            {{ f.label }}
+            <b>{{ f.n }}</b>
+          </button>
+        </div>
+
+        <!-- 分隔竖线：两组同时存在时才显示 -->
+        <span v-if="stats && allThreats.length" class="filter-divider" aria-hidden="true" />
+
+        <!-- 组二：严重度（等级维度）。点击切换 / 取消，联动列表实时过滤 -->
+        <div v-if="stats" class="filter-group sev-group">
+          <button
+            v-for="lvl in severityLevels"
+            :key="lvl.key"
+            class="sev-pill"
+            :class="['sev-' + lvl.key, { active: severityFilter === lvl.key, zero: !lvl.count }]"
+            :title="severityFilter === lvl.key ? `取消「${lvl.label}」筛选` : `只看「${lvl.label}」`"
+            @click="toggleSeverityFilter(lvl.key)"
+          >
+            <span class="sev-name">{{ lvl.label }}</span>
+            <span class="sev-count">{{ lvl.count }}</span>
+          </button>
+        </div>
+      </div>
     </div>
 
-    <!-- 列表头 -->
-    <div class="list-head">
-      <h3 v-if="selectedThreats">{{ selectedThreats.cellName }} 的威胁</h3>
-      <h3 v-else>威胁列表</h3>
-      <button
-        v-if="resultId"
-        class="btn btn-sm btn-add-threat"
-        title="AI 识别可能有遗漏，手工补充一条威胁"
-        @click="openAddThreat"
-      >
-        + 新增威胁
-      </button>
-      <button
-        v-if="selectedThreats"
-        class="btn btn-sm"
-        @click="$emit('clear-selection')"
-      >
-        全部
-      </button>
-    </div>
-
-    <!-- 评审进度：回答「这份模型的评审做完了吗」 -->
-    <div v-if="reviewProgress.total" class="review-progress">
-      <div class="rp-bar">
-        <div class="rp-fill" :style="{ width: (reviewProgress.rate * 100).toFixed(1) + '%' }"></div>
-      </div>
-      <div class="rp-text">
-        评审进度 {{ reviewProgress.reviewed }}/{{ reviewProgress.total }}
-        <span v-if="reviewProgress.pending" class="rp-pending">· {{ reviewProgress.pending }} 条待评审</span>
-        <span v-else class="rp-done">· 已全部评审</span>
-      </div>
-    </div>
+    <!-- "已评估"进度合并到下方威胁列表头的 filter tab 单点显示，
+         不在 .priority-strip 重复（reviewProgress.reviewed 14 vs filterTabs 统计 108
+         两边数字来源不同，会让用户怀疑数据错乱）。 -->
 
     <!-- 威胁列表 -->
     <div ref="listRef" class="threat-list">
@@ -112,72 +129,97 @@
           @click="toggleExpand(t)"
         >
           <div class="threat-head">
-            <span class="sev-badge" :class="'sev-' + sevKey(t.severity)">
-              {{ tSeverity(t.severity) }}
-            </span>
-            <select
-              class="status-select-inline"
-              :class="'status-' + statusKey(t.status)"
-              :value="t.status || 'Open'"
-              :title="`点击修改处置状态`"
-              @change="changeStatus(t, $event)"
-              @click.stop
-            >
-              <option value="Open">Open</option>
-              <option value="In Progress">进行中</option>
-              <option value="Mitigated">已缓解</option>
-              <option value="Accepted">已接受</option>
-              <option value="NotApplicable">不适用</option>
-            </select>
-            <span class="threat-type" :title="t.type">{{ shortType(t.type) }}</span>
-            <span class="threat-title" :class="{ 'is-out-of-scope': t.outOfScope }">
-              <span class="t-num">#{{ t.number }}</span>
-              <span>{{ t.title }}</span>
-            </span>
-            <!-- 评审结论徽标：待评审 / 已确认 / 已驳回 -->
-            <span
-              class="review-badge"
-              :class="'rv-' + reviewState(t)"
-              :title="reviewTitle(t)"
-              @click.stop
-            >
-              {{ reviewLabel(t) }}
-            </span>
-            <!-- 评审操作：一键确认 / 驳回（AI 误报需要人工推翻） -->
-            <span v-if="resultId" class="review-actions" @click.stop>
+            <!-- 第一行：严重度 + 编号 + 标题 + 展开箭头 -->
+            <div class="threat-row threat-row-main">
+              <span class="sev-badge" :class="'sev-' + sevKey(t.severity)">
+                {{ tSeverity(t.severity) }}
+              </span>
+              <span class="threat-title" :class="{ 'is-out-of-scope': t.outOfScope }">
+                <span class="t-num">#{{ t.number }}</span>
+                <span class="threat-title-text">{{ t.title }}</span>
+              </span>
+              <!-- 定位到画布：点这个按钮立即让父组���设置 selectedCellId → 画布高亮对应 cell。
+                   @click.stop 避免触发外层 toggleExpand。
+                   选中态（绑定到 props.selectedCellId）由 ThreatModeling.vue 控制。
+                   v-if="t._cellId" 排除没有 _cellId 的条目（如手工新增时 elementId 输入的不是真实 cell id）。 -->
               <button
-                class="rv-btn rv-ok"
-                :class="{ active: reviewState(t) === 'Confirmed' }"
-                title="确认威胁成立，推进整改"
-                :disabled="reviewingId === threatKey(t)"
-                @click="submitReview(t, 'Confirmed')"
+                v-if="t._cellId"
+                class="locate-btn"
+                :class="{ active: String(t._cellId) === String(selectedCellId) }"
+                :title="`在画布上定位到「${t._cellName || '该元素'}」`"
+                @click.stop="locateToCell(t)"
               >
-                ✓
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                  <circle cx="8" cy="8" r="3" fill="currentColor" />
+                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1" fill="none" />
+                </svg>
+                <span>定位</span>
               </button>
-              <button
-                class="rv-btn rv-no"
-                :class="{ active: reviewState(t) === 'Rejected' }"
-                title="驳回：误报或经评估不成立"
-                :disabled="reviewingId === threatKey(t)"
-                @click="submitReview(t, 'Rejected')"
+              <span class="expand-arrow" :class="{ open: isExpanded(t) }">▾</span>
+            </div>
+            <!-- 挂载元素 chip：让用户一眼看到威胁对应的组件/数据流是哪个 -->
+            <div v-if="t._cellName || t._cellKind" class="threat-cell-chip">
+              <span class="cell-chip-label">挂载在</span>
+              <span class="cell-chip-name">{{ t._cellName || '匿名元素' }}</span>
+              <span v-if="t._cellKind" class="cell-chip-kind" :class="'kind-' + kindKey(t._cellKind)">
+                {{ kindLabel(t._cellKind) }}
+              </span>
+            </div>
+            <!-- 第二行：操作控件（状态 / 类型 / 评审 / 范围外 / 确认驳回） -->
+            <div class="threat-row threat-row-controls">
+              <select
+                class="status-select-inline"
+                :class="'status-' + statusKey(t.status)"
+                :value="t.status || 'Open'"
+                :title="`点击修改处置状态`"
+                @change="changeStatus(t, $event)"
+                @click.stop
               >
-                ✕
-              </button>
-            </span>
-            <label
-              class="oos-toggle-inline"
-              :class="{ active: !!t.outOfScope }"
-              :title="t.outOfScope ? '已标记为范围外，点击取消' : '标记为不在范围内'"
-              @click.stop
-            >
-              <input
-                type="checkbox"
-                :checked="!!t.outOfScope"
-                @change="ev => toggleOutOfScope(t, ev)"
-              />
-              <span class="oos-toggle-text">{{ t.outOfScope ? '范围外' : '范围内' }}</span>
-            </label>
-            <span class="expand-arrow" :class="{ open: isExpanded(t) }">▾</span>
+                <option value="Open">Open</option>
+                <option value="In Progress">进行中</option>
+                <option value="Mitigated">已缓解</option>
+                <option value="Accepted">已接受</option>
+                <option value="NotApplicable">不适用</option>
+              </select>
+              <span class="threat-type" :title="t.type">{{ shortType(t.type) }}</span>
+              <!-- 评审操作：一键确认 / 驳回（AI 误报需要人工推翻）。
+                   按钮的 active 态已经能传达"已确认 / 已驳回"，所以
+                   不再额外渲染 review-badge —— 此前两套视觉同形挤在
+                   380px 右栏里，既冗余又挤压其它控件。 -->
+              <span v-if="resultId" class="review-actions" @click.stop>
+                <button
+                  class="rv-btn rv-ok"
+                  :class="{ active: reviewState(t) === 'Confirmed' }"
+                  :title="reviewTitle(t) || '确认威胁成立，推进整改'"
+                  :disabled="reviewingId === threatKey(t)"
+                  @click="submitReview(t, 'Confirmed')"
+                >
+                  ✓
+                </button>
+                <button
+                  class="rv-btn rv-no"
+                  :class="{ active: reviewState(t) === 'Rejected' }"
+                  :title="reviewTitle(t) || '驳回：误报或经评估不成立'"
+                  :disabled="reviewingId === threatKey(t)"
+                  @click="submitReview(t, 'Rejected')"
+                >
+                  ✕
+                </button>
+              </span>
+              <label
+                class="oos-toggle-inline"
+                :class="{ active: !!t.outOfScope }"
+                :title="t.outOfScope ? '已标记为范围外，点击取消' : '标记为不在范围内'"
+                @click.stop
+              >
+                <input
+                  type="checkbox"
+                  :checked="!!t.outOfScope"
+                  @change="ev => toggleOutOfScope(t, ev)"
+                />
+                <span class="oos-toggle-text">{{ t.outOfScope ? '范围外' : '范围内' }}</span>
+              </label>
+            </div>
           </div>
           <transition name="fade">
             <div v-if="isExpanded(t)" class="threat-detail">
@@ -245,8 +287,20 @@
 
       <div v-else-if="model" class="no-threats">
         <div class="nt-icon">✓</div>
-        <p v-if="selectedThreats">「{{ selectedThreats.cellName || '该组件' }}」暂无威胁记录</p>
-        <p v-else>该区域暂无威胁记录</p>
+        <!-- 有筛选时给出"被筛掉了"的明确提示 + 一键清除，
+             否则用户会误以为真的没有这类威胁。 -->
+        <template v-if="listFilter !== 'all'">
+          <p>当前筛选下没有匹配的威胁</p>
+          <span>
+            「{{ filterTabs.find((f) => f.key === listFilter)?.full }}」为 0 条，
+            可切换到「全部」查看。
+          </span>
+          <button class="nt-reset" @click="listFilter = 'all'">显示全部</button>
+        </template>
+        <template v-else>
+          <p v-if="selectedThreats">「{{ selectedThreats.cellName || '该组件' }}」暂无威胁记录</p>
+          <p v-else>该区域暂无威胁记录</p>
+        </template>
       </div>
       <div v-else class="no-threats">
         <div class="nt-icon">📊</div>
@@ -334,7 +388,7 @@ const props = defineProps({
   // 当前登录用户（用于评审后本地回显评审人，避免整页刷新）
   currentUser: { type: Object, default: null },
 })
-const emit = defineEmits(['clear-selection', 'threat-updated'])
+const emit = defineEmits(['clear-selection', 'threat-updated', 'locate-cell'])
 
 const expanded = ref(new Set())
 const listRef = ref(null)
@@ -478,6 +532,51 @@ function sevKey(sev) {
   return 'unknown'
 }
 
+const severityFilter = ref('')
+const severityLevels = computed(() => {
+  const bySev = props.stats?.threatCountBySeverity || {}
+  const defs = [
+    ['Critical', 'critical'],
+    ['High', 'high'],
+    ['Medium', 'medium'],
+    ['Low', 'low'],
+  ]
+  return defs.map(([name, key]) => ({
+    name,
+    key,
+    label: tSeverity(name),
+    count: bySev[name] || 0,
+  }))
+})
+function toggleSeverityFilter(key) {
+  severityFilter.value = severityFilter.value === key ? '' : key
+}
+
+/* —— 概览卡片用到的派生数据 —— */
+
+// 展示用总数：totalThreats 为了防除零做了 `|| 1`，不能直接显示
+const totalThreatsDisplay = computed(() => {
+  const bySev = props.stats?.threatCountBySeverity || {}
+  return Object.values(bySev).reduce((a, b) => a + b, 0)
+})
+
+const typeEntries = computed(() => {
+  const byType = props.stats?.threatCountByType || {}
+  return Object.entries(byType).filter(([, n]) => Number(n) > 0)
+})
+
+const typeCount = computed(() => typeEntries.value.length)
+
+// 类别条以"最大类别"为基准做相对长度，否则占比小的大类看着都像没有
+const typeMax = computed(() => {
+  const nums = typeEntries.value.map(([, n]) => Number(n) || 0)
+  return Math.max(1, ...nums)
+})
+
+function typePct(count) {
+  return Math.max(6, Math.round(((Number(count) || 0) / typeMax.value) * 100))
+}
+
 function statusKey(status) {
   const s = String(status || '').toLowerCase()
   if (s.includes('mitigat')) return 'mitigated'
@@ -533,9 +632,16 @@ function reviewLabel(t) {
   return '待评审'
 }
 
+/**
+ * 评审结论的悬浮提示，仅在已评审时返回内容。
+ *
+ * 未评审返回空串 —— 调用方（✓ / ✕ 按钮）会用各自的兜底文案说明
+ * 按钮本身的作用，不能在这里统一返回"待评审：请确认威胁是否成立"，
+ * 否则两个按钮的提示会变得一模一样，用户分不清哪个是确认哪个是驳回。
+ */
 function reviewTitle(t) {
   const r = t.review
-  if (!r?.state) return '待评审：请确认威胁是否成立'
+  if (!r?.state) return ''
   const who = r.reviewer ? `，评审人 ${r.reviewer}` : ''
   const when = r.reviewed_at ? `，${fmtReviewTime(r.reviewed_at)}` : ''
   const cmt = r.comment ? `\n意见：${r.comment}` : ''
@@ -719,18 +825,72 @@ const allThreats = computed(() => {
   const all = []
   for (const cell of diagram?.cells || []) {
     for (const t of cell.threats || []) {
-      all.push({ ...t, _cellName: cell.data?.name || '' })
+      // 注入 _cellName + _cellId：
+      //  - _cellName：渲染"挂载在 XX"chip，让用户一眼看到威胁对应的组件
+      //  - _cellId：点威胁项时 emit 给父组件 → 画布高亮对应 cell
+      all.push({
+        ...t,
+        _cellName: cell.data?.name || '',
+        _cellId: cell.id,
+        _cellKind: cell.kind || cell.data?.kind || '',
+      })
     }
   }
   return all
 })
 
 const visibleThreats = computed(() => {
-  if (props.selectedThreats) return props.selectedThreats.threats || []
-  if (!props.model) return []
-  return [...allThreats.value].sort(
-    (a, b) => (a.severityRank ?? 99) - (b.severityRank ?? 99)
-  )
+  // 先取基础集合（画布选中时只看该组件），再套用快捷筛选。
+  let base
+  if (props.selectedThreats) {
+    base = props.selectedThreats.threats || []
+  } else {
+    if (!props.model) return []
+    // 主排序：建模顺序（后端 number，全局正序）。
+    // 用户看威胁列表时，"#4 / #5 / #6 / #7 / #11" 这种断裂编号
+    // 会误以为中间数据丢失；按 number 升序展示让编号连续，匹配
+    // "模型按 AI 生成顺序逐条追加"的心智模型。
+    // 次排序：同 number 时按严重度（严重→低）把更严重的排前。
+    base = [...allThreats.value].sort((a, b) => {
+      const an = Number(a.number || 0)
+      const bn = Number(b.number || 0)
+      if (an !== bn) return an - bn
+      return (a.severityRank ?? 99) - (b.severityRank ?? 99)
+    })
+  }
+  return base.filter((t) => {
+    // 严重度 chip 过滤：与列表快捷筛选正交，两者可叠加
+    if (severityFilter.value && sevKey(t.severity) !== severityFilter.value) return false
+    if (listFilter.value === 'open') return t.status !== 'Mitigated'
+    if (listFilter.value === 'todo') {
+      // 待评审：与 reviewProgress / filterTabs 统一走 reviewState()，
+      // 否则 chip 数字（reviewState 口径）和列表实际条数（reviewStatus 口径）会对不上。
+      return reviewState(t) === 'Pending'
+    }
+    return true
+  })
+})
+
+/**
+ * 快捷筛选：全部 / 高危 / 未缓解 / 待评审。
+ * 威胁多起来后（十几条以上），用户最常见的心智是"我只想看该马上处理的"，
+ * 比逐个点严重度 chip 更快。
+ */
+const listFilter = ref('all')
+const filterTabs = computed(() => {
+  const src = props.selectedThreats?.threats || allThreats.value
+  const open = src.filter((t) => t.status !== 'Mitigated').length
+  // 待评审必须复用 reviewState()：之前读的是 t.reviewStatus，与上方
+  // reviewProgress（读 t.review.state）字段不同源，同一个页面出现
+  // "94 待评审"（priority-strip）和"108 待评审"（本 chip）两个数字。
+  const todo = src.filter((t) => reviewState(t) === 'Pending').length
+  return [
+    // 不提供"高危"chip：严重度筛选由右侧严重度 pill 负责，
+    // 否则同屏出现两个口径不同的"高危"数字（38 vs 29）会让用户以为数据错乱。
+    { key: 'all', label: '全部', full: '全部威胁', n: src.length },
+    { key: 'open', label: '未缓解', full: '未缓解', n: open },
+    { key: 'todo', label: '待评审', full: '待评审', n: todo },
+  ]
 })
 
 function toggleExpand(t) {
@@ -744,11 +904,40 @@ function toggleExpand(t) {
 function isExpanded(t) {
   return expanded.value.has(t.threatId || `${t.number}-${t.title}`)
 }
+
+/**
+ * 点击"定位"按钮 → 通知父组件 ThreatModeling.vue 把画布选中态切到该 cell。
+ * 父组件收到后会把 cellId 写到 selectedCellId，进而触发 DfdGraph 的 watch 高亮 + 居中。
+ */
+function locateToCell(t) {
+  if (!t._cellId) {
+    console.warn('[ThreatPanel] locateToCell: 该威胁没有 _cellId，无法定位', t)
+    return
+  }
+  console.log('[ThreatPanel] locate-cell emit', { cellId: t._cellId, cellName: t._cellName })
+  emit('locate-cell', { cellId: t._cellId, cellName: t._cellName })
+}
+
+/* kind 字符串归一：DFD 节点 kind 通常是 process / store / actor / ai / flow/lane/... */
+function kindKey(kind) {
+  const k = String(kind || '').toLowerCase()
+  if (k.includes('process') || k === '处理') return 'process'
+  if (k.includes('store') || k === '数据存储') return 'store'
+  if (k.includes('actor') || k.includes('external') || k === '外部实体') return 'actor'
+  if (k.includes('ai')) return 'ai'
+  if (k.includes('flow') || k.includes('edge')) return 'flow'
+  return 'other'
+}
+function kindLabel(kind) {
+  const map = { process: '处理', store: '存储', actor: '实体', ai: 'AI', flow: '流', other: '元素' }
+  return map[kindKey(kind)] || '元素'
+}
 </script>
 
 <style scoped>
 .threat-panel {
   width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -765,6 +954,7 @@ function isExpanded(t) {
 .tp-head {
   display: flex;
   align-items: center;
+  flex: none;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, var(--bg-panel-2), transparent);
@@ -796,160 +986,335 @@ function isExpanded(t) {
   margin-top: 2px;
 }
 
-/* —— KPI 卡片 —— */
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  padding: 12px 14px;
+/* —— 关键提醒条 —— 取代原 KPI 卡片：
+   原来 4 格 KPI（组件/数据流/威胁/高危）与工具条重复 3 格，
+   这里只保留"高危 + 待评审"2 个右栏独占指标，单行紧凑。
+   "已评估 N/M"与列表头筛选 tab 的"已评估"重复且数字来源不同
+   （reviewProgress vs filterTabs 统计），会出现"14 vs 108"对不上，
+   所以删掉第三项，留给筛选 tab 单一来源显示。 */
+.priority-strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
   border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
 }
-.kpi-card {
+.ps-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text);
+  min-width: 0;
+}
+.ps-item.muted {
+  color: var(--text-faint);
+}
+.ps-num {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text);
+  line-height: 1.05;
+}
+.ps-lbl {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.ps-item.danger .ps-num {
+  color: var(--danger, #dc2626);
+}
+.ps-item.danger .ps-lbl {
+  color: var(--danger, #dc2626);
+  font-weight: 600;
+}
+.ps-item.zero .ps-num,
+.ps-item.zero .ps-lbl {
+  color: var(--text-faint);
+}
+.ps-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-light, #e2e8f0);
+  flex-shrink: 0;
+}
+
+.ov-card {
   background: var(--bg-panel-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 9px 4px;
+  border-radius: 6px;
+  padding: 5px 8px 6px;
+  min-width: 0;
+}
+/* 严重度并入列表头后，概览区只剩这一张卡片。需要自己的内外边距，
+   取代原来 .overview 父容器的 padding / gap / border-bottom。 */
+.ov-card-solo {
+  /* 左右 14px：与下方威胁列表的 padding (14px) 对齐，
+     让卡片右缘与 .threat-item 右缘精确对齐到同一条竖线 */
+  margin: 8px 14px 10px;
+}
+.ov-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.ov-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+.ov-total {
+  font-size: 9.5px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+/* —— 筛选条（单行）：快捷筛选（全部/未缓解/待评审） │ 严重度（4 个等级 pill） —— */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  /* 不换行：两组 chip 在同一排，靠左紧凑排，右边留呼吸空间 */
+  flex-wrap: nowrap;
+  gap: 4px;
+  /* 左 12px 与列表头对齐；右 20px：比列表头多留 8px，
+     让严重度组右缘与「+新增威胁」按钮错开，不贴边。 */
+  /* 左 12px 与列表头对齐；右 24px：最后一个 pill 右缘与「+新增威胁」按钮右缘对齐 */
+  padding: 2px 24px 8px 12px;
+}
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+/* 两组都不撑开（flex:0 1 auto）：按内容紧凑排，组内 chip 各按内容宽度。
+   这样筛选条不会拉满整行，右边留出呼吸空间，跟「+新增威胁」按钮也错开。 */
+.sev-group { flex: 0 1 auto; }
+.qf-group { flex: 0 1 auto; }
+/* 竖线分隔：独占 1px，不参与伸缩 */
+.filter-divider {
+  flex: none;
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+/* 严重度 pill：按内容宽度紧凑排布，与同行 .qf-chip 高度对齐。
+   不用独立色点（省 ~8px/个），改用左侧 3px 色条标级别 ——
+   颜色仍由 .sev-* 的 currentColor 驱动，识别度不降。 */
+.sev-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  /* 上下 3px / 左右 5px；左 3px 给色条。
+     与 .qf-chip（5px）齐平，整行视觉密度一致；
+     左右 5px 而不是 7px：4 个 pill + 3 px 色条 = 节省约 16px，避免溢出。 */
+  padding: 3px 3px 3px 3px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  border-left: 3px solid currentColor;
+  background: var(--bg-panel);
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+  /* 按内容紧凑：pill 宽度贴合文字，不再拉伸 */
+  flex: 0 0 auto;
+  justify-content: center;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+/* hover / active 只改「除左色条外」的三边颜色：
+   border-color 简写会把 border-left-color 一起覆盖，导致级别色丢失，
+   所以统一用 border-top/right/bottom-color 单独声明。 */
+.sev-pill:hover {
+  border-top-color: var(--border-strong);
+  border-right-color: var(--border-strong);
+  border-bottom-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.sev-pill.active {
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  border-bottom-color: currentColor;
+  box-shadow: 0 0 0 1px currentColor inset;
+}
+/* 计数为 0 时整体降透明度，避免"看起来有威胁"的误读 */
+.sev-pill.zero {
+  opacity: 0.42;
+}
+.sev-name {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sev-count {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: currentColor;
+  font-variant-numeric: tabular-nums;
+}
+/* 各级别主色：用 currentColor 驱动点 / 数字，改一处即可 */
+.sev-critical { color: var(--critical); }
+.sev-high { color: var(--high); }
+.sev-medium { color: var(--medium); }
+.sev-low { color: var(--low); }
+
+/* 威胁类别：每行「名称 / 相对长度条 / 数字」—— 整行高度紧凑 */
+.type-list {
   display: flex;
   flex-direction: column;
+  gap: 3px;
+}
+.type-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 22px;
   align-items: center;
-  gap: 1px;
-  transition: all 0.2s;
-  position: relative;
+  gap: 6px;
+  font-size: 10px;
+}
+.type-name {
+  color: var(--text-dim);
+  white-space: nowrap;
   overflow: hidden;
-}
-.kpi-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: var(--primary-gradient-soft);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.kpi-card:hover::before {
-  opacity: 1;
-}
-.kpi-card > * {
-  position: relative;
-  z-index: 1;
-}
-.kpi-num {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--primary);
-  font-family: var(--font-mono);
+  text-overflow: ellipsis;
   line-height: 1.1;
 }
-.kpi-lbl {
-  font-size: 10.5px;
-  color: var(--text-faint);
-}
-.kpi-card.danger .kpi-num { color: var(--danger); }
-.kpi-card.danger {
-  background: var(--danger-soft);
-  border-color: var(--danger-border);
-}
-.kpi-card.danger::before {
-  background: var(--danger-soft);
-  opacity: 1;
-}
-
-/* —— 分布 —— */
-.distribution {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-.dist-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-}
-.dist-label {
-  color: var(--text-faint);
-  width: 64px;
-  flex-shrink: 0;
-  font-weight: 500;
-}
-.bars {
-  flex: 1;
-  height: 8px;
-  background: var(--bg-panel-2);
-  border-radius: 4px;
-  overflow: hidden;
-  display: flex;
-  gap: 2px;
+.type-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-panel);
   border: 1px solid var(--border);
+  overflow: hidden;
 }
-.bar {
+.type-track > i {
+  display: block;
   height: 100%;
   border-radius: 2px;
+  background: linear-gradient(90deg, var(--primary), var(--accent-cyan));
   transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  min-width: 2px;
 }
-.bar.sev-critical { background: linear-gradient(90deg, var(--critical), #b91c1c); }
-.bar.sev-high { background: linear-gradient(90deg, var(--danger), #dc2626); }
-.bar.sev-medium { background: linear-gradient(90deg, var(--medium), #ea580c); }
-.bar.sev-low { background: linear-gradient(90deg, var(--low), #0ea5e9); }
-.bar.sev-tbd { background: var(--border-strong); }
-.bar.sev-unknown { background: var(--text-faint); }
-.dist-detail {
-  color: var(--text-faint);
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-}
-.type-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex: 1;
-}
-.chip {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-panel-2);
-  border: 1px solid var(--border-light);
-  color: var(--text-dim);
-  transition: all 0.2s;
-}
-.chip:hover {
-  border-color: var(--primary-border);
-  color: var(--text);
-}
-.chip b {
+.type-num {
+  text-align: right;
   color: var(--primary);
   font-weight: 700;
-  margin-left: 3px;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
 }
 
-/* —— 列表头 —— */
+/* —— 列表头（含快捷筛选） —— */
+/* 注意：.threat-list 自身是滚动容器，把 sticky 放在它外面对它无效。
+   这里用"顺序固定 + flex 不收缩"实现同样效果：头部/KPI/筛选留在原地，
+   只有 .threat-list 内部滚动，视觉上等同吸顶且不依赖 sticky 兼容性。 */
+.list-head-sticky {
+  flex: none;
+  background: var(--bg-panel);
+  box-shadow: 0 1px 0 var(--border-light);
+}
 .list-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px 14px 6px;
+  /* 下 padding 收紧：下方紧跟统一筛选条（.filter-bar 上 2px），
+     让标题与筛选条视觉上属于同一区块。 */
+  padding: 11px 14px 3px;
+  gap: 8px;
+}
+
+.qf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted, #64748b);
+  background: var(--bg-panel-2, #f8fafc);
+  border: 1px solid var(--border-light, #e2e8f0);
+  border-radius: 999px;
+  /* 3px 内边距：与严重度 pill 等密度，整行视觉节奏一致 */
+  padding: 3px 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  /* 按内容紧凑：chip 宽度贴合文字，不再拉伸 */
+  flex: 0 0 auto;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.qf-chip b {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #334155);
+}
+.qf-chip:hover:not(:disabled) {
+  border-color: var(--primary, #7c3aed);
+  color: var(--primary, #7c3aed);
+}
+.qf-chip.active {
+  background: var(--primary, #7c3aed);
+  border-color: var(--primary, #7c3aed);
+  color: #fff;
+}
+.qf-chip.active b {
+  color: #fff;
+}
+.qf-chip.zero {
+  opacity: 0.5;
+}
+.qf-chip:disabled {
+  cursor: not-allowed;
+}
+/* 空态里的一键清除筛选 */
+.nt-reset {
+  margin-top: 2px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary, #7c3aed);
+  background: rgba(124, 58, 237, 0.07);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  border-radius: 999px;
+  padding: 2px 11px;
+  cursor: pointer;
+}
+.nt-reset:hover {
+  background: var(--primary, #7c3aed);
+  color: #fff;
 }
 .list-head h3 {
   font-size: 12.5px;
   font-weight: 700;
   color: var(--text);
   letter-spacing: 0.2px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* —— 威胁列表 —— */
 .threat-list {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
-  padding: 0 14px 14px;
+  padding: 4px 14px 14px;
   display: flex;
   flex-direction: column;
-  /* 行间留 9px（原来 7）：右栏 380px 里塞 9 个控件本来就挤，
-     行间距再小就"贴一起"，跟上面 KPI/分布横排的留白节奏不一致。 */
-  gap: 9px;
+  gap: 8px;
+  /* 与上方评审进度之间留一道隐形边距：列表项的 border-radius 更软，
+     跟上面 KPI / 分布的视觉块边界形成节奏分割。 */
 }
 .threat-item {
   background: var(--bg-panel-2);
@@ -973,14 +1338,25 @@ function isExpanded(t) {
 .threat-item.sev-unknown { border-left-color: var(--text-faint); }
 .threat-head {
   display: flex;
-  align-items: center;
-  /* 行内元素间距从 7px → 6px：9 个控件挤一行时再宽就溢出换行，
-     但 6 比 7 略紧凑，避免相邻 chip 视觉粘连。 */
+  flex-direction: column;
+  /* 主行 + 控件行，两行排列避免 9 个控件挤在 380px 同一行 */
   gap: 6px;
-  /* 行内上下 8/10 → 9/12：让行高略增、左右扩 2px，
-     跟 KPI 卡和评审进度的留白节奏统一。 */
-  padding: 9px 12px;
+  padding: 8px 12px 9px;
 }
+/* 主行：严重度徽章 + 编号 + 标题 + 箭头 */
+.threat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.threat-row-main { gap: 7px; }
+.threat-row-main .threat-title { flex: 1; }
+.threat-row-controls {
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-left: 1px;
+}
+.threat-row-controls .threat-type { order: -1; }
 .sev-badge {
   font-size: 10px;
   font-weight: 700;
@@ -1096,15 +1472,14 @@ function isExpanded(t) {
 }
 .threat-title {
   flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: center;
+  /* 编号与标题基线对齐（原 center 在多行标题下会让 #N 浮在中间） */
+  align-items: baseline;
   gap: 5px;
   font-size: 12.5px;
   color: var(--text);
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.42;
   font-weight: 500;
 }
 .threat-title .t-num {
@@ -1113,7 +1488,19 @@ function isExpanded(t) {
   color: var(--text-faint);
   flex-shrink: 0;
 }
-.threat-title.is-out-of-scope span:nth-child(2) {
+.threat-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* 右栏加宽到 420px 后，标题最多显示 2 行再省略：
+     "越权访问用户账户资金并篡改交易记录" 这类长标题一行放不下，
+     强行单行会截成 "越权访问用户账户资金…"，丢失关键区分信息。 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.threat-title.is-out-of-scope .threat-title-text {
   color: var(--text-faint);
   text-decoration: line-through;
 }
@@ -1126,6 +1513,74 @@ function isExpanded(t) {
   transform: rotate(180deg);
   color: var(--primary);
 }
+
+/* —— 定位到画布按钮 —— */
+.locate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px 2px 5px;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted, #64748b);
+  background: var(--bg-panel-2, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.locate-btn:hover {
+  color: var(--primary, #7c3aed);
+  border-color: var(--primary, #7c3aed);
+  background: rgba(124, 58, 237, 0.04);
+}
+.locate-btn.active {
+  color: #fff;
+  background: var(--primary, #7c3aed);
+  border-color: var(--primary, #7c3aed);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.18);
+}
+.locate-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* —— 挂载元素 chip —— 显示"挂载在 XX · 处理" */
+.threat-cell-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text-muted, #64748b);
+  padding: 0 0 0 1px;
+  margin-top: -1px;
+}
+.cell-chip-label {
+  color: var(--text-faint, #94a3b8);
+}
+.cell-chip-name {
+  color: var(--text, #334155);
+  font-weight: 500;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cell-chip-kind {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.cell-chip-kind.kind-process { background: rgba(22, 163, 74, 0.12); color: #15803d; }
+.cell-chip-kind.kind-store   { background: rgba(217, 119, 6, 0.12); color: #b45309; }
+.cell-chip-kind.kind-actor   { background: rgba(37, 99, 235, 0.12); color: #1d4ed8; }
+.cell-chip-kind.kind-ai      { background: rgba(124, 58, 237, 0.14); color: #6d28d9; }
+.cell-chip-kind.kind-flow    { background: rgba(8, 145, 178, 0.12); color: #0e7490; }
+.cell-chip-kind.kind-other   { background: rgba(100, 116, 139, 0.12); color: #475569; }
 .threat-detail {
   padding: 0 10px 10px;
   border-top: 1px dashed var(--border);
@@ -1287,57 +1742,12 @@ function isExpanded(t) {
   color: var(--text-faint);
 }
 
-/* ---- 评审进度条 ---- */
-.review-progress {
-  padding: 7px 12px 6px;
-  border-bottom: 1px solid var(--border-light);
-  flex-shrink: 0;
-}
-.rp-bar {
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(148, 163, 184, 0.25);
-  overflow: hidden;
-}
-.rp-fill {
-  height: 100%;
-  border-radius: 2px;
-  background: linear-gradient(90deg, #7c3aed, #047857);
-  transition: width 0.3s ease;
-}
-.rp-text {
-  margin-top: 4px;
-  font-size: 10.5px;
-  color: var(--text-faint);
-}
-.rp-pending { color: var(--warning, #d97706); }
-.rp-done { color: #047857; }
+/* ---- 评审进度：合并到 .priority-strip 显示，原 .review-progress 条删除 ---- */
 
-/* ---- 威胁评审（确认 / 驳回）---- */
-.review-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  border: 1px solid transparent;
-  cursor: help;
-}
-.rv-Pending {
-  color: var(--text-faint);
-  background: rgba(148, 163, 184, 0.12);
-  border-color: rgba(148, 163, 184, 0.3);
-}
-.rv-Confirmed {
-  color: #047857;
-  background: rgba(4, 120, 87, 0.1);
-  border-color: rgba(4, 120, 87, 0.3);
-}
-.rv-Rejected {
-  color: #b91c1c;
-  background: rgba(185, 28, 28, 0.1);
-  border-color: rgba(185, 28, 28, 0.28);
-}
+/* ---- 威胁评审（确认 / 驳回）----
+   评审结论不再单独渲染 badge：✓ / ✕ 按钮的 active 态即结论载体。
+   去掉了 .review-badge 与 .rv-Pending/.rv-Confirmed/.rv-Rejected 三条
+   同形色块，避免每条威胁右侧堆两组语义重复的视觉元素。 */
 .review-actions {
   display: inline-flex;
   gap: 3px;

@@ -86,3 +86,15 @@ Thumbs.db
 htmlcov/
 *.tmp
 *.bak
+
+# ---- 调试残留脚本 / 临时输出 ----
+# 根目录下的探查、补丁、调试启动脚本（属于本地排查产物，不入仓）
+/_peek*.txt
+/p2.py
+/patch.py
+/css_patch.py
+/st.txt
+/st2.txt
+/start-dev.ps1
+/watchdog-dev.ps1
+/backend/run_dev.py

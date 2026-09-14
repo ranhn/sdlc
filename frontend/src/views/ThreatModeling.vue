@@ -42,7 +42,7 @@
 
     <!-- Tab 2: 数据流图与威胁分析 -->
     <div v-show="activeTab === 'analysis'" class="threat-tab threat-analysis-tab">
-      <div class="analysis-grid">
+      <div class="analysis-grid" :class="{ 'side-collapsed': sideCollapsed }">
         <div class="analysis-col analysis-col-main">
           <!-- 分析进度 -->
           <div v-if="analyzing" class="mid-progress">
@@ -99,25 +99,97 @@
             </div>
 
             <!-- 画布工具条：AI 提取的 DFD 必然有误差，允许用户微调布局与元素名 -->
+            <!-- 重做：左标题"DFD 画布" · 中模式切换 · 右编辑/保存组，
+                 避免"只有一个复选框漂浮"的视觉断裂（只读模式时其他条件不满足，
+                 原工具条会塌成单 label）。 -->
             <div v-if="activeTab === 'analysis' && model" class="graph-toolbar">
-              <label class="gt-toggle" :title="canvasEditable ? '退出编辑，恢复只读浏览' : '进入编辑：可拖拽节点、双击改名、Delete 删除'">
-                <input v-model="canvasEditable" type="checkbox" />
-                <span>{{ canvasEditable ? '编辑模式' : '只读模式' }}</span>
-              </label>
-              <span v-if="canvasEditable" class="gt-hint">
-                拖拽节点微调布局 · 双击节点改名 · 选中后按 Delete 删除
-              </span>
-              <span v-if="layoutSaving" class="gt-saving">保存中…</span>
-              <button class="gt-btn" :disabled="!canvasEditable || !layoutDirty" @click="saveLayout">保存布局</button>
+              <div class="gt-left">
+                <span class="gt-title">
+                  <span class="gt-title-dot" />
+                  DFD 画布
+                </span>
+                <!-- 画布规模总览：让用户一眼知道图有多大、威胁覆盖到什么程度，
+                     不必先去右侧列表数一遍。数字全部来自 lastSummary.stats。 -->
+                <span class="gt-stats" :title="graphStatTitle">
+                  <span class="gts-item">
+                    <i class="gts-ico node" />{{ graphStats.nodes }} 节点
+                  </span>
+                  <span class="gts-sep" />
+                  <span class="gts-item">
+                    <i class="gts-ico flow" />{{ graphStats.flows }} 数据流
+                  </span>
+                  <span class="gts-sep" />
+                  <span class="gts-item threat" :class="{ zero: !graphStats.threats }">
+                    <i class="gts-ico threat" />{{ graphStats.threats }} 威胁
+                  </span>
+                  <span v-if="graphStats.coverage != null" class="gts-sep" />
+                  <span v-if="graphStats.coverage != null" class="gts-item cover">
+                    <i class="gts-ico cover" />覆盖 {{ graphStats.coverage }}%
+                  </span>
+                </span>
+                <label class="gt-toggle" :title="canvasEditable ? '退出编辑，恢复只读浏览' : '进入编辑：可拖拽节点、双击改名、Delete 删除'">
+                  <input v-model="canvasEditable" type="checkbox" />
+                  <span class="gt-toggle-text">
+                    {{ canvasEditable ? '编辑模式' : '只读模式' }}
+                  </span>
+                </label>
+                <span v-if="canvasEditable" class="gt-hint">
+                  拖拽 · 双击改名 · Delete 删除
+                </span>
+              </div>
+              <div class="gt-right">
+                <span v-if="layoutSaving" class="gt-saving">保存中…</span>
+                <button class="gt-btn" :disabled="!canvasEditable || !layoutDirty" @click="saveLayout">保存布局</button>
+                <!-- 适配视图：从 DfdGraph 暴露的 fitView 触发；
+                按钮迁到这里是为了不单独占一行（避免与下方工具栏连层），给画布腾出 32px 高度 -->
+                <button
+                  class="gt-icon-btn"
+                  title="适配视图：缩放到当前可见的所有节点"
+                  @click="dfdGraphRef?.fitView?.()"
+                >
+                  <svg width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <!-- 折叠右栏：给画布腾出 360px 宽度，专注看大图 -->
+                <button
+                  class="gt-icon-btn"
+                  :title="sideCollapsed ? '展开威胁分析栏' : '折叠威胁分析栏，画布独占整宽'"
+                  @click="sideCollapsed = !sideCollapsed"
+                >
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <rect x="1.5" y="2.5" width="13" height="11" rx="1.6" stroke="currentColor" stroke-width="1.3" />
+                    <path d="M10 2.5v11" stroke="currentColor" stroke-width="1.3" />
+                    <path
+                      v-if="sideCollapsed"
+                      d="M7 6l-2 2 2 2"
+                      stroke="currentColor"
+                      stroke-width="1.3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      v-else
+                      d="M4.6 6L6.6 8l-2 2"
+                      stroke="currentColor"
+                      stroke-width="1.3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <DfdGraph
               v-if="activeTab === 'analysis'"
+              ref="dfdGraphRef"
               :key="resultKey"
               :model="model"
               :dfd-autofix="lastDfdAutofix"
               :editable="canvasEditable"
               :highlight-cell-id="selectedCellId"
+              :locate-nonce="locateNonce"
               @select-cell="onSelectCell"
               @node-moved="onNodeMoved"
               @node-renamed="onNodeRenamed"
@@ -136,12 +208,29 @@
             :result-id="lastResultId"
             :stats="lastSummary?.stats"
             :selected-threats="selectedThreatsPayload"
+            :selected-cell-id="selectedCellId"
             :current-user="currentUser"
             @clear-selection="selectedCellId = null"
             @threat-updated="onThreatUpdated"
+            @locate-cell="onLocateCell"
           />
         </div>
       </div>
+
+      <!-- 右栏折叠后的"召回把手"：固定在画布区右边缘，点击展开回来。
+           没有它的话折叠后无处可点（工具条上的按钮在视口很宽时容易被忽略）。 -->
+      <button
+        v-if="sideCollapsed && model"
+        class="side-reopen"
+        title="展开威胁分析栏"
+        @click="sideCollapsed = false"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M6 6L4 8l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M1.5 2.5h13v11h-13z" stroke="currentColor" stroke-width="1.3" fill="none" rx="1.6" />
+        </svg>
+        <span>威胁分析</span>
+      </button>
     </div>
 
     <!-- Tab 3: 建模结果 -->
@@ -319,6 +408,61 @@ const lastSummary = computed(() => store.lastSummary)
 const lastDfdAutofix = computed(() => store.lastDfdAutofix)
 const resultKey = computed(() => store.resultKey)
 
+// ---- 画布规模总览（工具条上的"X 节点 / Y 数据流 / Z 威胁 / 覆盖 n%"） ----
+// 全部取自 lastSummary.stats（后端已算好），画布节点数兜底用 model.cells 里
+// 排除 lane / text / boundary 后的真实元素数，避免后端字段缺失时显示 0。
+const sideCollapsed = ref(false)
+// 折叠右栏后画布列宽从 ~574px 突然扩到 ~1010px，X6 viewport 还是旧宽度，
+// ResizeObserver 在 grid-template-columns 过渡动画期间不一定及时触发 fitView，
+// 结果画布节点挤在左半边。手动 watch + rAF 等动画结束再 fitView 兜底。
+const dfdGraphRef = ref(null)
+watch(sideCollapsed, async () => {
+  await nextTick()
+  // 给 grid-template-columns 的 0.22s 过渡 + X6 自身 reflow 留时间
+  setTimeout(() => {
+    try { dfdGraphRef.value?.fitView?.() } catch (_) {}
+  }, 260)
+})
+const graphStats = computed(() => {
+  // 字段名对齐后端 stats：componentCount / flowCount / threatCount（与右栏 KPI 同源）。
+  const s = lastSummary.value?.stats || {}
+  const cells = model.value?.detail?.diagrams?.[0]?.cells || []
+
+  // 仅把"真节点"算进覆盖度：
+  //  - 排除 tm.Flow（数据流边）：边虽然能挂威胁，但它不是"组件"，不应进覆盖度分母
+  //  - 排除 tm.Text / tm.BoundaryBox / lane：这些是装饰元素
+  // 之前漏掉 tm.Flow，导致"分子 = 有威胁的节点 ∪ 有威胁的边"，分母 = 节点 ∪ 边，
+  // 出现分子 > 分母 → 覆盖度 > 100%（之前显示 110% 就是这个原因）。
+  const isRealNode = (c) =>
+    c.shape !== 'tm.Text' &&
+    c.shape !== 'tm.BoundaryBox' &&
+    c.shape !== 'tm.Flow' &&
+    !c.isLane
+  const realNodes = cells.filter(isRealNode).length
+  const threats =
+    s.threatCount ?? cells.reduce((n, c) => n + (c.threats?.length || 0), 0)
+  // 覆盖度本地算：只在 stats 没给时启用兜底。后端没提供 coverageRate 字段（已查 openapi.json），
+  // 走本地口径——只算"真节点"，不再混入 flow 边。
+  const withThreats = cells.filter(
+    (c) => isRealNode(c) && (c.threats?.length || 0) > 0,
+  ).length
+  const coverage = realNodes
+    ? Math.round((withThreats / realNodes) * 100)
+    : null
+  return {
+    nodes: s.componentCount ?? realNodes,
+    flows: s.flowCount ?? 0,
+    threats,
+    coverage,
+  }
+})
+const graphStatTitle = computed(
+  () =>
+    `本图共 ${graphStats.value.nodes} 个元素、${graphStats.value.flows} 条数据流，` +
+    `已识别 ${graphStats.value.threats} 条威胁` +
+    (graphStats.value.coverage != null ? `，威胁覆盖度 ${graphStats.value.coverage}%` : ''),
+)
+
 // ---- 当前登录用户（威胁评审需要记录评审人）----
 const userStore = useUserStore()
 const currentUser = computed(() => ({
@@ -340,7 +484,15 @@ const selectedThreatsPayload = computed(() => {
   return {
     cellId: cell.id,
     cellName: cell.data?.name || '未命名元素',
-    threats: cell.threats || [],
+    // 注入 _cellId / _cellName / _cellKind��ThreatPanel 的"定位"按钮与
+    // "挂载在 XX" chip 依赖这三个字段；否则走 selectedThreats 分支时
+    // 会因 v-if="t._cellId" 不成立而整块不渲染。
+    threats: (cell.threats || []).map((t) => ({
+      ...t,
+      _cellName: cell.data?.name || '',
+      _cellId: cell.id,
+      _cellKind: cell.kind || cell.data?.kind || '',
+    })),
   }
 })
 
@@ -358,6 +510,27 @@ const pendingPositions = ref({})
 
 function onSelectCell(cellId) {
   selectedCellId.value = cellId || null
+}
+
+/**
+ * 威胁列表里点"定位"按钮 → 把 selectedCellId 切到对应 cell，
+ * 触发 DfdGraph 的 watch highlightCellId 把该节点高亮 + 滚动到可视区。
+ * 同时也设置 selectedThreatsPayload，让列表聚焦到该组件的威胁子集。
+ *
+ * 注意：若画布已经选中同一个 cell，直接赋值是同值，Vue 不会触发 DfdGraph 的
+ * watch，用户看到"点了没反应"。所以用 locateNonce 计数器强制驱动一次定位。
+ */
+const locateNonce = ref(0)
+function onLocateCell({ cellId }) {
+  if (!cellId) return
+  const same = String(selectedCellId.value || '') === String(cellId)
+  selectedCellId.value = cellId
+  // 同值也强制 +1，DfdGraph 监听非零变化后重新 zoomTo 居中
+  locateNonce.value += 1
+  if (same) {
+    // 同值时 selectedCellId 不变，靠 nonce 触发；非 same 时 watch 已触发一次，
+    // 这里不再重复，避免连续两次 zoomTo 造成抖动。
+  }
 }
 
 /** 威胁发生变更（新增/编辑/删除）后，从后端重新拉取模型以保持数据一致 */
@@ -914,6 +1087,8 @@ onUnmounted(() => {
 /* Tab 2: 数据流图与威胁分析 */
 .threat-analysis-tab {
   height: 100%;
+  /* 作为 .side-reopen 的定位上下文：折叠把手要贴着画布区右缘浮着 */
+  position: relative;
 }
 
 /* Tab 3: 建模结果列表 / 详情
@@ -928,20 +1103,47 @@ onUnmounted(() => {
 }
 .analysis-grid {
   display: grid;
-  grid-template-columns: 1fr 380px;
+  /* 右栏展开时给足宽度：
+     360px 时 4 个 KPI 各只有 ~78px（数字挤、标签折行），威胁标题也被截断；
+     460px 下 KPI 2×2 每格 ~105px、威胁标题可显示 2 行，
+     在"右栏信息舒展"与"画布不被压"之间取更靠画布的平衡点。
+     用 min() 兜底：窄屏（<1100px）按 42% 收缩，避免画布被压没。 */
+  --side-w: min(460px, 42%);
+  grid-template-columns: 1fr var(--side-w);
   /* 关键: 显式 grid-template-rows,否则 track 高度=内容高度,grid item 会被撑成几千 px */
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   height: 100%;
   min-height: 0;
+  transition: grid-template-columns 0.22s ease;
+}
+/* 折叠态：右栏列宽 0，gap 也归零，画布铺满 */
+.analysis-grid.side-collapsed {
+  --side-w: 0px;
+  gap: 0;
+}
+.analysis-grid.side-collapsed > .analysis-col-side {
+  display: none;
+}
+/* 画布列：右栏紧贴导致画布内容视觉"偏右"，给画布列右侧加 12px padding，
+   让画布实际可视区域往左推，跟左边的留白趋于对称。
+   （右栏可折叠后这里不需要 16px 那么大，缩到 12px 把宽度还给画布。） */
+.mid-graph {
+  /* 保留 flex / display / overflow 等原有规则不变 */
+  padding-right: 12px;
 }
 .analysis-col {
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
   border-radius: 12px;
   border: 1px solid #e2e8f0;
   background: #fff;
+}
+/* 右栏内部的 ThreatPanel 用 flex column 让 .threat-list 拿到"剩余高度"独立滚动，
+   这里不再额外加 overflow；否则滚动会先在外层吃掉，列表本身 .threat-list 的
+   overflow-y: auto 永远不生效。 */
+.analysis-col-side {
+  overflow: hidden;
 }
 .analysis-col-main {
   display: flex;
@@ -1086,56 +1288,209 @@ onUnmounted(() => {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-/* 画布编辑工具条 */
+/* 画布编辑工具条 —— 与下方 DfdGraph 的 .graph-head 共享同一基线，
+   两行视觉上是连续的"工具栏 + 筛选 chip"组合，避免错位。 */
 .graph-toolbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  padding: 6px 12px;
+  padding: 5px 14px;
+  min-height: 32px;
   border-bottom: 1px solid var(--border-light, #e2e8f0);
-  background: #f8fafc;
+  background: linear-gradient(180deg, #f8fafc, #f1f5f9);
   flex-shrink: 0;
   font-size: 11.5px;
+}
+/* 左组：标题 + 模式切换 + 提示；右组：保存状态 + 保存按钮 */
+.gt-left, .gt-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gt-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text, #334155);
+  padding: 3px 9px 3px 8px;
+  border-radius: 5px;
+  background: #fff;
+  border: 1px solid var(--border-light, #e2e8f0);
+  letter-spacing: 0.2px;
+}
+.gt-title-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #06b6d4);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.12);
 }
 .gt-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   cursor: pointer;
   color: #475569;
   font-weight: 500;
   user-select: none;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: #fff;
+  border: 1px solid var(--border-light, #e2e8f0);
+  transition: all 0.15s;
+}
+.gt-toggle:hover {
+  border-color: #7c3aed;
+  color: #5b21b6;
 }
 .gt-toggle input {
   cursor: pointer;
   accent-color: #7c3aed;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+.gt-toggle-text {
+  font-size: 11.5px;
+  font-weight: 600;
 }
 .gt-hint {
   color: #94a3b8;
   font-size: 11px;
+  padding: 0 4px;
 }
 .gt-saving {
   color: #d97706;
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(217, 119, 6, 0.08);
+  border: 1px solid rgba(217, 119, 6, 0.25);
+  border-radius: 5px;
 }
 .gt-btn {
-  margin-left: auto;
   font-family: inherit;
   font-size: 11.5px;
-  padding: 3px 10px;
+  padding: 3px 12px;
   border-radius: 5px;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #475569;
   cursor: pointer;
+  font-weight: 500;
 }
 .gt-btn:hover:not(:disabled) {
   border-color: #7c3aed;
   color: #7c3aed;
+  background: rgba(124, 58, 237, 0.04);
 }
 .gt-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+  color: #94a3b8;
+  border-color: #e2e8f0;
+}
+
+/* —— 工具条上的画布规模总览 —— */
+.gt-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+.gts-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.gts-item.threat {
+  color: #b91c1c;
+  font-weight: 600;
+}
+.gts-item.threat.zero {
+  color: #94a3b8;
+  font-weight: 500;
+}
+.gts-item.cover {
+  color: #15803d;
+  font-weight: 600;
+}
+.gts-sep {
+  width: 1px;
+  height: 11px;
+  background: #cbd5e1;
+}
+.gts-ico {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.gts-ico.node { background: #2563eb; }
+.gts-ico.flow { background: #0891b2; height: 2px; border-radius: 1px; }
+.gts-ico.threat { background: #dc2626; border-radius: 50%; }
+.gts-ico.cover { background: #16a34a; border-radius: 50%; }
+
+/* —— 工具条图标按钮（折叠右栏） —— */
+.gt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.gt-icon-btn:hover {
+  border-color: #7c3aed;
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.05);
+}
+
+/* —— 右栏折叠后的召回把手 —— */
+.side-reopen {
+  position: absolute;
+  z-index: 20;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 7px 9px 9px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #7c3aed, #6366f1);
+  border: none;
+  border-radius: 8px 0 0 8px;
+  box-shadow: -2px 0 10px rgba(99, 102, 241, 0.28);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.14em;
+  transition: padding-right 0.15s, box-shadow 0.15s;
+}
+.side-reopen:hover {
+  padding-right: 12px;
+  box-shadow: -3px 0 14px rgba(99, 102, 241, 0.42);
+}
+.side-reopen svg {
+  writing-mode: horizontal-tb;
+  flex-shrink: 0;
 }
 .progress-head {
   display: flex;
