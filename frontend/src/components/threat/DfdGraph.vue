@@ -722,13 +722,43 @@ watch(
 )
 
 /**
- * 把指定 cell 高亮并滚动到视口中央。
- * 仅 resetSelection 不改视图，节点也没有 selected 视觉样式，
- * 所以用户点"定位"会感觉"没反应"。这里做三件事：
- *   1) resetSelection 让 X6 选中该 cell
- *   2) 平移视图到该 cell（centerCell 优先，保持缩放）
- *   3) 节点脉冲强调 1.2s（紫色描边加粗 + 光晕），给明确的视觉反馈
+ * 高亮指定 cell。默认不动视图（画布保持用户当前的缩放/位置），
+ * 仅当该 cell 完全在当前视口外时才把视图平移过去 ——
+ * 否则"定位"了却看不到任何高亮，功能等于失效。
  */
+
+/** 把视图平移让 cell 进入视口（优先保持当前缩放） */
+function centerOn(cell) {
+  try {
+    if (typeof graph.centerCell === 'function') {
+      graph.centerCell(cell)
+      return
+    }
+    const b = cell.getBBox?.()
+    if (b && typeof graph.zoomTo === 'function') {
+      graph.zoomTo(b, { padding: 40, minScale: 0.3, maxScale: 1.2 })
+    }
+  } catch (e) {
+    console.warn('[DfdGraph] centerOn 失败:', e?.message || e)
+  }
+}
+
+function isCellVisible(cell) {
+  try {
+    // flush:false 让它拿实时几何；边的 bbox 在未完成布局时可能为 0 尺寸，
+    // 此时宁可判定为"不可见"把视图带过去，也好过边在视口外却不动画布。
+    const b = cell.getBBox?.({ flush: false })
+    const a = graph?.getGraphArea?.()
+    if (!b || !a) return true
+    if (!b.width && !b.height) return false
+    const p = 12
+    return b.x + b.width > a.x + p && b.x < a.x + a.width - p
+      && b.y + b.height > a.y + p && b.y < a.y + a.height - p
+  } catch (e) {
+    return true
+  }
+}
+
 function focusCell(id) {
   if (!graph || !id) return
   const cell = graph.getCellById(id)
@@ -741,38 +771,50 @@ function focusCell(id) {
   // Vue 吞掉,导致 emphasisCell/centerCell 全部不执行,体感"点了没反应"。
   // emphasisCell 已经提供视觉反馈,不需要内置选中。
   emphasisCell(cell)
-  // 优先 centerCell：纯平移，保持当前缩放
-  if (typeof graph.centerCell === 'function') {
-    try {
-      graph.centerCell(cell)
-      return
-    } catch (e) {
-      console.warn('[DfdGraph] centerCell 失败，回退 zoomTo:', e?.message || e)
-    }
-  }
-  // 兜底：zoomTo 会顺便调整缩放，但至少能把节点带进视野
-  try {
-    const bbox = cell.getBBox?.()
-    if (bbox && typeof graph.zoomTo === 'function') {
-      // pad 24 让节点不贴边；min 0.5 / max 1.5 防过缩或过放大
-      graph.zoomTo(bbox, { padding: 24, minScale: 0.5, maxScale: 1.5 })
-    }
-  } catch (e) {
-    // 居中失败不影响高亮本身
-    console.warn('[DfdGraph] focusCell zoomTo 失败:', e?.message || e)
-  }
+  // 仅在"完全看不见"时才平移动视图；可见时保持画布纹丝不动
+  if (!isCellVisible(cell)) centerOn(cell)
 }
 
 // 当前正在做强调动画的 cell id 与其原始描边，用于动画结束后还原
 let emphasisTimer = null
 let emphasisOriginal = null
+// isCellVisible / centerOn 定义在文件末尾的 helper 区
 
 /**
  * 节点脉冲强调：描边加粗变紫 + 轻微放大，1.2s 后还原。
  * 解决"resetSelection 无视觉反馈"的问题——用户能明确看到定位到了哪个节点。
  */
+/**
+ * 定位强调的属性名：节点用 body/*，边（数据流）用 line/*。
+ * 必须区分——DFD 里大量威胁挂在数据流上（flowCount 40 / componentCount 19），
+ * 早先只处理 isNode 会在点击数据流类威胁时静默 return：
+ * 无日志、无高亮，用户体感"点了没反应"。
+ */
+function emphasisAttrsOf(cell) {
+  return cell?.isEdge?.()
+    ? { stroke: 'line/stroke', width: 'line/strokeWidth' }
+    : { stroke: 'body/stroke', width: 'body/strokeWidth' }
+}
+
+/** 记录 cell 当前描边，供动画结束后还原 */
+function snapshotStroke(cell) {
+  const a = emphasisAttrsOf(cell)
+  return { id: cell.id, stroke: cell.attr(a.stroke), strokeWidth: cell.attr(a.width) }
+}
+
+/** 把描边写回快照值 */
+function restoreStroke(cell, snap) {
+  const a = emphasisAttrsOf(cell)
+  cell.attr(a.stroke, snap.stroke)
+  cell.attr(a.width, snap.strokeWidth)
+}
+
 function emphasisCell(cell) {
-  if (!cell?.isNode?.()) return
+  if (!cell) return
+  // 节点与边都要支持；泳道背景是纯排版元素（威胁不会挂在其上），
+  // 其余辅助图形（text 等）同样不做强调
+  if (isLaneNode(cell)) return
+  if (!cell.isNode?.() && !cell.isEdge?.()) return
   try {
     // 连续点击时先还原上一个，避免样式叠加残留
     if (emphasisTimer) {
@@ -781,24 +823,17 @@ function emphasisCell(cell) {
     }
     if (emphasisOriginal) {
       const prev = graph?.getCellById?.(emphasisOriginal.id)
-      if (prev) {
-        prev.attr('body/stroke', emphasisOriginal.stroke)
-        prev.attr('body/strokeWidth', emphasisOriginal.strokeWidth)
-      }
+      if (prev) restoreStroke(prev, emphasisOriginal)
       emphasisOriginal = null
     }
-    const stroke = cell.attr('body/stroke')
-    const strokeWidth = cell.attr('body/strokeWidth')
-    emphasisOriginal = { id: cell.id, stroke, strokeWidth }
-    cell.attr('body/stroke', '#7c3aed')
-    cell.attr('body/strokeWidth', 3)
+    emphasisOriginal = snapshotStroke(cell)
+    const a = emphasisAttrsOf(cell)
+    cell.attr(a.stroke, '#7c3aed')
+    cell.attr(a.width, 3)
     emphasisTimer = setTimeout(() => {
       // 还原时需要重新取 cell（避免持有已销毁引用）
       const c = graph?.getCellById?.(emphasisOriginal?.id)
-      if (c && emphasisOriginal) {
-        c.attr('body/stroke', emphasisOriginal.stroke)
-        c.attr('body/strokeWidth', emphasisOriginal.strokeWidth)
-      }
+      if (c && emphasisOriginal) restoreStroke(c, emphasisOriginal)
       emphasisOriginal = null
       emphasisTimer = null
     }, 1200)

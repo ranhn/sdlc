@@ -54,12 +54,15 @@
         <h3 v-if="selectedThreats">{{ selectedThreats.cellName }} 的威胁</h3>
         <h3 v-else>威胁列表</h3>
         <div class="list-head-actions">
+          <!-- 取消定位：清空父子组件的 selectedCellId → 画布取消高亮、
+               列表恢复全量。定位态下才出现（未定位时无需此按钮）。 -->
           <button
             v-if="selectedThreats"
-            class="btn btn-sm"
+            class="btn btn-sm btn-clear-locate"
+            title="取消画布定位，列表恢复显示全部威胁"
             @click="$emit('clear-selection')"
           >
-            全部
+            取消定位
           </button>
           <button
             v-if="resultId"
@@ -87,7 +90,7 @@
             :class="{ active: listFilter === f.key, zero: !f.n }"
             :disabled="!f.n && listFilter !== f.key"
             :title="`${f.full}（${f.n} 条）`"
-            @click="listFilter = f.key"
+            @click="setListFilter(f.key)"
           >
             {{ f.label }}
             <b>{{ f.n }}</b>
@@ -157,15 +160,18 @@
               </button>
               <span class="expand-arrow" :class="{ open: isExpanded(t) }">▾</span>
             </div>
-            <!-- 挂载元素 chip：让用户一眼看到威胁对应的组件/数据流是哪个 -->
+            <!-- 挂载元素 + 威胁类型 chip：与"挂载在哪个组件/数据流"语义同组，
+                 紧凑放在标题正下方。原 controls 行元素过多（状态 + 类型 +
+                 评审 + OOS = 4 组）拆成两组：元信息行 + 处置行。 -->
             <div v-if="t._cellName || t._cellKind" class="threat-cell-chip">
               <span class="cell-chip-label">挂载在</span>
-              <span class="cell-chip-name">{{ t._cellName || '匿名元素' }}</span>
+              <span class="cell-chip-name" :title="t._cellName || '匿名元素'">{{ t._cellName || '匿名元素' }}</span>
               <span v-if="t._cellKind" class="cell-chip-kind" :class="'kind-' + kindKey(t._cellKind)">
                 {{ kindLabel(t._cellKind) }}
               </span>
+              <span v-if="t.type" class="threat-type" :title="t.type">{{ shortType(t.type) }}</span>
             </div>
-            <!-- 第二行：操作控件（状态 / 类型 / 评审 / 范围外 / 确认驳回） -->
+            <!-- 第二行：处置控件（状态 / 评审 / 范围外）—— 3 个高优先级控件横排 -->
             <div class="threat-row threat-row-controls">
               <select
                 class="status-select-inline"
@@ -181,11 +187,9 @@
                 <option value="Accepted">已接受</option>
                 <option value="NotApplicable">不适用</option>
               </select>
-              <span class="threat-type" :title="t.type">{{ shortType(t.type) }}</span>
-              <!-- 评审操作：一键确认 / 驳回（AI 误报需要人工推翻）。
-                   按钮的 active 态已经能传达"已确认 / 已驳回"，所以
-                   不再额外渲染 review-badge —— 此前两套视觉同形挤在
-                   380px 右栏里，既冗余又挤压其它控件。 -->
+              <!-- 评审操作：分段切换器（segmented control）样式。
+                   与左侧"已缓解"等状态 chip 视觉明确区分（chip = 流程态、
+                   胶囊 = 事实判断），避免"两个绿色块并排"的视觉重复。 -->
               <span v-if="resultId" class="review-actions" @click.stop>
                 <button
                   class="rv-btn rv-ok"
@@ -552,6 +556,18 @@ function toggleSeverityFilter(key) {
   severityFilter.value = severityFilter.value === key ? '' : key
 }
 
+/**
+ * 快捷筛选统一入口。
+ * 两组筛选（快捷 × 严重度）正交叠加，但用户心智里点「全部」就是
+ * "回到全量列表"——若只重置 listFilter 而留着 severityFilter，
+ * 会出现"全部 97 但列表只有 19 条"的错觉（正是用户反馈的 bug）。
+ * 因此点「全部」时必须同步清空严重度筛选。
+ */
+function setListFilter(key) {
+  listFilter.value = key
+  if (key === 'all') severityFilter.value = ''
+}
+
 /* —— 概览卡片用到的派生数据 —— */
 
 // 展示用总数：totalThreats 为了防除零做了 `|| 1`，不能直接显示
@@ -719,21 +735,53 @@ async function toggleOutOfScope(t, event) {
   const threatId = t.threatId
   const oldVal = !!t.outOfScope
   if (newVal === oldVal) return
+
+  // 乐观更新：先落本地状态让 UI 立即响应，再发请求持久化。
+  // 之前是先 await 请求、成功后才赋值 —— 网络往返期间勾选框的
+  // 文字/样式都停在旧值（且列表若按 OOS 过滤会不重排），
+  // 用户看到的就是"点了没反应，刷新才变"。
+  applyOutOfScope(t, newVal)
+
   if (!props.resultId || !threatId) {
     // 本地内存中暂存，本次会话未持久化
-    t.outOfScope = newVal
     toast('本次会话未持久化，OOS 仅本地生效', 'warning')
     return
   }
+
   try {
     await updateThreatStatus(props.resultId, threatId, t.status || 'Open', {
       outOfScope: newVal,
     })
-    t.outOfScope = newVal
     toast(`威胁 #${t.number} 已${newVal ? '标记' : '取消'}范围外`, 'success')
+    // 通知父组件，与 status 变更保持一致的口径
+    emit('threat-updated', { threatId, outOfScope: newVal })
   } catch (e) {
+    // 失败回滚：不仅改回数据，也要同步回 checkbox DOM 的勾选态
+    applyOutOfScope(t, oldVal)
     event.target.checked = oldVal
     toast('更新范围外失败：' + (e?.response?.data?.detail || e?.message), 'error')
+  }
+}
+
+/**
+ * 把范围外标记同时写入列表副本与 model 中的原始威胁对象。
+ *
+ * visibleThreats 渲染的 t 是 allThreats 里 `{ ...threat }` 出来的浅拷贝，
+ * 只改副本的话，props.model 上的真身仍是旧值 —— 任何一次
+ * 触发 allThreats 重算的操作（新增威胁、父组件刷新数据）都会把
+ * 副本覆盖回去，界面出现"改完又跳回去"的诡异现象。
+ * 因此这里按 threatKey 定位真身一并同步，与 applyReviewLocally 同思路。
+ */
+function applyOutOfScope(t, val) {
+  t.outOfScope = val
+  const key = threatKey(t)
+  const cells = props.model?.detail?.diagrams?.[0]?.cells || []
+  for (const cell of cells) {
+    for (const threat of cell.threats || []) {
+      if (threatKey(threat) !== key) continue
+      threat.outOfScope = val
+      return
+    }
   }
 }
 
@@ -780,7 +828,7 @@ async function changeStatus(t, event) {
   if (status === oldStatus) return
   if (!props.resultId) {
     toast('该威胁暂未关联可保存的结果（本次会话未保存），状态未持久化', 'warning')
-    t.status = status
+    applyStatus(t, status)
     return
   }
   const threatId = t.threatId
@@ -788,16 +836,33 @@ async function changeStatus(t, event) {
     toast('威胁缺少 ID，无法回写', 'warning')
     return
   }
+  // 乐观更新：与 toggleOutOfScope 同口径，先刷 UI 再持久化，
+  // 避免网络往返期间下拉框停留在旧值像是"点了没反应"。
+  applyStatus(t, status)
   try {
     await updateThreatStatus(props.resultId, threatId, status, {
       outOfScope: !!t.outOfScope,
     })
-    t.status = status
     toast(`威胁 #${t.number} 已标记为「${status}」`, 'success')
     emit('threat-updated', { threatId, status })
   } catch (e) {
-    toast('更新状态失败：' + (e?.response?.data?.detail || e?.message), 'error')
+    applyStatus(t, oldStatus)
     event.target.value = oldStatus
+    toast('更新状态失败：' + (e?.response?.data?.detail || e?.message), 'error')
+  }
+}
+
+/** 状态写入列表副本 + model 真身，避免副本被重算覆盖（同 applyOutOfScope） */
+function applyStatus(t, status) {
+  t.status = status
+  const key = threatKey(t)
+  const cells = props.model?.detail?.diagrams?.[0]?.cells || []
+  for (const cell of cells) {
+    for (const threat of cell.threats || []) {
+      if (threatKey(threat) !== key) continue
+      threat.status = status
+      return
+    }
   }
 }
 
@@ -1353,14 +1418,16 @@ function kindLabel(kind) {
 .threat-row-main .threat-title { flex: 1; }
 .threat-row-controls {
   flex-wrap: wrap;
-  gap: 5px;
+  /* 控件统一高度 ~22px：状态 chip / 评审按钮 / OOS 胶囊垂直对齐，
+     避免原来参差 20-26px 导致的"参差不齐"观感 */
+  align-items: center;
+  gap: 6px;
   padding-left: 1px;
 }
-.threat-row-controls .threat-type { order: -1; }
 .sev-badge {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: var(--radius-pill);
   flex-shrink: 0;
   letter-spacing: 0.2px;
@@ -1391,7 +1458,7 @@ function kindLabel(kind) {
   border: 1px solid var(--border-light);
 }
 .status-select-inline {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   padding: 2px 16px 2px 8px;
   border-radius: var(--radius-pill);
@@ -1429,13 +1496,18 @@ function kindLabel(kind) {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 2px 9px;
+  /* 胶囊高度 22px：与其他控件对齐（状态 chip 22、review 按钮 20+1 边距）。
+     padding 由 2px 9px 改 2px 7px —— 节省 ~8px 让一行挤下三个控件 */
+  padding: 2px 7px;
   border-radius: var(--radius-pill);
-  background: var(--bg-panel-2);
-  border: 1px solid var(--border-light);
-  color: var(--text-dim);
+  /* 默认"圈内"态：用 dashed 边框 + 白底，与相邻的实色 chip 控件
+     （Open / 已缓解 / ✓ ✕）明确区分——这是个开关、不是状态徽章。
+     显式写死颜色 #64748b 不依赖未定义的 --text-muted 变量。 */
+  background: #fff;
+  border: 1px dashed #e2e8f0;
+  color: #64748b;
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
@@ -1449,17 +1521,19 @@ function kindLabel(kind) {
   height: 0;
 }
 .oos-toggle-inline.active {
-  background: var(--bg-hover);
-  color: var(--text-faint);
-  border-color: var(--border-strong);
-  border-style: dashed;
+  /* 范围外激活态：用 warning 色（橙）语义化"暂搁置、需关注"；
+     与"严重" badge 同色系传达"这不是解决、是需要复查" */
+  background: var(--warning-soft, rgba(245, 158, 11, 0.12));
+  color: var(--warning, #b45309);
+  border-color: var(--warning-border, #f59e0b);
+  border-style: solid;
 }
 .oos-toggle-inline:hover {
   border-color: var(--primary-border);
   color: var(--primary);
 }
 .threat-type {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--primary);
   background: var(--primary-soft);
   border-radius: 4px;
@@ -1477,14 +1551,15 @@ function kindLabel(kind) {
   /* 编号与标题基线对齐（原 center 在多行标题下会让 #N 浮在中间） */
   align-items: baseline;
   gap: 5px;
-  font-size: 12.5px;
+  /* 14px / 600：让标题比副文本（11px）显著大，作为信息层级锚点 */
+  font-size: 14px;
   color: var(--text);
   line-height: 1.42;
-  font-weight: 500;
+  font-weight: 600;
 }
 .threat-title .t-num {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   flex-shrink: 0;
 }
@@ -1549,28 +1624,37 @@ function kindLabel(kind) {
 
 /* —— 挂载元素 chip —— 显示"挂载在 XX · 处理" */
 .threat-cell-chip {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted, #64748b);
-  padding: 0 0 0 1px;
-  margin-top: -1px;
+  padding: 2px 7px;
+  margin-top: 2px;
+  align-self: flex-start;
+  max-width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-light, #e2e8f0);
+  border-radius: var(--radius-pill, 999px);
 }
 .cell-chip-label {
   color: var(--text-faint, #94a3b8);
+  flex-shrink: 0;
 }
 .cell-chip-name {
   color: var(--text, #334155);
   font-weight: 500;
-  max-width: 130px;
+  /* 1) flex:1 占据中间剩余空间，把 kind chip 推到底；2) min-width:0
+     允许文本在更长场景下溢出 ellipsis（数据里最长 280px，剩下空间也够） */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .cell-chip-kind {
-  font-size: 9.5px;
-  padding: 1px 5px;
+  font-size: 10px;
+  padding: 1px 6px;
   border-radius: 3px;
   font-weight: 500;
   letter-spacing: 0.2px;
@@ -1745,35 +1829,67 @@ function kindLabel(kind) {
 /* ---- 评审进度：合并到 .priority-strip 显示，原 .review-progress 条删除 ---- */
 
 /* ---- 威胁评审（确认 / 驳回）----
-   评审结论不再单独渲染 badge：✓ / ✕ 按钮的 active 态即结论载体。
-   去掉了 .review-badge 与 .rv-Pending/.rv-Confirmed/.rv-Rejected 三条
-   同形色块，避免每条威胁右侧堆两组语义重复的视觉元素。 */
+   segmented control 形态：外层胶囊包裹 ✓ / ✕，与左侧状态 chip
+   形成"细胶囊 ↔ 方按钮"的视觉对比，避免"两个绿色块并排"的重复感。 */
 .review-actions {
   display: inline-flex;
-  gap: 3px;
+  align-items: stretch;
   flex-shrink: 0;
+  /* 整体高度 22px，与状态 chip / OOS 胶囊统一 */
+  height: 22px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  overflow: hidden;
+  /* 用 :before 画细分隔线，避免两个按钮之间用 border 时一边消失 */
+  position: relative;
+}
+.review-actions::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border-light);
+  transform: translateX(-0.5px);
 }
 .rv-btn {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 100%;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
   line-height: 1;
-  border-radius: 4px;
-  border: 1px solid var(--border-light);
-  background: var(--bg-panel);
+  border: none;
+  background: transparent;
   color: var(--text-faint);
   cursor: pointer;
+  transition: background 0.12s, color 0.12s;
 }
+.rv-btn:hover:not(:disabled) { background: var(--bg-hover); }
 .rv-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.rv-ok:hover:not(:disabled), .rv-ok.active { color: #047857; border-color: #047857; }
+/* active 态：✓ 用绿底、✕ 用红底，整段胶囊内"半填色"，与左侧状态 chip
+   形成"色块 chip ↔ 胶囊内半填色"的差异化视觉 */
+.rv-ok.active { background: #047857; color: #fff; }
+.rv-no.active { background: #b91c1c; color: #fff; }
 .rv-no:hover:not(:disabled), .rv-no.active { color: #b91c1c; border-color: #b91c1c; }
 
 /* ---- 手工新增威胁弹窗 ---- */
 .btn-add-threat { color: var(--accent-violet); }
+/* 取消定位：定位态的"出口"，主色描边让它比普通次按钮更可发现 */
+.btn.btn-clear-locate {
+  color: var(--primary, #7c3aed);
+  border-color: var(--primary-border, #ddd6fe);
+  background: var(--primary-soft, #f5f3ff);
+}
+.btn.btn-clear-locate:hover {
+  background: var(--primary, #7c3aed);
+  border-color: var(--primary, #7c3aed);
+  color: #fff;
+}
 .tp-modal-mask {
   position: fixed; inset: 0; z-index: 1000;
   background: rgba(0, 0, 0, 0.45);
