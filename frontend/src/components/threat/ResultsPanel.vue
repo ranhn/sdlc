@@ -10,19 +10,14 @@
             <path d="M6 12h2M10 12h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
           </svg>
         </div>
-        <div>
-          <div class="rp-title-row">
-            <h2 class="rp-title">威胁建模结果</h2>
-            <span class="rp-count-pill"><b>{{ total }}</b> 条记录</span>
-            <span class="rp-scope-pill" :class="canViewAll ? 'scope-all' : 'scope-mine'">
-              {{ canViewAll ? '全部结果' : '我的结果' }}
-            </span>
-          </div>
-          <span class="rp-sub">
-            历史建模记录，可导出 Markdown / JSON / CSV / Word 报告
-            <template v-if="!canViewAll">
-              · 当前仅显示你建模的记录（{{ currentUsername || '未登录' }}）
-            </template>
+        <!-- 说明行已删：导出格式等自解释信息不值得常驻页头（原"历史建模
+             记录，可导出…"）。外层包裹 div 一并去掉，标题行与图标直接
+             flex 居中对齐，页头收敛为单行。 -->
+        <div class="rp-title-row">
+          <h2 class="rp-title">威胁建模结果</h2>
+          <span class="rp-count-pill"><b>{{ total }}</b> 条记录</span>
+          <span class="rp-scope-pill" :class="canViewAll ? 'scope-all' : 'scope-mine'">
+            {{ canViewAll ? '全部结果' : '我的结果' }}
           </span>
         </div>
       </div>
@@ -76,13 +71,10 @@
               <span class="rp-tag">{{ tMethodology(item.methodology) }}</span>
             </div>
           </div>
-          <!-- 数据列：与网格列一一对应。数字右对齐（min-width 3ch），
-               让"组件/数据流/威胁"的单位词在所有卡片上纵向对齐。 -->
-          <span class="rp-cell rp-c-comp"><b>{{ item.stats?.componentCount ?? '-' }}</b>组件</span>
-          <span class="rp-cell rp-c-flow"><b>{{ item.stats?.flowCount ?? '-' }}</b>数据流</span>
-          <span class="rp-cell rp-c-threat"><b>{{ item.stats?.threatCount ?? '-' }}</b>威胁</span>
-          <span class="rp-cell rp-c-owner" :title="ownerTitle(item)">{{ ownerLabel(item) }}</span>
-          <span class="rp-cell rp-c-time">{{ fmtTime(item.created_at) }}</span>
+          <!-- 数据统计列（组件/数据流/威胁/建模人）已移除：详情页 KPI 卡
+               有完整数据，列表只承担"找到记录"的职责（标题/时间/操作），
+               避免同一信息两处维护。 -->
+          <span class="rp-c-time">{{ fmtTime(item.created_at) }}</span>
           <div class="rp-item-actions">
             <!-- TODO: 导出按钮暂时隐藏(2026-09-04 用户反馈)。
                  原因: .rp-export-menu 用 position:absolute 展开下拉,
@@ -215,22 +207,6 @@ function canModify(item) {
 /** 删除按钮的可见性：与 canModify 一致，UI 上隐藏。 */
 function canDelete(item) {
   return canModify(item)
-}
-/** 显示用的「建模人」标签：优先显示后端返回的中文姓名，其次用户名，匿名兜底。 */
-function ownerLabel(item) {
-  if (!item) return '-'
-  const u = item.owner_username || currentUsername.value || ''
-  const n = item.owner_display_name || ''
-  if (n && n !== u) return `${u} · ${n}`  // username · 中文名
-  return u || n || '匿名'
-}
-/** 鼠标悬浮提示：username · displayName，便于识别 */
-function ownerTitle(item) {
-  if (!item) return ''
-  const u = item.owner_username || currentUsername.value || ''
-  const n = item.owner_display_name || ''
-  if (u && n && n !== u) return `${u} · ${n}`
-  return u || n || '匿名'
 }
 
 // 列表分页 / 筛选 / 搜索
@@ -469,12 +445,7 @@ onMounted(() => load(1))
   color: var(--text-faint);
   font-family: var(--font-mono);
 }
-.rp-sub {
-  font-size: 11.5px;
-  color: var(--text-faint);
-  margin-top: 2px;
-  display: block;
-}
+/* .rp-sub 说明行已删除（模板同步移除） */
 .rp-toolbar {
   display: flex;
   align-items: center;
@@ -621,14 +592,8 @@ onMounted(() => load(1))
   display: grid;
   grid-template-columns:
     40px            /* 序号（徽章左对齐，紧贴卡片左缘） */
-    minmax(0, 280px)/* 标题 + 方法论标签（限宽，超长省略——
-                       列宽收敛后数据块整体左移、紧跟标题） */
-    64px            /* 组件 */
-    80px            /* 数据流 */
-    64px            /* 威胁 */
-    minmax(0, 1fr)  /* 建模人：弹性吃掉剩余空间、内容左对齐，
-                       使 admin 紧跟数据块；空隙留在它与时间之间 */
-    116px           /* 时间 */
+    minmax(0, 1fr)  /* 标题 + 方法论标签（弹性，超长省略） */
+    132px           /* 时间（"2026-09-11 16:55" 16 字符等宽约 110px，留余量防换行） */
     max-content;    /* 操作区 */
   align-items: center;
   gap: 12px;
@@ -640,14 +605,9 @@ onMounted(() => load(1))
 .rp-item-bar:hover {
   background: var(--bg-active);
 }
-/* 窄屏：优先保住数据列与时间，隐藏建模人列（悬浮 title 仍有提示）。
-   时间列落在 1fr 上且文本右对齐，紧贴操作区。 */
-@media (max-width: 1080px) {
-  .rp-item-bar {
-    grid-template-columns:
-      42px minmax(0, 240px) 64px 80px 64px minmax(0, 1fr) max-content;
-  }
-  .rp-c-owner { display: none; }
+/* 窄屏：隐藏时间列（详情页有完整时间），保住标题与操作区 */
+@media (max-width: 768px) {
+  .rp-c-time { display: none; }
 }
 /* 序号徽章：后端 seq 字段（本页内的正序编号），等宽字体保证位数对齐。
    默认轻描淡写（透明底+细边），卡片 hover 时点亮为主题色，
@@ -721,45 +681,20 @@ onMounted(() => load(1))
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 数据列：组件 / 数据流 / 威胁 / 建模人 / 时间。
-   数字等宽 + 右对齐（min-width 3ch），"组件/数据流/威胁"三个单位词
-   在所有卡片上纵向对齐；建模人列超宽省略。 */
-.rp-cell {
-  font-size: 11.5px;
-  color: var(--text-faint);
-  white-space: nowrap;
-  min-width: 0;
-}
-.rp-cell b {
-  display: inline-block;
-  min-width: 3ch;
-  margin-right: 4px;
-  text-align: right;
-  color: var(--text-dim);
-  font-weight: 700;
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-/* 威胁数是三列中唯一有风险语义的指标：数字用警示橙点亮，
-   引导扫读；组件/数据流是中性规模指标，保持灰——
-   颜色只给有语义的字段，全上色等于没上色 */
-.rp-c-threat b {
-  color: var(--warning);
-}
-.rp-c-owner {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* 时间列：右对齐 + 等宽，所有卡片的时间在同一纵坐标收口 */
+/* 时间列：右对齐 + 等宽 + 禁止换行，日期与时分始终一行 */
 .rp-c-time {
   text-align: right;
   font-family: var(--font-mono);
+  white-space: nowrap;
 }
 .rp-item-actions {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  /* 额外左间距：时间右对齐收口后与首个按钮（重命名）只隔 grid gap，
+     视觉上贴在一起——拉开安全距离，同时把时间列整体往左推 */
+  margin-left: 24px;
 }
 .rp-icon-btn {
   font-size: 11.5px;

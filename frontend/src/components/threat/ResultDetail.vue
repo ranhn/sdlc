@@ -7,11 +7,8 @@
       <button class="rd-back" @click="goBack" title="返回结果列表">← 返回</button>
       <div class="rd-head-main">
         <h2 class="rd-title">{{ detail?.title || '加载中…' }}</h2>
-        <div class="rd-meta">
-          <span class="pill pill--primary">{{ tMethodology(detail?.methodology) }}</span>
-          <span class="rd-time">{{ fmtTime(detail?.created_at) }}</span>
-          <span class="rd-stat">建模人：{{ ownerLabel(detail) }}</span>
-        </div>
+        <!-- 头部元信息行（方法论/时间/建模人）已移除：右栏"结果信息"卡有完整
+             字段，头部重复展示只增加视觉噪音 -->
       </div>
       <div class="rd-actions">
         <div class="rd-export-group" @click.stop>
@@ -74,53 +71,23 @@
             <span class="rd-stat-label">威胁</span>
           </div>
         </div>
-        <div class="rd-stat-card risk" :class="'lvl-' + riskLevel(detail).key">
+        <div class="rd-stat-card risk" :class="'lvl-' + riskLevelKey(detail)">
           <span class="rd-stat-ico risk">!</span>
           <div class="rd-stat-body">
+            <!-- 数字 = Critical + High 两档之和，标签必须完整表达构成：
+                 只写"高危"或"严重"都会让人以为数字只算了一档 -->
             <span class="rd-stat-num">{{ riskCount(detail) }}</span>
-            <span class="rd-stat-label">{{ riskLevel(detail).label }}</span>
+            <span class="rd-stat-label">严重 + 高危</span>
           </div>
         </div>
       </div>
 
-      <!-- 风险等级徽章：列表卡片上原有的徽章移到详情页，并结合威胁明细
-           给出"最高等级 + 高危计数"的总览。 -->
-      <div v-if="riskCount(detail) > 0" class="rd-risk-banner" :class="'risk-' + riskLevel(detail).key">
-        <span class="rd-risk-badge" :class="'sev-' + riskLevel(detail).key">
-          {{ riskLevel(detail).label }}
-        </span>
-        <span class="rd-risk-text">
-          共 <b>{{ riskCount(detail) }}</b> 条高危及以上威胁
-          <template v-if="riskLevel(detail).key === 'Critical'">
-            （其中严重 {{ detail.stats?.threatCountBySeverity?.Critical || 0 }} 条，
-            高风险 {{ detail.stats?.threatCountBySeverity?.High || 0 }} 条）
-          </template>
-          ，建议优先处置。
-        </span>
-      </div>
-
-      <!-- 合规影响面概览：完整明细在右栏"合规影响面"卡片，此处给出
-           抬头即可见的一句话结论，说明这是影响面而非合规结论。 -->
-      <div v-if="complianceList.length" class="rd-compliance-bar">
-        <span class="rd-comp-bar-label">合规影响面</span>
-        <div class="rd-compliance">
-          <span
-            v-for="c in complianceList"
-            :key="'top-' + c.code"
-            class="rd-compliance-chip"
-            :class="{ covered: isComplianceHit(c) }"
-            :title="complianceTitle(c)"
-          >
-            {{ c.label || c.code }}
-            <b v-if="c.relatedThreatCount"> {{ c.relatedThreatCount }}</b>
-          </span>
-        </div>
-        <span class="rd-comp-hint" title="仅表示威胁类型触及了法规域的关注范围，不代表合规达标">
-          不代表合规结论
-        </span>
-      </div>
-
+      <!-- 风险横幅已移除：KPI 卡的"高危风险"数字 + 下方严重度 chips
+           已完整表达风险等级，横幅属于第三处重复 -->
       <!-- 严重度 + 类型 chips（点击切换筛选） -->
+      <!-- 注：合规影响面不再在主区重复展示——它的数字与下方严重度 chips
+           高度重叠（"严重相关 9" vs "严重 9"），且右栏已有完整合规卡，
+           主区铺一排彩色胶囊是页面"花哨"的最大来源。 -->
       <div class="rd-chips">
         <span
           v-for="sev in sevOrdered"
@@ -173,6 +140,7 @@
           :key="t.threatId || t.title + t.number"
           :id="'threat-' + (t.threatId || t.id)"
           class="rd-threat"
+          :class="{ oos: !!t.outOfScope }"
         >
           <div class="rd-threat-head">
             <span class="rd-sev-badge" :class="'sev-' + t.severity">{{ tSeverity(t.severity) }}</span>
@@ -181,8 +149,8 @@
             <span class="rd-threat-comp" :title="t.component">@ {{ t.component }}</span>
             <select
               class="rd-status-select"
-              :class="'status-' + (t.status || 'Open')"
-              :value="t.status || 'Open'"
+              :class="'status-' + normStatus(t.status)"
+              :value="normStatus(t.status)"
               :title="canModify(detail) ? '点击修改处置状态' : '仅建模人/系统管理员/安全专家可修改'"
               :disabled="!canModify(detail)"
               @change="changeThreatStatus(detail, t, $event)"
@@ -192,6 +160,7 @@
               <option value="In Progress">进行中</option>
               <option value="Mitigated">已缓解</option>
               <option value="Accepted">已接受</option>
+              <option value="NotApplicable">不适用</option>
             </select>
             <label
               class="rd-oos-toggle"
@@ -277,69 +246,17 @@
         </div>
       </div>
 
-      <div v-if="availableTypes.length" class="rd-side-card">
-        <h5>类型分布</h5>
-        <div class="rd-side-types">
-          <span v-for="t in availableTypes" :key="t" class="rd-side-type-chip">
-            {{ tType(t) }} × {{ typeCount(t) }}
-          </span>
-        </div>
-      </div>
+      <!-- 类型分布卡已移除：主区筛选 chips 行有同样的类型计数（且可点击筛选），
+             右栏静态罗列属于重复展示 -->
 
       <!-- 度量指标：回答「评估做得够好吗」（Threat Modeling Manifesto 第四问） -->
-      <div v-if="metrics" class="rd-side-card">
-        <h5>度量指标</h5>
+      <!-- 原名"度量指标"。威胁覆盖度/风险收敛率/LLM 覆盖三个进度条已移除：
+           AI 建模几乎给每个元素都生成威胁 → 覆盖度恒 ≈100%；刚建模完全部
+           Open → 收敛率恒 0%。两个数字无区分度，属"死指标"。
+           保留 ATLAS 技术映射与 DREAD 评分——它们有真实信息量。 -->
+      <div v-if="atlasList.length || dreadAvg" class="rd-side-card">
+        <h5>攻击技术映射</h5>
         <div class="rd-metric-list">
-          <div class="rd-metric-row">
-            <span class="rd-metric-label" title="已被识别出威胁的元素占全部建模元素（组件+数据流）的比例">
-              威胁覆盖度
-            </span>
-            <div class="rd-metric-track">
-              <div
-                class="rd-metric-fill"
-                :class="metricLevel(metrics.coverageRate)"
-                :style="{ width: pctOf(metrics.coverageRate) + '%' }"
-              ></div>
-            </div>
-            <span class="rd-metric-num">{{ formatRate(metrics.coverageRate) }}</span>
-          </div>
-          <p class="rd-metric-hint">
-            已覆盖 {{ metrics.modeledElements ?? 0 }} / {{ metrics.totalElements ?? 0 }} 个元素
-          </p>
-
-          <div class="rd-metric-row">
-            <span class="rd-metric-label" title="高危及以上威胁中已缓解/不适用的比例">
-              风险收敛率
-            </span>
-            <div class="rd-metric-track">
-              <div
-                class="rd-metric-fill"
-                :class="metricLevel(metrics.riskConvergence)"
-                :style="{ width: pctOf(metrics.riskConvergence) + '%' }"
-              ></div>
-            </div>
-            <span class="rd-metric-num">{{ formatRate(metrics.riskConvergence) }}</span>
-          </div>
-          <p class="rd-metric-hint">高危威胁的处置进度</p>
-
-          <template v-if="metrics.owaspLlmCoverRate != null">
-            <div class="rd-metric-row">
-              <span class="rd-metric-label" title="OWASP Top 10 for LLM 清单中已被本次建模覆盖的条目占比">
-                LLM 风险覆盖
-              </span>
-              <div class="rd-metric-track">
-                <div
-                  class="rd-metric-fill"
-                  :class="metricLevel(metrics.owaspLlmCoverRate)"
-                  :style="{ width: pctOf(metrics.owaspLlmCoverRate) + '%' }"
-                ></div>
-              </div>
-              <span class="rd-metric-num">{{ formatRate(metrics.owaspLlmCoverRate) }}</span>
-            </div>
-            <p v-if="metrics.owaspLlmCovered?.length" class="rd-metric-hint">
-              已覆盖：{{ metrics.owaspLlmCovered.join('、') }}
-            </p>
-          </template>
 
           <template v-if="atlasList.length">
             <div class="rd-metric-sub">MITRE ATLAS 技术覆盖</div>
@@ -725,31 +642,8 @@ const dreadAvg = computed(() => {
   return rows.length ? rows : null
 })
 
-/** 比率转百分比数值（0~1 -> 0~100） */
-function pctOf(rate) {
-  const n = Number(rate)
-  if (!Number.isFinite(n)) return 0
-  return Math.max(0, Math.min(100, n * 100))
-}
-
-/** 比率格式化为百分数字符串 */
-function formatRate(rate) {
-  const n = Number(rate)
-  if (!Number.isFinite(n)) return '—'
-  return `${(n * 100).toFixed(0)}%`
-}
-
-/**
- * 指标健康度：用于给进度条上色。
- * 覆盖度/收敛率越高越好，因此 >=0.7 绿、>=0.4 黄、其余红。
- */
-function metricLevel(rate) {
-  const n = Number(rate)
-  if (!Number.isFinite(n)) return 'lvl-low'
-  if (n >= 0.7) return 'lvl-good'
-  if (n >= 0.4) return 'lvl-mid'
-  return 'lvl-low'
-}
+// pctOf / formatRate / metricLevel 已随"度量指标"进度条移除：
+// 覆盖度恒 ≈100%、收敛率刚建模完恒 0%，属无区分度的死指标。
 
 // ---- 威胁的手工编辑 ----
 const THREAT_STATUS_OPTIONS = [
@@ -759,6 +653,17 @@ const THREAT_STATUS_OPTIONS = [
   { value: 'Accepted', label: '已接受' },
   { value: 'NotApplicable', label: '不适用' },
 ]
+
+/**
+ * 状态值兜底：空值 / 不在白名单内的脏数据一律按 Open 处理。
+ * 后端历史版本曾接受任意字符串写入威胁状态（result_store 的
+ * THREAT_STATUSES 白名单是后来补的），而 select 的 value 匹配不到
+ * option 时会渲染成空白框——看起来像"没状态"。
+ */
+const VALID_THREAT_STATUSES = new Set(THREAT_STATUS_OPTIONS.map((o) => o.value))
+function normStatus(s) {
+  return VALID_THREAT_STATUSES.has(s) ? s : 'Open'
+}
 
 const editVisible = ref(false)
 const savingThreat = ref(false)
@@ -1004,19 +909,17 @@ function riskCount(d) {
 }
 
 /**
- * 风险等级：由严重度分布推导出的整体风险档位。
- * 判定优先级 —— 有严重(Critical) 即"严重"；否则有高风险(High) 即"高风险"；
- * 再退到中/低风险。与列表卡片的徽章语义保持一致。
+ * 风险档位 key（唯一用途：KPI 卡按档位配色 lvl-*）。
+ * 判定优先级 —— 有严重(Critical) 即 Critical；否则有高风险即 High；再退中/低。
+ * 注意：KPI 数字是"严重+高危"两档之和，标签固定为「严重 + 高危」；
+ * 若标签跟随档位文案（如"严重风险"），会让人误以为数字只统计了一档。
  */
-function riskLevel(d) {
+function riskLevelKey(d) {
   const bySev = d?.stats?.threatCountBySeverity || {}
-  const c = bySev.Critical || 0
-  const h = bySev.High || 0
-  if (c > 0) return { key: 'Critical', label: '严重风险' }
-  if (h > 0) return { key: 'High', label: '高风险' }
-  if (bySev.Medium > 0) return { key: 'Medium', label: '中风险' }
-  if (bySev.Low > 0) return { key: 'Low', label: '低风险' }
-  return { key: 'Low', label: '暂无风险' }
+  if ((bySev.Critical || 0) > 0) return 'Critical'
+  if ((bySev.High || 0) > 0) return 'High'
+  if ((bySev.Medium || 0) > 0) return 'Medium'
+  return 'Low'
 }
 
 // 严重度柱状图百分比（按该 severity 在总威胁数中的占比）
@@ -1240,28 +1143,27 @@ async function toggleOOS(item, t, e) {
   border-bottom: 1px solid var(--c-line, #e2e8f0);
   flex-shrink: 0;
 }
+/* 返回按钮：页面级导航动作，实底主色高亮（原来是灰底灰字，几乎不可见） */
 .rd-back {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-family: inherit;
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
   height: 28px;
   box-sizing: border-box;
-  padding: 0 11px;
-  border: 1px solid var(--c-line, #e2e8f0);
-  background: var(--c-bg-soft, #f8fafc);
-  color: var(--c-text-2, #475569);
+  padding: 0 12px;
+  border: 1px solid transparent;
+  background: var(--c-primary, #2563eb);
+  color: #fff;
   border-radius: var(--c-r-sm, 6px);
   cursor: pointer;
   flex-shrink: 0;
   transition: all 0.16s;
 }
 .rd-back:hover {
-  border-color: var(--c-primary-line, #bfdbfe);
-  color: var(--c-primary, #2563eb);
-  background: var(--c-primary-soft, #eff6ff);
+  background: var(--c-primary-strong, #1d4ed8);
 }
 .rd-head-main {
   flex: 1;
@@ -1277,21 +1179,7 @@ async function toggleOOS(item, t, e) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rd-meta {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: 4px;
-  font-size: 10.5px;
-  color: var(--c-text-4, #94a3b8);
-  flex-wrap: wrap;
-}
-/* 方法论标签改用全局 .pill.pill--primary */
-.rd-time,
-.rd-stat {
-  color: var(--c-text-4, #94a3b8);
-  font-family: var(--font-mono);
-}
+/* 头部元信息行（.rd-meta/.rd-time/.rd-stat）已移除：右栏"结果信息"卡有完整字段 */
 .rd-actions {
   display: flex;
   align-items: center;
@@ -1471,21 +1359,7 @@ async function toggleOOS(item, t, e) {
   color: var(--c-text, #0f172a);
   text-align: right;
 }
-.rd-side-types {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.rd-side-type-chip {
-  font-size: 10px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: #fff;
-  color: var(--c-text-3, #64748b);
-  border: 1px solid var(--c-line, #e2e8f0);
-  font-weight: 600;
-  font-family: var(--font-mono);
-}
+/* 类型分布卡已移除（.rd-side-types/.rd-side-type-chip 一并清理） */
 .rd-side-risks {
   display: flex;
   flex-direction: column;
@@ -1572,8 +1446,15 @@ async function toggleOOS(item, t, e) {
   background: var(--c-primary-soft, #eff6ff);
   border: 1px solid var(--c-primary-line, #bfdbfe);
 }
-.rd-stat-ico.flow { color: #0891b2; background: #ecfeff; border-color: #a5f3fc; }
-.rd-stat-ico.threat { color: #d97706; background: #fffbeb; border-color: #fde68a; }
+/* 图标统一中性灰：组件/数据流/威胁是中性规模指标，
+   彩色图标×4 是页面"花"的来源之一；红色只留给高危卡 */
+.rd-stat-ico.comp,
+.rd-stat-ico.flow,
+.rd-stat-ico.threat {
+  color: var(--c-text-3, #64748b);
+  background: var(--c-bg-soft, #f8fafc);
+  border-color: var(--c-line, #e2e8f0);
+}
 .rd-stat-ico.risk { color: #dc2626; background: #fef2f2; border-color: #fecaca; }
 /* 数字回归实色：原先用 background-clip:text 渐变，导致 1x 屏上小字号对比度不足、
    且与「建模输入」页的实色文字语言不一致。 */
@@ -1604,78 +1485,9 @@ async function toggleOOS(item, t, e) {
   line-height: 1.35;
 }
 
-/* —— 风险等级横幅（列表卡片的风险徽章移到详情页后的总览） —— */
-.rd-risk-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: var(--c-r-md, 9px);
-  border: 1px solid var(--critical-border);
-  background: var(--critical-soft);
-  font-size: 12px;
-  color: var(--c-text-2, #475569);
-}
-.rd-risk-badge {
-  flex-shrink: 0;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.rd-risk-badge.sev-Critical {
-  background: var(--critical); color: #fff;
-}
-.rd-risk-badge.sev-High {
-  background: var(--high-soft); color: var(--high);
-  border: 1px solid var(--high-border);
-}
-.rd-risk-banner.risk-High {
-  border-color: var(--high-border);
-  background: var(--high-soft);
-}
-.rd-risk-banner.risk-Medium {
-  border-color: var(--medium-border);
-  background: var(--medium-soft);
-}
-.rd-risk-banner.risk-Low {
-  border-color: var(--success-border);
-  background: var(--success-soft);
-}
-.rd-risk-badge.sev-Medium {
-  background: var(--medium-soft); color: var(--medium);
-  border: 1px solid var(--medium-border);
-}
-.rd-risk-badge.sev-Low {
-  background: var(--success-soft); color: var(--success);
-  border: 1px solid var(--success-border);
-}
-.rd-risk-text b {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  color: var(--critical);
-}
-
-/* —— 合规影响面概览条（抬头即可见，明细在右栏） —— */
-.rd-compliance-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 12px;
-  border-radius: var(--c-r-md, 9px);
-  border: 1px solid var(--c-line, #e2e8f0);
-  background: var(--c-bg-soft, #f8fafc);
-}
-.rd-comp-bar-label {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: var(--c-text-3, #64748b);
-  text-transform: uppercase;
-  flex-shrink: 0;
-}
+/* 风险等级横幅已移除：KPI 卡"高危风险"数字 + 严重度 chips 已完整表达，
+   横幅是第三处重复（见模板注释） */
+/* 合规影响面概览条已移除：与威胁明细 chips 数字重复、彩色胶囊过多（见模板注释） */
 
 .rd-chips {
   display: flex;
@@ -1778,6 +1590,20 @@ async function toggleOOS(item, t, e) {
 .rd-sev-badge.sev-High { background: var(--high-soft); color: var(--high); border: 1px solid var(--high-border); }
 .rd-sev-badge.sev-Medium { background: var(--medium-soft); color: var(--medium); border: 1px solid var(--medium-border); }
 .rd-sev-badge.sev-Low { background: var(--success-soft); color: var(--success); border: 1px solid var(--success-border); }
+/* 范围外威胁 = 整条"划掉"：标题虚线删除线（橙色，与范围外徽章同色系），
+   描述/缓解等正文弱化。不把删除线盖在长段落上——划线跨行会严重
+   影响可读性，标题划线 + 正文淡出已足以表达"已排除出治理范围" */
+.rd-threat.oos .rd-threat-title-text {
+  text-decoration: line-through dashed;
+  text-decoration-color: var(--warning, #d97706);
+  text-decoration-thickness: 1.5px;
+  color: var(--c-text-4, #94a3b8);
+}
+.rd-threat.oos .rd-threat-desc,
+.rd-threat.oos .rd-threat-mit,
+.rd-threat.oos .rd-threat-meta {
+  opacity: 0.55;
+}
 .rd-threat-title-text {
   font-size: 12.5px; font-weight: 600; flex: 1; min-width: 0; color: var(--c-text, #0f172a);
   line-height: 1.45;
@@ -1821,51 +1647,57 @@ async function toggleOOS(item, t, e) {
 .rd-status-select.status-Accepted { background-color: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-border); }
 .rd-status-select.status-InProgress,
 .rd-status-select.status-In-Progress { background-color: var(--info-soft); color: var(--info); border: 1px solid var(--info-border); }
+.rd-status-select.status-NotApplicable { background-color: var(--c-bg-soft, #f8fafc); color: var(--c-text-4, #94a3b8); border: 1px solid var(--border); }
 .rd-status-select:focus { outline: 2px solid var(--c-primary, #2563eb); outline-offset: 1px; }
 .rd-status-select:disabled { cursor: not-allowed; opacity: 0.7; }
+/* 范围 toggle 颜色区分：范围内=绿色（正常，威胁在治理范围内）；
+   范围外=橙色实线（标记为排除，警示性弱——它不是错误但偏离默认范围）。
+   激活态配色取全局 --warning 系（#d97706 浅橙底），与目标稿一致 */
 .rd-oos-toggle {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 10.5px; font-weight: 600; padding: 1px 8px;
-  border-radius: 999px; background: var(--c-bg-soft, #f8fafc);
-  border: 1px solid var(--c-line, #e2e8f0); color: var(--c-text-3, #64748b);
+  border-radius: 999px; background: var(--success-soft);
+  border: 1px solid var(--success-border); color: var(--success);
   cursor: pointer; user-select: none; flex-shrink: 0;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .rd-oos-toggle input { position: absolute; opacity: 0; pointer-events: none; width: 0; height: 0; }
-.rd-oos-toggle.active { background: var(--bg-hover); color: var(--c-text-4, #94a3b8); border-color: var(--border-strong); border-style: dashed; }
-.rd-oos-toggle:hover { border-color: var(--c-primary-line, #bfdbfe); color: var(--c-primary, #2563eb); }
+.rd-oos-toggle.active {
+  background: var(--warning-soft, rgba(217, 119, 6, 0.10));
+  color: var(--warning, #d97706);
+  border-color: var(--warning-border, rgba(217, 119, 6, 0.30));
+  border-style: solid;
+}
+.rd-oos-toggle:hover { border-color: var(--c-primary, #2563eb); }
+/* 激活态 hover：橙色加深而不是变蓝，保持排除态的语义连贯 */
+.rd-oos-toggle.active:hover {
+  border-color: var(--warning, #d97706);
+  background: rgba(217, 119, 6, 0.16);
+}
+/* 描述 = 风险事实（红竖条），缓解 = 处置对策（绿竖条+浅绿底）。
+   之前两块完全同款灰样式，扫读时分不清哪段是问题哪段是对策；
+   但也不整块染红染绿 —— 几十条威胁同屏，只给竖条和"缓解:"标签
+   上语义色，正文保持中性灰，区分明确又不花 */
 .rd-threat-desc {
   font-size: 12px; color: var(--c-text-2, #475569); line-height: 1.65;
   margin: 8px 0 0; word-break: break-word;
   background: var(--c-bg-soft, #f8fafc); border-radius: var(--c-r-sm, 6px);
-  padding: 9px 11px; border-left: 2px solid var(--c-line, #e2e8f0);
+  padding: 9px 11px; border-left: 2px solid rgba(220, 38, 38, 0.45);
 }
 .rd-threat-mit {
-  font-size: 12px; color: #047857; line-height: 1.6;
+  font-size: 12px; color: var(--c-text-2, #475569); line-height: 1.6;
   margin: 6px 0 0; word-break: break-word;
-  background: var(--success-soft); border-radius: var(--c-r-sm, 6px);
-  padding: 9px 11px; border-left: 2px solid var(--success-border);
+  background: rgba(5, 150, 105, 0.05); border-radius: var(--c-r-sm, 6px);
+  padding: 9px 11px; border-left: 2px solid rgba(5, 150, 105, 0.45);
 }
-.rd-threat-mit strong { color: var(--success); margin-right: 4px; }
+.rd-threat-mit strong {
+  color: var(--success, #059669);
+}
+.rd-threat-mit strong { color: var(--c-text-3, #64748b); margin-right: 4px; }
 .rd-threat-meta { display: flex; gap: 12px; font-size: 10.5px; color: var(--c-text-4, #94a3b8); margin-top: 8px; flex-wrap: wrap; align-items: center; }
 
-/* ---- 度量指标 ---- */
+/* ---- 攻击技术映射（原"度量指标"，进度条系列已随死指标移除） ---- */
 .rd-metric-list { display: flex; flex-direction: column; gap: 6px; }
-.rd-metric-row { display: flex; align-items: center; gap: 8px; }
-.rd-metric-label { font-size: 11px; color: var(--c-text-2, #475569); width: 72px; flex-shrink: 0; }
-.rd-metric-track {
-  flex: 1; height: 6px; background: var(--bg-hover); border-radius: 3px;
-  overflow: hidden;
-}
-.rd-metric-fill { display: block; height: 100%; border-radius: 3px; transition: width 0.3s; }
-.rd-metric-fill.lvl-good { background: linear-gradient(90deg, #059669, #34d399); }
-.rd-metric-fill.lvl-mid { background: linear-gradient(90deg, #d97706, #fbbf24); }
-.rd-metric-fill.lvl-low { background: linear-gradient(90deg, #dc2626, #f87171); }
-.rd-metric-num {
-  font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--c-text-2, #475569);
-  width: 36px; text-align: right; flex-shrink: 0;
-}
-.rd-metric-hint { font-size: 10px; color: var(--c-text-4, #94a3b8); margin: -2px 0 2px 80px; }
 .rd-metric-sub {
   font-size: 10.5px; font-weight: 600; color: var(--c-text-3, #64748b);
   margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--c-line, #e2e8f0);
@@ -1889,7 +1721,7 @@ async function toggleOOS(item, t, e) {
 }
 .rd-dread-avg-fill {
   display: block; height: 100%; border-radius: 3px;
-  background: linear-gradient(90deg, var(--c-violet), #a78bfa);
+  background: linear-gradient(90deg, var(--accent-violet, #7c3aed), #a78bfa);
 }
 .rd-dread-avg-num {
   font-family: var(--font-mono); font-size: 10.5px; color: var(--c-text-4, #94a3b8);
@@ -1971,16 +1803,16 @@ async function toggleOOS(item, t, e) {
   border-radius: var(--c-r-md, 9px); margin: 0;
 }
 .rd-icon-btn.rd-compare:hover:not(:disabled) {
-  color: var(--c-violet);
-  border-color: var(--c-violet-line);
-  background: var(--c-violet-soft);
+  color: var(--accent-violet, #7c3aed);
+  border-color: rgba(124, 58, 237, 0.35);
+  background: rgba(124, 58, 237, 0.08);
 }
 
 /* ---- 威胁编辑 ---- */
 .rd-manual-badge {
   font-size: 10px; padding: 1px 7px; border-radius: 999px;
-  color: var(--c-violet); background: var(--c-violet-soft);
-  border: 1px solid var(--c-violet-line);
+  color: var(--accent-violet, #7c3aed); background: rgba(124, 58, 237, 0.08);
+  border: 1px solid rgba(124, 58, 237, 0.25);
   font-weight: 600;
 }
 .rd-edit-threat, .rd-del-threat {
@@ -2019,18 +1851,20 @@ async function toggleOOS(item, t, e) {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
+/* 转漏洞工单：紫色实底白字。注意 --c-violet 系列从未定义过（失效变量），
+   原样式实为"黑字透明底"勉强可见；上一轮改白字后按钮彻底隐形。
+   正确的变量是全局主题的 --accent-violet（styles/threat.css） */
 .rd-to-vuln {
-  margin-left: auto; font-size: 10.5px; font-weight: 500; font-family: inherit;
-  color: var(--c-violet);
-  background: var(--c-violet-soft);
-  border: 1px solid var(--c-violet-line);
+  margin-left: auto; font-size: 10.5px; font-weight: 600; font-family: inherit;
+  color: #fff;
+  background: var(--accent-violet, #7c3aed);
+  border: 1px solid transparent;
   border-radius: var(--c-r-sm, 6px);
-  height: 22px; box-sizing: border-box; padding: 0 9px; cursor: pointer;
+  height: 22px; box-sizing: border-box; padding: 0 10px; cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
 .rd-to-vuln:hover:not(:disabled) {
-  background: var(--c-violet-soft);
-  border-color: var(--c-violet-line-strong);
+  background: #6d28d9;
 }
 .rd-to-vuln:disabled { opacity: 0.55; cursor: not-allowed; }
 
