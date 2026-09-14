@@ -13,7 +13,7 @@
         <div>
           <div class="rp-title-row">
             <h2 class="rp-title">威胁建模结果</h2>
-            <span class="rp-count-pill">{{ total }} 条记录</span>
+            <span class="rp-count-pill"><b>{{ total }}</b> 条记录</span>
             <span class="rp-scope-pill" :class="canViewAll ? 'scope-all' : 'scope-mine'">
               {{ canViewAll ? '全部结果' : '我的结果' }}
             </span>
@@ -60,22 +60,29 @@
         :key="item.id"
         class="rp-item"
       >
+        <!-- 表格化网格：序号 | 标题 | 组件 | 数据流 | 威胁 | 建模人 | 时间 | 操作。
+             数据列固定列宽，所有卡片共享同一组列坐标 —— 组件/数据流/威胁/建模人/时间
+             纵向严格成列。此前这些数据挤在 flex 流里，前面跟着宽度不定的标签，
+             天然对不齐。 -->
         <div class="rp-item-bar" @click="goDetail(item.id)">
+          <span class="rp-item-seq">
+            {{ item.seq != null ? `#${item.seq}` : '—' }}
+          </span>
           <div class="rp-item-main">
-            <span class="rp-item-title">{{ item.title }}</span>
+            <span class="rp-item-title" :title="item.title">{{ item.title }}</span>
+            <!-- 方法论标签：卡片上只保留这一个标签，严重度分布/合规影响面
+                 等明细移到结果详情页展示，避免列表承担过多信息。 -->
             <div class="rp-item-meta">
               <span class="rp-tag">{{ tMethodology(item.methodology) }}</span>
-              <span class="rp-time">{{ fmtTime(item.created_at) }}</span>
-              <span class="rp-stat">
-                {{ item.stats?.componentCount ?? '-' }} 组件 ·
-                {{ item.stats?.flowCount ?? '-' }} 数据流 ·
-                {{ item.stats?.threatCount ?? '-' }} 威胁
-              </span>
-              <span class="rp-stat rp-owner" :title="ownerTitle(item)">
-                建模人：{{ ownerLabel(item) }}
-              </span>
             </div>
           </div>
+          <!-- 数据列：与网格列一一对应。数字右对齐（min-width 3ch），
+               让"组件/数据流/威胁"的单位词在所有卡片上纵向对齐。 -->
+          <span class="rp-cell rp-c-comp"><b>{{ item.stats?.componentCount ?? '-' }}</b>组件</span>
+          <span class="rp-cell rp-c-flow"><b>{{ item.stats?.flowCount ?? '-' }}</b>数据流</span>
+          <span class="rp-cell rp-c-threat"><b>{{ item.stats?.threatCount ?? '-' }}</b>威胁</span>
+          <span class="rp-cell rp-c-owner" :title="ownerTitle(item)">{{ ownerLabel(item) }}</span>
+          <span class="rp-cell rp-c-time">{{ fmtTime(item.created_at) }}</span>
           <div class="rp-item-actions">
             <!-- TODO: 导出按钮暂时隐藏(2026-09-04 用户反馈)。
                  原因: .rp-export-menu 用 position:absolute 展开下拉,
@@ -230,7 +237,7 @@ function ownerTitle(item) {
 const items = ref([])
 const loading = ref(false)
 const page = ref(1)
-// 每页 7 条
+// 每页 7 条（用户确认的密度；列表区自身可滚动）
 const pageSize = ref(7)
 const pages = ref(0)
 const total = ref(0)
@@ -424,22 +431,28 @@ onMounted(() => load(1))
   color: var(--text);
   letter-spacing: 0.2px;
 }
+/* 记录数徽章：数字等宽加粗、中文用正文字体——整段套 mono 会导致
+   中文字符 fallback 渲染、基线与字重不协调 */
 .rp-count-pill {
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 10px;
+  padding: 2px 9px;
   border-radius: var(--radius-pill);
   background: var(--primary-soft);
   color: var(--primary);
   border: 1px solid var(--primary-border);
+  white-space: nowrap;
+}
+.rp-count-pill b {
   font-family: var(--font-mono);
+  font-weight: 700;
+  margin-right: 3px;
 }
 .rp-scope-pill {
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 10px;
+  padding: 2px 9px;
   border-radius: var(--radius-pill);
-  font-family: var(--font-mono);
   white-space: nowrap;
 }
 .rp-scope-pill.scope-all {
@@ -602,20 +615,70 @@ onMounted(() => load(1))
   box-shadow: var(--shadow-sm);
 }
 .rp-item-bar {
-  display: flex;
+  /* 表格化网格：序号 | 标题 | 组件 | 数据流 | 威胁 | 建模人 | 时间 | 操作。
+     固定列宽是"纵向对齐"的唯一保证 —— flex 流里前面元素宽度一变（标签长短
+     不同），后面的列就跟着漂移；grid 固定列宽下所有卡片共享同一组列坐标。 */
+  display: grid;
+  grid-template-columns:
+    40px            /* 序号（徽章左对齐，紧贴卡片左缘） */
+    minmax(0, 280px)/* 标题 + 方法论标签（限宽，超长省略——
+                       列宽收敛后数据块整体左移、紧跟标题） */
+    64px            /* 组件 */
+    80px            /* 数据流 */
+    64px            /* 威胁 */
+    minmax(0, 1fr)  /* 建模人：弹性吃掉剩余空间、内容左对齐，
+                       使 admin 紧跟数据块；空隙留在它与时间之间 */
+    116px           /* 时间 */
+    max-content;    /* 操作区 */
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 12px;
+  /* 左内边距比右侧小，让序号徽章更贴近卡片左缘 */
+  padding: 12px 14px 12px 10px;
   cursor: pointer;
   transition: background 0.15s;
 }
 .rp-item-bar:hover {
   background: var(--bg-active);
 }
+/* 窄屏：优先保住数据列与时间，隐藏建模人列（悬浮 title 仍有提示）。
+   时间列落在 1fr 上且文本右对齐，紧贴操作区。 */
+@media (max-width: 1080px) {
+  .rp-item-bar {
+    grid-template-columns:
+      42px minmax(0, 240px) 64px 80px 64px minmax(0, 1fr) max-content;
+  }
+  .rp-c-owner { display: none; }
+}
+/* 序号徽章：后端 seq 字段（本页内的正序编号），等宽字体保证位数对齐。
+   默认轻描淡写（透明底+细边），卡片 hover 时点亮为主题色，
+   与右侧徽章的视觉语言统一 */
+.rp-item-seq {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  padding: 1.5px 0;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-faint);
+  white-space: nowrap;
+  justify-self: start;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.rp-item-bar:hover .rp-item-seq {
+  background: var(--primary-soft);
+  border-color: var(--primary-border);
+  color: var(--primary);
+}
 .rp-item-main {
-  flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 .rp-item-title {
   font-size: 13.5px;
@@ -636,15 +699,16 @@ onMounted(() => load(1))
   background: var(--primary-gradient);
   flex-shrink: 0;
 }
+/* 标签行：只放方法论标签（规模/建模人/时间已升为独立网格列）。
+   不换行 + 超宽省略，避免标签把卡片撑高造成行节奏不齐 */
 .rp-item-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 5px;
+  gap: 6px;
   font-size: 11.5px;
   color: var(--text-faint);
-  padding-left: 12px;
-  flex-wrap: wrap;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .rp-tag {
   padding: 1px 7px;
@@ -653,6 +717,43 @@ onMounted(() => load(1))
   background: var(--info-soft);
   color: var(--info);
   border: 1px solid var(--info-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 数据列：组件 / 数据流 / 威胁 / 建模人 / 时间。
+   数字等宽 + 右对齐（min-width 3ch），"组件/数据流/威胁"三个单位词
+   在所有卡片上纵向对齐；建模人列超宽省略。 */
+.rp-cell {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  min-width: 0;
+}
+.rp-cell b {
+  display: inline-block;
+  min-width: 3ch;
+  margin-right: 4px;
+  text-align: right;
+  color: var(--text-dim);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+/* 威胁数是三列中唯一有风险语义的指标：数字用警示橙点亮，
+   引导扫读；组件/数据流是中性规模指标，保持灰——
+   颜色只给有语义的字段，全上色等于没上色 */
+.rp-c-threat b {
+  color: var(--warning);
+}
+.rp-c-owner {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 时间列：右对齐 + 等宽，所有卡片的时间在同一纵坐标收口 */
+.rp-c-time {
+  text-align: right;
+  font-family: var(--font-mono);
 }
 .rp-item-actions {
   display: flex;
@@ -662,6 +763,7 @@ onMounted(() => load(1))
 }
 .rp-icon-btn {
   font-size: 11.5px;
+  font-weight: 600;
   padding: 3px 9px;
   border-radius: 6px;
   border: 1px solid var(--border);

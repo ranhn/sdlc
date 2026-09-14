@@ -74,13 +74,50 @@
             <span class="rd-stat-label">威胁</span>
           </div>
         </div>
-        <div class="rd-stat-card risk">
+        <div class="rd-stat-card risk" :class="'lvl-' + riskLevel(detail).key">
           <span class="rd-stat-ico risk">!</span>
           <div class="rd-stat-body">
             <span class="rd-stat-num">{{ riskCount(detail) }}</span>
-            <span class="rd-stat-label">高危风险</span>
+            <span class="rd-stat-label">{{ riskLevel(detail).label }}</span>
           </div>
         </div>
+      </div>
+
+      <!-- 风险等级徽章：列表卡片上原有的徽章移到详情页，并结合威胁明细
+           给出"最高等级 + 高危计数"的总览。 -->
+      <div v-if="riskCount(detail) > 0" class="rd-risk-banner" :class="'risk-' + riskLevel(detail).key">
+        <span class="rd-risk-badge" :class="'sev-' + riskLevel(detail).key">
+          {{ riskLevel(detail).label }}
+        </span>
+        <span class="rd-risk-text">
+          共 <b>{{ riskCount(detail) }}</b> 条高危及以上威胁
+          <template v-if="riskLevel(detail).key === 'Critical'">
+            （其中严重 {{ detail.stats?.threatCountBySeverity?.Critical || 0 }} 条，
+            高风险 {{ detail.stats?.threatCountBySeverity?.High || 0 }} 条）
+          </template>
+          ，建议优先处置。
+        </span>
+      </div>
+
+      <!-- 合规影响面概览：完整明细在右栏"合规影响面"卡片，此处给出
+           抬头即可见的一句话结论，说明这是影响面而非合规结论。 -->
+      <div v-if="complianceList.length" class="rd-compliance-bar">
+        <span class="rd-comp-bar-label">合规影响面</span>
+        <div class="rd-compliance">
+          <span
+            v-for="c in complianceList"
+            :key="'top-' + c.code"
+            class="rd-compliance-chip"
+            :class="{ covered: isComplianceHit(c) }"
+            :title="complianceTitle(c)"
+          >
+            {{ c.label || c.code }}
+            <b v-if="c.relatedThreatCount"> {{ c.relatedThreatCount }}</b>
+          </span>
+        </div>
+        <span class="rd-comp-hint" title="仅表示威胁类型触及了法规域的关注范围，不代表合规达标">
+          不代表合规结论
+        </span>
       </div>
 
       <!-- 严重度 + 类型 chips（点击切换筛选） -->
@@ -334,18 +371,26 @@
         </div>
       </div>
 
-      <!-- 合规映射 -->
+      <!-- 合规影响面：展示本次建模的威胁触达了哪些法规域。
+           注意语义——这是"影响面"而非"合规结论"：识别出越多种类的威胁
+           反而会让命中数上升，所以页面上必须显式声明不代表合规达标。 -->
       <div v-if="complianceList.length" class="rd-side-card">
-        <h5>合规映射</h5>
+        <h5>
+          合规影响面
+          <span class="rd-comp-hint" title="仅表示威胁类型触及了法规域的关注范围，不代表合规达标">
+            不代表合规结论
+          </span>
+        </h5>
         <div class="rd-compliance">
           <span
             v-for="c in complianceList"
             :key="c.code"
             class="rd-compliance-chip"
-            :class="{ covered: c.covered }"
-            :title="c.covered ? '本次建模已覆盖该合规要求相关威胁' : '本次建模未涉及该合规要求'"
+            :class="{ covered: isComplianceHit(c) }"
+            :title="complianceTitle(c)"
           >
             {{ c.label || c.code }}
+            <b v-if="c.relatedThreatCount"> {{ c.relatedThreatCount }}</b>
           </span>
         </div>
       </div>
@@ -595,11 +640,37 @@ function canModify(item) {
 // 此前只出现在导出报告中，这里把它们呈现给用户。
 const metrics = computed(() => detail.value?.stats?.metrics || null)
 
-/** 合规映射列表（含 covered 标记） */
+/** 合规映射列表（含影响面字段） */
 const complianceList = computed(() => {
   const list = metrics.value?.compliance
   return Array.isArray(list) ? list : []
 })
+
+/**
+ * 该合规域是否被本次建模的威胁触达。
+ * 兼容旧数据字段 covered，新字段为 hit。
+ */
+function isComplianceHit(c) {
+  return !!(c?.hit ?? c?.covered)
+}
+
+/**
+ * 合规域悬浮提示：说清命中含义、依据来源，并强调不代表合规达标。
+ */
+function complianceTitle(c) {
+  if (!c) return ''
+  const bits = []
+  bits.push(
+    isComplianceHit(c)
+      ? `本次建模有 ${c.relatedThreatCount || 0} 条威胁触达该域`
+      : '本次建模未触达该域',
+  )
+  if (c.relatedTypes?.length) bits.push(`命中类型：${c.relatedTypes.join('、')}`)
+  if (c.basis) bits.push(`依据：${c.basis}${c.version ? `（${c.version}）` : ''}`)
+  if (c.note) bits.push(c.note)
+  bits.push('※ 仅表示影响面，不代表合规达标')
+  return bits.join('\n')
+}
 
 /**
  * MITRE ATLAS 覆盖：后端在 metrics.atlasCovered 里给出命中的技术编号，
@@ -930,6 +1001,22 @@ function typeCount(typeKey) {
 function riskCount(d) {
   const bySev = d?.stats?.threatCountBySeverity || {}
   return (bySev.Critical || 0) + (bySev.High || 0)
+}
+
+/**
+ * 风险等级：由严重度分布推导出的整体风险档位。
+ * 判定优先级 —— 有严重(Critical) 即"严重"；否则有高风险(High) 即"高风险"；
+ * 再退到中/低风险。与列表卡片的徽章语义保持一致。
+ */
+function riskLevel(d) {
+  const bySev = d?.stats?.threatCountBySeverity || {}
+  const c = bySev.Critical || 0
+  const h = bySev.High || 0
+  if (c > 0) return { key: 'Critical', label: '严重风险' }
+  if (h > 0) return { key: 'High', label: '高风险' }
+  if (bySev.Medium > 0) return { key: 'Medium', label: '中风险' }
+  if (bySev.Low > 0) return { key: 'Low', label: '低风险' }
+  return { key: 'Low', label: '暂无风险' }
 }
 
 // 严重度柱状图百分比（按该 severity 在总威胁数中的占比）
@@ -1499,6 +1586,10 @@ async function toggleOOS(item, t, e) {
   color: var(--c-text, #0f172a);
 }
 .rd-stat-card.risk .rd-stat-num { color: #dc2626; }
+/* 高危风险卡按风险档位换色：无高危时不应继续显示刺眼的红色 */
+.rd-stat-card.risk.lvl-High .rd-stat-num { color: var(--high); }
+.rd-stat-card.risk.lvl-Medium .rd-stat-num { color: var(--medium); }
+.rd-stat-card.risk.lvl-Low .rd-stat-num { color: var(--c-text-4, #94a3b8); }
 .rd-stat-body {
   min-width: 0;
   display: flex;
@@ -1511,6 +1602,79 @@ async function toggleOOS(item, t, e) {
   color: var(--c-text-4, #94a3b8);
   font-weight: 500;
   line-height: 1.35;
+}
+
+/* —— 风险等级横幅（列表卡片的风险徽章移到详情页后的总览） —— */
+.rd-risk-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--c-r-md, 9px);
+  border: 1px solid var(--critical-border);
+  background: var(--critical-soft);
+  font-size: 12px;
+  color: var(--c-text-2, #475569);
+}
+.rd-risk-badge {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.rd-risk-badge.sev-Critical {
+  background: var(--critical); color: #fff;
+}
+.rd-risk-badge.sev-High {
+  background: var(--high-soft); color: var(--high);
+  border: 1px solid var(--high-border);
+}
+.rd-risk-banner.risk-High {
+  border-color: var(--high-border);
+  background: var(--high-soft);
+}
+.rd-risk-banner.risk-Medium {
+  border-color: var(--medium-border);
+  background: var(--medium-soft);
+}
+.rd-risk-banner.risk-Low {
+  border-color: var(--success-border);
+  background: var(--success-soft);
+}
+.rd-risk-badge.sev-Medium {
+  background: var(--medium-soft); color: var(--medium);
+  border: 1px solid var(--medium-border);
+}
+.rd-risk-badge.sev-Low {
+  background: var(--success-soft); color: var(--success);
+  border: 1px solid var(--success-border);
+}
+.rd-risk-text b {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--critical);
+}
+
+/* —— 合规影响面概览条（抬头即可见，明细在右栏） —— */
+.rd-compliance-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--c-r-md, 9px);
+  border: 1px solid var(--c-line, #e2e8f0);
+  background: var(--c-bg-soft, #f8fafc);
+}
+.rd-comp-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--c-text-3, #64748b);
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .rd-chips {
@@ -1732,10 +1896,28 @@ async function toggleOOS(item, t, e) {
   width: 26px; text-align: right; flex-shrink: 0;
 }
 .rd-compliance { display: flex; flex-wrap: wrap; gap: 5px; }
+/* "不代表合规结论"语义提示：低饱和中性色，避免被当成警告 */
+.rd-comp-hint {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: #64748b;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  cursor: help;
+  vertical-align: middle;
+}
 .rd-compliance-chip {
   font-size: 10px; padding: 1px 7px; border-radius: 999px;
   color: var(--c-text-4, #94a3b8); background: #fff;
   border: 1px solid var(--c-line, #e2e8f0);
+}
+/* 命中数：等宽加粗，让"触达强度"可扫读 */
+.rd-compliance-chip b {
+  font-family: var(--font-mono);
+  font-weight: 700;
 }
 .rd-compliance-chip.covered {
   color: #059669; background: #ecfdf5;
