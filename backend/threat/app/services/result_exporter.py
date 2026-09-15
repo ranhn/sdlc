@@ -2,7 +2,7 @@
 
 把一次已保存的建模结果（含完整 Threat Dragon 模型）渲染为：
 
-- Markdown 报告  —— 元信息表 + 执行摘要 + 等级分布 + 威胁总览表 + 分级明细 + 附录
+- Markdown 报告  —— 元信息表 + 执行摘要 + 等级分布 + 威胁明细（按等级）+ 附录
 - Threat Dragon 标准 JSON —— 官方 v2 模型结构（格式约定，保持兼容不动）
 - CSV 威胁清单 —— 中文列头 + DREAD 五维 + 状态中文化（UTF-8 BOM，Excel 直开）
 - Word (.docx) 报告 —— 封面 / 目录域 / 页眉页脚页码 / 着色风险表 / 分级明细 / 附录
@@ -694,7 +694,7 @@ def render_result_markdown(record: dict[str, Any]) -> str:
     """把一条结果记录渲染为 Markdown 报告。
 
     结构（商业级约定）：元信息表 -> 执行摘要（结论先行）-> 模型概览 ->
-    度量指标 -> 威胁总览表 -> 分级明细 -> 附录（分级定义）-> 生成声明。
+    度量指标 -> 威胁明细（按等级分组，唯一全量清单）-> 附录（分级定义）-> 生成声明。
     """
     model = record.get("model") or {}
     summary = model.get("summary") or {}
@@ -788,29 +788,11 @@ def render_result_markdown(record: dict[str, Any]) -> str:
                     lines.append(f"      依据：{basis}{f'（{version}）' if version else ''}")
         lines.append("")
 
-    # —— 4 威胁总览表 ——
-    lines.append(f"## 4 威胁总览（{total} 条）")
-    lines.append("")
-    if not threats:
-        lines.append("_未识别到威胁。_")
-    else:
-        lines.append("| # | 等级 | 威胁标题 | 类型 | 组件 | 状态 | DREAD |")
-        lines.append("|---:|---|---|---|---|---|---:|")
-        # 与 Word 报告一致：总览按严重度从高到低排序
-        _ov_sorted = sorted(threats, key=lambda t: _sev(t.get("severity", "")))
-        for i, t in enumerate(_ov_sorted, 1):
-            dread = _dread_total(t.get("dread"))
-            dread_cell = str(dread) if dread else "-"
-            oos_mark = "（范围外）" if t.get("outOfScope") else ""
-            lines.append(
-                f"| {i} | {_one_line(_sev_label(t.get('severity', '')))} | {_one_line(t.get('title'))} | "
-                f"{_one_line(t.get('type')) or '-'} | {_one_line(t.get('component')) or '-'} | "
-                f"{_one_line(_status_label(t.get('status')))}{oos_mark} | {dread_cell} |"
-            )
-        lines.append("")
+    # 「4 威胁总览」表已裁剪：与下方全量威胁明细逐条重复（同样的 ID/等级/标题/状态），
+    # 「按等级浏览」由明细的分组顺序（严重 → 低）直接承接。
 
-    # —— 5 威胁明细 ——
-    lines.append(f"## 5 威胁明细")
+    # —— 4 威胁明细 ——
+    lines.append(f"## 4 威胁明细")
     lines.append("")
     if not threats:
         lines.append("_未识别到威胁。_")
@@ -822,10 +804,10 @@ def render_result_markdown(record: dict[str, Any]) -> str:
             by_sev_threats.setdefault(t.get("severity", "Unknown"), []).append(t)
         for gi, sev in enumerate(sorted(by_sev_threats, key=_sev), 1):
             items = by_sev_threats[sev]
-            lines.append(f"### 5.{gi} {_sev_label(sev)}（{len(items)} 条）")
+            lines.append(f"### 4.{gi} {_sev_label(sev)}（{len(items)} 条）")
             lines.append("")
             for i, t in enumerate(items, 1):
-                lines.append(f"#### 5.{gi}.{i} {t.get('title', '')}")
+                lines.append(f"#### 4.{gi}.{i} {t.get('title', '')}")
                 lines.append("")
                 dread = _dread_total(t.get("dread"))
                 oos_mark = "、**范围外**" if t.get("outOfScope") else ""
@@ -1030,7 +1012,7 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
 
     结构：封面（标题/信息表/密级）-> 目录域 -> 页眉页脚页码 ->
     执行摘要 -> 模型概览 -> 按元素类型的威胁分析（唯一全量明细章）->
-    威胁总览表（按等级降序索引）-> 附录 A～D。
+    风险评定 -> 度量指标 -> 附录 A～D（附录 B 为唯一处置跟踪清单）。
     """
     from docx import Document  # type: ignore
     from docx.shared import Pt, RGBColor, Cm  # type: ignore
@@ -1151,9 +1133,9 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
     plan.append("decomposition")    # 系统分解
     plan.append("analysis")         # 按元素类型的威胁分析
     plan.append("assessment")       # 风险评定
-    plan.append("tracking")         # 风险汇总与跟踪
+    # 「tracking（风险汇总与跟踪）」「overview（威胁总览）」两章已裁剪：
+    # 与第 5 章全量明细、附录 B 处置跟踪清单高度重复（同一批威胁渲染三遍）。
     plan.append("metrics")          # 度量指标（仅有数据时）
-    plan.append("overview")         # 威胁总览
 
     CHAPTER_TITLES = {
         "system": "系统说明：建模对象",
@@ -1162,9 +1144,7 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         "decomposition": "系统分解：数据流图",
         "analysis": "威胁分析（按元素类型）",
         "assessment": "风险评定",
-        "tracking": "风险汇总与跟踪",
         "metrics": "度量指标",
-        "overview": "威胁总览",
     }
     # 度量指标章仅在存在 metrics 时才渲染
     metrics_data = stats.get("metrics") or {}
@@ -1193,8 +1173,6 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         elif _k == "analysis":
             for _ai, (_aname, _, _) in enumerate(elem_type_groups, 1):
                 _toc_entries.append((2, f"{_no}.{_ai}　{_aname}"))
-        elif _k == "overview":
-            pass
 
     # ---------- 小工具 ----------
     def _shade(cell, color_hex: str) -> None:
@@ -1265,6 +1243,17 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         el.set(qn("w:val"), "true")
         tr_pr.append(el)
 
+    def _row_cant_split(row) -> None:
+        """禁止该行内容被页缝拦腰拆开（整行一起挪到下一页）。"""
+        tr_pr = row._tr.get_or_add_trPr()
+        tr_pr.append(OxmlElement("w:cantSplit"))
+
+    def _row_keep_with_next(row) -> None:
+        """行内所有段落 keep_with_next：把该行与下一行胶在同一页。"""
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                p.paragraph_format.keep_with_next = True
+
     def _set_row_height(row, cm: float) -> None:
         """设置行最小高度，避免单行表格过于压缩。"""
         tr_pr = row._tr.get_or_add_trPr()
@@ -1308,6 +1297,9 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
             for row in table.rows:
                 for i, w in enumerate(widths):
                     row.cells[i].width = Cm(w)
+        # 注意：表格分页控制（行不拆/整表防拆页）不在此处设置——后续渲染步骤
+        # 会用 _cell_text 重写部分单元格内容并重建段落，现在设置的段落属性
+        # 会被洗掉。统一在 doc.save 前的 _finalize_table_pagination 里执行。
         return table
 
     def _field(paragraph, instr: str, placeholder: str = "") -> None:
@@ -1510,10 +1502,15 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
     except Exception:
         pass
 
-    _kv_table([
+    # 行业场景仅在建模时选择了行业模板才有值，为空时整行不渲染（避免无意义的「—」行）
+    _industry = _industry_label(stats)
+    _meta_rows = [
         ("报告标题", title),
         ("建模方法论", methodology),
-        ("行业场景", _industry_label(stats) or "-"),
+    ]
+    if _industry:
+        _meta_rows.append(("行业场景", _industry))
+    _meta_rows += [
         ("威胁总数", f"{total} 条（严重 {dict(sev_counts).get('Critical', 0)}、"
                      f"高危 {dict(sev_counts).get('High', 0)}）"),
         ("建模时间", created),
@@ -1521,7 +1518,8 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         ("报告版本", "V1.0"),
         ("报告密级", "内部"),
         ("编制单位", "VeSync SDLC 安全平台"),
-    ], zebra=False)
+    ]
+    _kv_table(_meta_rows, zebra=False)
 
     doc.add_paragraph()
     cover_note = doc.add_paragraph()
@@ -1669,12 +1667,15 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         # 产品概述
         overview_txt = system_profile.get("overview") or summary.get("description") or ""
         doc.add_heading(f"{_no}.1　产品概述", level=2)
-        _kv_table([
+        _ov_rows = [
             ("模型标题", summary.get("title", "-") or "-"),
             ("产品概述", overview_txt or "-"),
             ("建模方法论", methodology),
-            ("行业场景", _industry_label(stats) or "-"),
-        ])
+        ]
+        _industry2 = _industry_label(stats)
+        if _industry2:
+            _ov_rows.append(("行业场景", _industry2))
+        _kv_table(_ov_rows)
 
         # 架构分层
         arch = system_profile.get("architecture") or []
@@ -2032,8 +2033,15 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         _shade(_mt.rows[_ri].cells[0], "EEF2F7")
         _cell_text(_mt.rows[_ri].cells[0], _axis_impact[_ri - 1], bold=True, size=10)
 
-    doc.add_heading(f"{_no_r}.2　DREAD 评分汇总", level=2)
-    if any(isinstance(t.get("dread"), dict) for t in threats):
+    # 标题随内容走：有 DREAD 数据时叫「DREAD 评分汇总」，否则用中性的
+    # 「风险评分方式说明」——避免标题写着「DREAD 评分汇总」、内容却说
+    # 「不输出 DREAD 评分」的自相矛盾（普通 STRIDE 用户会误以为建模有缺失）。
+    _has_dread = any(isinstance(t.get("dread"), dict) for t in threats)
+    doc.add_heading(
+        f"{_no_r}.2　" + ("DREAD 评分汇总" if _has_dread else "风险评分方式说明"),
+        level=2,
+    )
+    if _has_dread:
         _dread_rows = []
         for t in threats:
             if not isinstance(t.get("dread"), dict):
@@ -2056,55 +2064,16 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
     else:
         _pd = doc.add_paragraph()
         _rd = _pd.add_run(
-            "本次建模未启用 DREAD 五维评分（该评分在 STRIDE-AI 方法论下产出），"
-            "风险等级依据严重度分级直接判定。"
+            "本次建模采用定性的严重度分级（严重 / 高危 / 中危 / 低危）判定风险等级，"
+            "不输出 DREAD 五维评分。"
         )
         _rd.font.size = Pt(10)
 
-    # ---------- 风险汇总与跟踪 ----------
-    _no_t = chapter_no["tracking"]
-    _h1(_no_t, CHAPTER_TITLES['tracking'])
-    _high_med = [t for t in threats if t.get("severity") in ("Critical", "High", "Medium")]
-    if not _high_med:
-        doc.add_paragraph("本次未识别到严重 / 高危 / 中危级别的威胁，无需跟踪台账。")
-    else:
-        _p = doc.add_paragraph()
-        _r = _p.add_run(
-            "下表汇总全部严重 / 高危 / 中危威胁，用于风险评审与整改跟踪。"
-            "低危项不进入台账，按常规迭代处理。「责任团队」与「目标完成时间」"
-            "由责任人评审时填写。"
-        )
-        _r.font.size = Pt(10)
-        _track_rows = []
-        for t in _high_med:
-            _tl = t.get("title", "")
-            _track_rows.append([
-                t.get("threatId", "-"),
-                _sev_label(t.get("severity", "")),
-                _tl if len(_tl) <= 40 else _tl[:39] + "…",
-                t.get("component", "") or "-",
-                _status_label(t.get("status")),
-                "　",   # 责任团队：留空待填
-                "　",   # 目标完成时间：留空待填
-            ])
-        _tt = _make_table(
-            ["威胁 ID", "等级", "威胁摘要", "所在元素", "当前状态", "责任团队", "目标完成时间"],
-            _track_rows, widths=[2.0, 1.8, 5.4, 2.6, 1.8, 1.6, 2.0],
-        )
-        # 等级列着色，便于评审时快速定位
-        # 注意：局部变量不能叫 _sev —— 会遮蔽模块级的 _sev() 排序函数，
-        # 导致本函数后续（如威胁总览排序）把字符串当函数调用而崩溃。
-        for _ri, _t in enumerate(_high_med, start=1):
-            _tsev = _t.get("severity", "")
-            _fg, _bg = SEV_COLOR.get(_tsev, SEV_COLOR["Unknown"])
-            _cell = _tt.rows[_ri].cells[1]
-            _shade(_cell, _bg)
-            _cell_text(_cell, _sev_label(_tsev), bold=True,
-                       color=RGBColor(int(_fg[0:2], 16), int(_fg[2:4], 16), int(_fg[4:6], 16)),
-                       size=9)
+    # 「风险汇总与跟踪」章已裁剪：其跟踪台账（ID/等级/标题各渲染一遍）与
+    # 第 5 章明细、附录 B 清单高度重复；当前状态与责任/时限的跟踪口径
+    # 并入附录 B「威胁处置跟踪清单」。
 
     # ---------- 度量指标 ----------
-    # 位置严格按 plan：位于「风险汇总与跟踪」之后、「威胁总览」之前
     metrics = stats.get("metrics") or {}
     if metrics:
         _no_mt = chapter_no["metrics"]
@@ -2149,46 +2118,9 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
             _make_table(["法规域", "名称", "关联威胁", "依据"], comp_rows,
                         widths=[3.2, 5.2, 2.2, 5.4])
 
-    # ---------- 威胁总览表 ----------
-    _no_o = chapter_no["overview"]
-    _h1(_no_o, f"威胁总览（{total} 条）")
-    if not threats:
-        doc.add_paragraph("未识别到威胁。")
-    else:
-        _pon = doc.add_paragraph()
-        _ron = _pon.add_run(
-            "总览按严重度从高到低排序，可作为检索索引与整改优先级依据；"
-            f"每条威胁的完整分析（描述 / 现有措施 / 消减措施）见第 {_no_a} 章，按元素类型分组。"
-        )
-        _ron.font.size = Pt(10)
-        # 按严重度从高到低排序：「按等级浏览」的视角由总览排序直接承接，
-        # 全量明细只保留「按元素类型分析」一处，避免同一批威胁重复渲染两遍。
-        ov_threats = sorted(threats, key=lambda t: _sev(t.get("severity", "")))
-        ov_rows = []
-        for i, t in enumerate(ov_threats, 1):
-            dread = _dread_total(t.get("dread"))
-            oos_mark = "（范围外）" if t.get("outOfScope") else ""
-            ov_rows.append([
-                str(i),
-                t.get("threatId", "-"),
-                _sev_label(t.get("severity", "")),
-                t.get("title", ""),
-                t.get("type", "") or "-",
-                t.get("component", "") or "-",
-                _status_label(t.get("status")) + oos_mark,
-                str(dread) if dread else "-",
-            ])
-        ov_table = _make_table(
-            ["#", "威胁 ID", "等级", "威胁标题", "类型", "元素", "状态", "DREAD"],
-            ov_rows, widths=[0.8, 1.8, 2.0, 4.6, 1.8, 2.4, 2.2, 1.4],
-        )
-        for r_idx, t in enumerate(ov_threats, start=1):
-            sev = t.get("severity", "")
-            fg, bg = SEV_COLOR.get(sev, SEV_COLOR["Unknown"])
-            cell = ov_table.rows[r_idx].cells[2]
-            _shade(cell, bg)
-            _cell_text(cell, _sev_label(sev), bold=True, color=RGBColor(
-                int(fg[0:2], 16), int(fg[2:4], 16), int(fg[4:6], 16)), size=9)
+    # 「威胁总览」章已裁剪：全部威胁的索引表与第 5 章全量明细、附录 B 清单
+    # 重复渲染同一批威胁；「按等级浏览」由附录 B 的降序排列承接，
+    # 逐条 DREAD 评分见风险评定章的 DREAD 汇总节。
 
     # ---------- 附录 A　严重度分级定义 ----------
     _appendix_title("附录 A　严重度分级定义")
@@ -2213,31 +2145,42 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         _cell_text(_c, _name, bold=True, size=10,
                    color=RGBColor(int(_fg[0:2], 16), int(_fg[2:4], 16), int(_fg[4:6], 16)))
 
-    # ---------- 附录 B　威胁处置检查清单 ----------
-    _appendix_title("附录 B　威胁处置检查清单")
+    # ---------- 附录 B　威胁处置跟踪清单 ----------
+    # 原第 7 章「风险汇总与跟踪」与第 9 章「威胁总览」已裁剪（与第 5 章及本章重复），
+    # 其跟踪信息并入本章：当前状态列 + 责任/时限填写口径 + 按等级降序排列。
+    _appendix_title("附录 B　威胁处置跟踪清单")
     _pb = doc.add_paragraph()
     _br2 = _pb.add_run(
-        "本清单由报告自动生成，供研发/运维在整改时逐项核对。"
-        "「验证方式」列由安全团队在复测时填写结论，作为关闭依据。"
+        "本清单由报告自动生成，按严重度从高到低排列，汇总全部严重 / 高危 / 中危威胁"
+        "（若仅有低危则列全部），供研发/运维整改时逐项核对与跟踪。"
+        "低危项按常规迭代处理，不进入清单。「责任团队」与「目标完成时间」由责任人"
+        "评审时在「验证方式」栏补记；复测结论由安全团队填写，作为关闭依据。"
     )
     _br2.font.size = Pt(9.5)
     _br2.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
-    if threats:
+    # 高/中危以上为跟踪对象；一条都没有时回退为全量清单（保持原行为）
+    _high_med = [t for t in threats if t.get("severity") in ("Critical", "High", "Medium")]
+    _ck_source = sorted(_high_med if _high_med else threats,
+                        key=lambda t: _sev(t.get("severity", "")))
+    if _ck_source:
         _ck_rows = []
-        for _ci2, _t in enumerate(_high_med if _high_med else threats, 1):
+        for _ci2, _t in enumerate(_ck_source, 1):
+            _oos2 = "（范围外）" if _t.get("outOfScope") else ""
             _ck_rows.append([
                 str(_ci2),
                 _t.get("threatId", "-"),
                 _sev_label(_t.get("severity", "")),
                 (_t.get("title", "") or "-"),
                 _t.get("mitigation", "") or "—",
+                _status_label(_t.get("status")) + _oos2,
                 "☐ 未验证",
             ])
         _ckt = _make_table(
-            ["#", "威胁 ID", "等级", "威胁标题", "处置建议", "验证方式"],
-            _ck_rows, widths=[0.8, 1.8, 1.8, 4.2, 5.6, 1.8],
+            ["#", "威胁 ID", "等级", "威胁标题", "处置建议", "当前状态", "验证方式"],
+            _ck_rows, widths=[0.7, 1.7, 1.5, 3.4, 4.4, 2.0, 2.3],
         )
-        for _ri2, _t in enumerate(_high_med if _high_med else threats, start=1):
+        # 等级列着色（局部变量带后缀，避免遮蔽模块级 _sev 排序函数）
+        for _ri2, _t in enumerate(_ck_source, start=1):
             _sev2 = _t.get("severity", "")
             _fg2, _bg2 = SEV_COLOR.get(_sev2, SEV_COLOR["Unknown"])
             _c2 = _ckt.rows[_ri2].cells[2]
@@ -2284,6 +2227,23 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
     )
     tr.font.size = Pt(8.5)
     tr.font.color.rgb = RGBColor(0x8A, 0x94, 0xA6)
+
+    # ---------- 表格分页控制（所有内容渲染完之后再统一执行） ----------
+    # 观感规则：同一张表尽量不出现在两个页面上。
+    # 1) 任何行都不允许被页缝拦腰拆开（w:cantSplit，整行挪到下一页）；
+    # 2) 整表在一页放得下（行数少）时，把除末行外的所有行与下一行胶住
+    #    （段落 keep_with_next），Word 会把整表推到下一页完整呈现而非
+    #    拆成两半——上页留出的空白是合理排版代价，远好于表格被切开；
+    # 3) 超过阈值的长表不胶（一页放不下，胶不住），保持流式分页，靠
+    #    「跨页重复表头 + 行不拆」保证跨页观感。
+    # 必须放在最后：_make_analysis_table / 风险矩阵着色等步骤会用
+    # _cell_text 重写单元格并重建段落，中途设置的段落属性会被洗掉。
+    for _tbl in doc.tables:
+        for _row in _tbl.rows:
+            _row_cant_split(_row)
+        if len(_tbl.rows) <= 12:
+            for _row in _tbl.rows[:-1]:
+                _row_keep_with_next(_row)
 
     buf = io.BytesIO()
     doc.save(buf)

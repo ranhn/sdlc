@@ -44,7 +44,16 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
   // 用于「建模中」右栏仪表盘，任务完成前就有真实数据可看。
   const analyzeMetrics = ref({})
   // 各阶段耗时（step_index -> 进入该阶段的 epoch 秒），用于流水线展示「2.3s」
+  // （本地估算仅作兜底；后端 stage_timings 才是权威数据源，跨刷新/恢复不失真）
   const stepStartedAt = ref({})
+  // 后端权威阶段计时（与 analyzeSteps 对齐）：[{start, end}|null]，epoch 秒。
+  // end 为 null 表示该阶段进行中；未开始阶段为 null 占位。
+  const stageTimings = ref([])
+  // 任务开始运行的 epoch 秒（后端 started_at）——总耗时计算基准
+  const taskStartedAt = ref(null)
+  // 后端最近一次返回的总耗时（秒）。运行中前端按本地时钟实时跳动；
+  // 任务结束后后端 elapsed 为定值，以此为准（前端时钟偏差不再累积）。
+  const taskElapsed = ref(null)
   // 日志：带 level 分级（milestone/detail/warn/error），前端据此降噪折叠
   const analyzeLogs = ref(currentTaskId.value ? [
     { time: '00:00:00', msg: '检测到上次未完成的任务，正在自动恢复轮询…', level: 'milestone' },
@@ -122,6 +131,9 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeStepIndex.value = 0
     analyzeMetrics.value = {}
     stepStartedAt.value = {}
+    stageTimings.value = []
+    taskStartedAt.value = null
+    taskElapsed.value = null
     analyzeLogs.value = []
     // 重要：开始新建模时清掉上次的结果数据。
     // 否则分析页右栏 ThreatPanel 会一直展示「上一次的」KPI/严重度/威胁列表，
@@ -150,7 +162,7 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
    * 用后端权威数据同步「阶段」相关状态（steps / step_index / metrics）。
    * 注意：不写日志——日志由 mergeLogs 单独合并，否则每次轮询都会重复追加。
    */
-  function syncTaskMeta({ steps, stepIndex, metrics, stage } = {}) {
+  function syncTaskMeta({ steps, stepIndex, metrics, stage, timings, startedAt, elapsed } = {}) {
     if (Array.isArray(steps) && steps.length) analyzeSteps.value = steps
     if (typeof stepIndex === 'number' && stepIndex >= 0) {
       const prev = analyzeStepIndex.value
@@ -159,6 +171,23 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
       if (prev !== stepIndex && !stepStartedAt.value[stepIndex]) {
         stepStartedAt.value = { ...stepStartedAt.value, [stepIndex]: Date.now() }
       }
+    }
+    // 后端权威计时：stage_timings（各阶段 start/end）+ started_at（总耗时基准）
+    if (Array.isArray(timings)) {
+      stageTimings.value = timings
+      // 把后端 start 回填进本地估算表：后端字段缺失（老后端）时兜底仍可用
+      for (let i = 0; i < timings.length; i++) {
+        const tm = timings[i]
+        if (tm && tm.start && !stepStartedAt.value[i]) {
+          stepStartedAt.value = { ...stepStartedAt.value, [i]: tm.start * 1000 }
+        }
+      }
+    }
+    if (typeof startedAt === 'number' && startedAt > 0) {
+      taskStartedAt.value = startedAt * 1000
+    }
+    if (typeof elapsed === 'number' && elapsed >= 0) {
+      taskElapsed.value = elapsed
     }
     if (metrics && typeof metrics === 'object') {
       analyzeMetrics.value = { ...analyzeMetrics.value, ...metrics }
@@ -173,8 +202,16 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     }
   }
 
-  /** 取某阶段已耗时（秒，一位小数）；进行中的阶段按当前时间实时算 */
+  /** 取某阶段已耗时（秒）；优先用后端权威计时，本地估算兜底 */
   function stepDuration(i) {
+    // 1) 后端 stage_timings：跨刷新/恢复依然准确
+    const tm = stageTimings.value[i]
+    if (tm && tm.start) {
+      const end = tm.end || (analyzing.value ? Date.now() / 1000 : null)
+      if (end) return Math.max(0, end - tm.start)
+      return null // 后端说该阶段已开但任务已结束（异常中断），无从计算
+    }
+    // 2) 本地估算兜底（老后端无 stage_timings 时）
     const start = stepStartedAt.value[i]
     if (!start) return null
     // 下一阶段的开始时间即为本阶段结束时间；最后阶段用「现在」
@@ -269,6 +306,9 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeStepIndex.value = 0
     analyzeMetrics.value = {}
     stepStartedAt.value = {}
+    stageTimings.value = []
+    taskStartedAt.value = null
+    taskElapsed.value = null
     analyzeLogs.value = []
     _clearPersistedTaskId()
     stopPolling()
@@ -295,6 +335,9 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeStepIndex,
     analyzeMetrics,
     stepStartedAt,
+    stageTimings,
+    taskStartedAt,
+    taskElapsed,
     analyzeLogs,
     model,
     lastResultId,

@@ -227,6 +227,50 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
         enc, pub, cross, _ = _edge_semantics(e)
         return (pub, enc, cross)
 
+    # —— D6 对齐前端 padLevel：同一对节点间存在多条边时，按组内索引给
+    # 中转段施加横向错位，避免后端 HV/VH 折线完全重叠成一束（前端 X6
+    # 用 manhattan router + 按 id 哈希的 padding 天然错开，这里用组内
+    # 索引效果等价且更可控）。键为无序 (src, tgt) 对。
+    _PAD_STEP = 16.0  # 模型坐标 px
+    pair_groups: dict[tuple, list[dict]] = {}
+    for e in edge_cells:
+        key = tuple(sorted([(e.get("source") or {}).get("cell") or "",
+                            (e.get("target") or {}).get("cell") or ""]))
+        pair_groups.setdefault(key, []).append(e)
+    pad_of_edge: dict[str, float] = {}
+    for _group in pair_groups.values():
+        _group.sort(key=lambda e: e.get("id") or "")
+        _n = len(_group)
+        if _n < 2:
+            continue
+        for _i, _e in enumerate(_group):
+            pad_of_edge[_e.get("id") or ""] = (_i - (_n - 1) / 2.0) * _PAD_STEP
+
+    def _route_collisions(route: list[tuple[float, float]],
+                          src_cell: dict, tgt_cell: dict) -> int:
+        n = 0
+        for c in all_cells:
+            if c is src_cell or c is tgt_cell or (c.get("source") and c.get("target")):
+                continue
+            rx0, ry0, rx1, ry1 = _rect_of(c)
+            for i in range(len(route) - 1):
+                if _seg_intersects_rect(route[i], route[i + 1], (rx0, ry0, rx1, ry1), margin=6):
+                    n += 1
+                    break
+        return n
+
+    def _route_len(route: list[tuple[float, float]]) -> float:
+        return sum(math.hypot(route[i + 1][0] - route[i][0], route[i + 1][1] - route[i][1])
+                   for i in range(len(route) - 1))
+
+    def _hv_route(p_src, p_tgt, x_mid):
+        """H-V-H 三段严格正交：水平 → 垂直通道（x_mid）→ 水平。"""
+        return [p_src, (x_mid, p_src[1]), (x_mid, p_tgt[1]), p_tgt]
+
+    def _vh_route(p_src, p_tgt, y_mid):
+        """V-H-V 三段严格正交：垂直 → 水平通道（y_mid）→ 垂直。"""
+        return [p_src, (p_src[0], y_mid), (p_tgt[0], y_mid), p_tgt]
+
     for e in sorted(edge_cells, key=_edge_rank):
         enc, pub, crosses, oos = _edge_semantics(e)
         src_cell = by_id.get((e.get("source") or {}).get("cell"))
@@ -265,37 +309,42 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
         p_src = _anchor(src_cell, tgt_c)
         p_tgt = _anchor(tgt_cell, src_c)
 
-        # 正交折线：先水平后垂直（更贴近 UI 的曼哈顿视觉）。
-        # 中转 y 取两点中点，遇到节点可自然从节点间的横向空档穿过。
+        # 正交折线路由（对齐前端 manhattan 观感）：
+        # 1) 几乎同层/同列直连；2) HV/VH 两候选 + 并行边错位 + 中转段滑移避障；
+        # 3) 按（碰撞数, 总长）择优。
         pts: list[tuple[float, float]]
         if abs(p_src[1] - p_tgt[1]) < 30 or abs(p_src[0] - p_tgt[0]) < 30:
-            pts = [p_src, p_tgt]  # 几乎同层/同列：直连
+            # 几乎同层/同列：正交小折角（避免两点直连产生斜线）
+            if abs(p_src[0] - p_tgt[0]) >= abs(p_src[1] - p_tgt[1]):
+                pts = [p_src, (p_tgt[0], p_src[1]), p_tgt]
+            else:
+                pts = [p_src, (p_src[0], p_tgt[1]), p_tgt]
         else:
-            # 选择"先水平后垂直"或"先垂直后水平"中转点：
-            # 避开两点矩形之间的其他节点。简化策略：HV 与 VH 各算一条，
-            # 选与其它节点矩形相交数更少的；相同则取总长更短的。
-            hv = [p_src, (p_tgt[0], p_src[1]), p_tgt]
-            vh = [p_src, (p_src[0], p_tgt[1]), p_tgt]
-
-            def _cross_count(route: list[tuple[float, float]]) -> int:
-                n = 0
-                for c in all_cells:
-                    if c is src_cell or c is tgt_cell or (c.get("source") and c.get("target")):
-                        continue
-                    rx0, ry0, rx1, ry1 = _rect_of(c)
-                    for i in range(len(route) - 1):
-                        if _seg_intersects_rect(route[i], route[i + 1], (rx0, ry0, rx1, ry1), margin=6):
-                            n += 1
+            pad = pad_of_edge.get(e.get("id") or "", 0.0)
+            # 并行边错位与避障滑移都作用在「自由中转通道」上（HV 的垂直列 /
+            # VH 的水平行），路径始终严格正交——对齐前端 manhattan 观感。
+            cands: list[tuple[int, float, list[tuple[float, float]]]] = []
+            for make, mid0 in (
+                (_hv_route, p_tgt[0] + pad),   # 垂直通道在目标列旁按组内序错开
+                (_vh_route, p_src[1] + pad),   # 水平通道在源行旁按组内序错开
+            ):
+                route = make(p_src, p_tgt, mid0)
+                n0 = _route_collisions(route, src_cell, tgt_cell)
+                if n0:
+                    # 滑移中转通道找无碰撞（其次最少碰撞）位置
+                    for k in range(1, 9):
+                        for sgn in (1, -1):
+                            r2 = make(p_src, p_tgt, mid0 + sgn * k * 14)
+                            n2 = _route_collisions(r2, src_cell, tgt_cell)
+                            if n2 < n0:
+                                route, n0 = r2, n2
+                                if n2 == 0:
+                                    break
+                        if n0 == 0:
                             break
-                return n
-
-            def _route_len(route: list[tuple[float, float]]) -> float:
-                return sum(math.hypot(route[i + 1][0] - route[i][0], route[i + 1][1] - route[i][1])
-                           for i in range(len(route) - 1))
-
-            cands = [(hv, _cross_count(hv), _route_len(hv)), (vh, _cross_count(vh), _route_len(vh))]
-            cands.sort(key=lambda t: (t[1], t[2]))
-            pts = cands[0][0]
+                cands.append((n0, _route_len(route), route))
+            cands.sort(key=lambda t: (t[0], t[1]))
+            pts = cands[0][2]
 
         dev_pts = [P(x, y) for x, y in pts]
         line_w = max(1, int(S(w)))
@@ -304,19 +353,28 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
             _dashed_polyline(draw, dev_pts, stroke, line_w, dash, S)
         _arrow(draw, dev_pts[-2], dev_pts[-1], stroke, S(10), S(5))
 
-        # 边标签（第一段中点附近，避免压在箭头上）
+        # 边标签：优先消费后端布局提示 labelT（沿边归一化位置）+ labelOffset
+        # （法向偏移，模型坐标 px）——与前端 DfdGraph.vue 的消费方式一致，
+        # 消除同一区域多条边标签叠压；无提示时退回第一段中点上方。
         name = ((e.get("data") or {}).get("name") or "").strip()
         if name and f_edge:
-            hint = "[加密] " if enc else ("[公网] " if pub else "")
-            label = hint + name
-            mid = dev_pts[len(dev_pts) // 2]
+            hint_txt = "[加密] " if enc else ("[公网] " if pub else "")
+            label = hint_txt + name
+            flow_hint = (diagram.get("layoutHints") or {}).get(
+                (e.get("data") or {}).get("flowId") or "")
+            if flow_hint and isinstance(flow_hint.get("labelT"), (int, float)):
+                tx, ty = _point_on_polyline(dev_pts, float(flow_hint["labelT"]),
+                                            float(flow_hint.get("labelOffset") or 0.0) * scale * SS)
+            else:
+                mid = dev_pts[len(dev_pts) // 2]
+                tx, ty = mid[0], mid[1]
+                ty -= S(14)
             try:
                 bbox = draw.textbbox((0, 0), label, font=f_edge)
                 tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                tx, ty = mid[0] - tw / 2, mid[1] - th - S(6)
-                draw.rectangle([tx - S(3), ty - S(2), tx + tw + S(3), ty + th + S(2)],
+                draw.rectangle([tx - tw / 2 - S(3), ty - S(2), tx + tw / 2 + S(3), ty + th + S(2)],
                                fill=CANVAS_BG)
-                draw.text((tx, ty), label, font=f_edge, fill=label_color)
+                draw.text((tx - tw / 2, ty), label, font=f_edge, fill=label_color)
             except Exception:
                 pass
 
@@ -400,6 +458,41 @@ def _anchor(cell: dict, toward: tuple[float, float]) -> tuple[float, float]:
     ry = hh / abs(dy) if dy else float("inf")
     r = min(rx, ry)
     return cx + dx * r, cy + dy * r
+
+
+def _point_on_polyline(pts: list[tuple[float, float]], t: float,
+                       normal_offset: float = 0.0) -> tuple[float, float]:
+    """沿折线按弧长比例 t∈[0,1] 取点，再沿该段的左法向偏移 normal_offset 像素。
+    与前端边标签 position.distance/offset 语义对齐（offset 正值取法向一侧）。"""
+    if not pts:
+        return 0.0, 0.0
+    if len(pts) == 1:
+        return pts[0]
+    segs: list[tuple[tuple[float, float], tuple[float, float], float]] = []
+    total = 0.0
+    for i in range(len(pts) - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        ln = math.hypot(x1 - x0, y1 - y0)
+        segs.append(((x0, y0), (x1, y1), ln))
+        total += ln
+    if total <= 1e-6:
+        return pts[0]
+    tt = min(1.0, max(0.0, t))
+    remain = total * tt
+    for (x0, y0), (x1, y1), ln in segs:
+        if ln < 1e-6:
+            continue
+        if remain <= ln or ((x0, y0), (x1, y1)) == segs[-1][:2]:
+            f = min(1.0, remain / ln) if ln > 1e-6 else 0.0
+            px = x0 + (x1 - x0) * f
+            py = y0 + (y1 - y0) * f
+            ux, uy = (x1 - x0) / ln, (y1 - y0) / ln
+            # 左法向：法向偏移与前端 label offset 的视觉语义近似（垂直于边）
+            nx, ny = -uy, ux
+            return px + nx * normal_offset, py + ny * normal_offset
+        remain -= ln
+    return pts[-1]
 
 
 def _seg_intersects_rect(p1, p2, rect: tuple[float, float, float, float], margin: float = 0) -> bool:

@@ -62,6 +62,9 @@ backend/_reset_*.py
 backend/backend.log
 backend/backend_err.log
 backend/uvicorn_*.log
+# 本地 dev 启动脚本（run_dev.py 已被上面忽略）输出的日志
+backend/run_dev.log*
+backend/run_dev.err.log*
 frontend/frontend.log
 frontend/vite.log
 frontend/_rp_compiled.js

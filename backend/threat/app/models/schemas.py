@@ -123,6 +123,20 @@ class TaskResponse(BaseModel):
         ),
     )
     log: list[TaskStepLog] = Field(default_factory=list)
+    started_at: Optional[float] = Field(
+        None, description="任务开始运行的时间（epoch 秒）；总耗时计算基准"
+    )
+    elapsed: Optional[float] = Field(
+        None,
+        description="任务总耗时（秒）：运行中为实时值，结束后为定值",
+    )
+    stage_timings: list[Optional[dict[str, Optional[float]]]] = Field(
+        default_factory=list,
+        description=(
+            "各阶段计时（与 steps 对齐）：{start, end}，epoch 秒；"
+            "进行中阶段 end 为 null，未开始阶段为 null 占位"
+        ),
+    )
     result: Optional[dict[str, Any]] = Field(
         None, description="任务成功后的结果（含 model/summary/stats）"
     )

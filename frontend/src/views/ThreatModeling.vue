@@ -53,6 +53,14 @@
                 <span class="head-pulse" aria-hidden="true" />
                 <span class="progress-title">AI 威胁建模分析中</span>
                 <span class="progress-stage">{{ analyzeStage || '处理中…' }}</span>
+                <span v-if="totalElapsedText" class="head-elapsed" title="任务总耗时">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" />
+                    <path d="M8 4.6V8l2.4 1.6" fill="none" stroke="currentColor" stroke-width="1.6"
+                          stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  总耗时 {{ totalElapsedText }}
+                </span>
               </div>
               <div class="head-r">
                 <span class="progress-pct">{{ analyzeProgress }}<i>%</i></span>
@@ -86,9 +94,13 @@
                     <i v-else-if="s.state === 'active'" class="step-node-dot" />
                   </span>
                   <span v-if="i < pipeline.length - 1" class="step-line" />
-                  <span v-if="s.duration != null" class="step-time">{{ s.duration }}s</span>
+                  <span v-if="s.duration != null" class="step-time">{{ fmtDuration(s.duration) }}</span>
                 </div>
                 <span class="step-label">{{ s.short }}</span>
+                <!-- 阶段内进度条：done=100%，active 由后端 sub_progress 反推，todo=0 -->
+                <div class="step-bar" aria-hidden="true">
+                  <i class="step-bar-fill" :style="{ width: (s.pct || 0) + '%' }" />
+                </div>
                 <span v-if="s.summary && s.state !== 'active'" class="step-summary">{{ s.summary }}</span>
                 <span v-else-if="s.state === 'active'" class="step-summary doing">
                   <span class="pipe-ellipsis"><i /><i /><i /></span>
@@ -317,6 +329,7 @@
       />
       <ResultsPanel
         v-else
+        ref="resultsPanelRef"
         :result="lastSummary"
         :model="model"
         @remodel="onRemodel"
@@ -483,6 +496,46 @@ const lastResultId = computed(() => store.lastResultId)
 const lastSummary = computed(() => store.lastSummary)
 const lastDfdAutofix = computed(() => store.lastDfdAutofix)
 const resultKey = computed(() => store.resultKey)
+
+// ---- 计时心跳：让「进行中阶段」的耗时、阶段进度条与总耗时每秒跳动 ----
+// computed 不随时间自动重算，靠 nowTick 建立依赖；任务结束即停表。
+const nowTick = ref(0)
+let elapsedTimer = null
+watch(analyzing, (on) => {
+  if (on && !elapsedTimer) {
+    elapsedTimer = setInterval(() => { nowTick.value++ }, 1000)
+  } else if (!on && elapsedTimer) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}, { immediate: true })
+onUnmounted(() => {
+  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+})
+
+/** 秒数 -> 「42s」「3m 05s」紧凑格式 */
+function fmtDuration(sec) {
+  if (sec == null || !isFinite(sec)) return ''
+  const s = Math.max(0, Math.round(sec))
+  if (s < 60) return `${s}s`
+  const mm = Math.floor(s / 60)
+  const ss = s % 60
+  return ss ? `${mm}m ${String(ss).padStart(2, '0')}s` : `${mm}m`
+}
+
+// 总耗时：运行中按本地时钟每秒跳动（起始用后端 started_at，跨刷新准确）；
+// 结束后用后端 elapsed 定值（不再受本地时钟影响）。
+const totalElapsedText = computed(() => {
+  nowTick.value // 心跳依赖：运行中每秒重算
+  let sec = null
+  const startMs = store.taskStartedAt
+  if (startMs && analyzing.value) {
+    sec = (Date.now() - startMs) / 1000
+  } else {
+    sec = store.taskElapsed
+  }
+  return sec != null ? fmtDuration(sec) : ''
+})
 
 // ---- 画布规模总览（工具条上的"X 节点 / Y 数据流 / Z 威胁 / 覆盖 n%"） ----
 // 全部取自 lastSummary.stats（后端已算好），画布节点数兜底用 model.cells 里
@@ -866,7 +919,15 @@ async function exportJson() {
 }
 
 // ---- 轮询逻辑（操作 store，组件销毁后仍可后台运行）----
+// 成功收尾的延时句柄：100% 完成态短暂停留后再跳结果页（见轮询 success 分支）
+let finishTimer = null
+const resultsPanelRef = ref(null)
 function startTaskPolling(taskId) {
+  // 新一轮轮询前清掉可能残留的收尾定时器（快速重发任务时防串扰）
+  if (finishTimer) {
+    clearTimeout(finishTimer)
+    finishTimer = null
+  }
   store.startPolling(async () => {
     try {
       const t = await getTask(taskId)
@@ -883,24 +944,49 @@ function startTaskPolling(taskId) {
         const steps = Array.isArray(t?.steps) ? t.steps : []
         const active = steps[idx] || t?.stage || '正在分析…'
         store.updateProgress(p, active)
-        // 同步阶段/指标（权威数据源），注意不写日志——日志由 mergeLogs 负责
+        // 同步阶段/指标/计时（权威数据源），注意不写日志——日志由 mergeLogs 负责
         store.syncTaskMeta({
           steps,
           stepIndex: idx,
           metrics: t?.metrics || {},
           stage: active,
+          timings: Array.isArray(t?.stage_timings) ? t.stage_timings : [],
+          startedAt: t?.started_at,
+          elapsed: t?.elapsed,
         })
       } else if (status === 'success' || status === 'succeeded' || status === 'completed') {
-        const taskResult = t?.result || {}
-        store.finishAnalysis({
-          model: taskResult.model,
-          summary: taskResult.summary,
-          stats: taskResult.stats,
-          result_id: taskResult.result_id || t?.id,
-          dfd_autofix: Array.isArray(taskResult.dfd_autofix) ? taskResult.dfd_autofix : [],
-          cache_meta: taskResult.cache_meta || null,
+        // 先在进度面板上呈现 100% 完成态，短暂停留后再跳结果页。
+        // 「构建模型 / 风险评估报告」是毫秒级本地操作，后端常在 LLM 阶段心跳值
+        // （如 62%）附近瞬间 complete；若立刻 finishAnalysis + 跳转，analyzing
+        // 置 false 会直接隐藏进度面板，100% 完成态从未被渲染——用户看到的是
+        // 「62% 直接结束」。因此先停轮询、落定计时与进度，1.2s 后再收尾。
+        store.stopPolling()
+        // 收尾同步：把后端的最终计时（定值）落进 store，供「总耗时」展示
+        store.syncTaskMeta({
+          timings: Array.isArray(t?.stage_timings) ? t.stage_timings : [],
+          startedAt: t?.started_at,
+          elapsed: t?.elapsed,
         })
-        router.push('/threat-modeling/results')
+        store.updateProgress(100, '建模完成')
+        if (finishTimer) clearTimeout(finishTimer)
+        finishTimer = setTimeout(() => {
+          finishTimer = null
+          // 等待期间用户可能已取消/重置（analyzing 被置 false）→ 不再收尾
+          if (!store.analyzing) return
+          const taskResult = t?.result || {}
+          store.finishAnalysis({
+            model: taskResult.model,
+            summary: taskResult.summary,
+            stats: taskResult.stats,
+            result_id: taskResult.result_id || t?.id,
+            dfd_autofix: Array.isArray(taskResult.dfd_autofix) ? taskResult.dfd_autofix : [],
+            cache_meta: taskResult.cache_meta || null,
+          })
+          router.push('/threat-modeling/results')
+          // 三个 tab 是 v-show 常驻挂载，ResultsPanel 的历史列表只在 onMounted
+          // 拉一次；建模完成后主动刷新，否则要手动刷新页面才能看到最新结果。
+          resultsPanelRef.value?.reload?.()
+        }, 1200)
       } else if (status === 'error' || status === 'failed') {
         store.failAnalysis(t?.error || t?.message || '未知错误')
         ElMessage.error('建模失败：' + (t?.error || t?.message || '未知错误'))
@@ -982,14 +1068,27 @@ const pipeline = computed(() => {
   const steps = analyzeSteps.value || []
   const idx = analyzeStepIndex.value || 0
   const m = liveMetrics.value || {}
+  const stepsN = Math.max(1, steps.length)
+  nowTick.value // 心跳依赖：进行中阶段的耗时与进度条每秒刷新
   return steps.map((label, i) => {
     const state = i < idx ? 'done' : (i === idx ? 'active' : 'todo')
+    // 阶段内进度：由全局 progress 反推（后端 progress = (idx+sub)/N*100）。
+    // 进行中保底 4%（阶段刚起步时 0% 的空条没有"活着"的感觉），封顶 99%
+    //（100% 留给阶段真正切换的瞬间，避免"看着满了却还没勾"的矛盾）。
+    let pct = 0
+    if (state === 'done') {
+      pct = 100
+    } else if (state === 'active') {
+      const sub = ((analyzeProgress.value || 0) / 100) * stepsN - i
+      pct = Math.max(4, Math.min(99, Math.round(sub * 100)))
+    }
     return {
       label,
       short: shortStepLabel(label),
       state,
       summary: stageSummary(i, state, m, steps.length),
       duration: state === 'todo' ? null : store.stepDuration(i),
+      pct,
     }
   })
 })
@@ -1434,6 +1533,22 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 总耗时徽标：时钟图标 + 「3m 05s」，运行中每秒跳动 */
+.head-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--c-bg-soft, #f1f5f9);
+  border: 1px solid var(--c-line, #e2e8f0);
+  color: var(--text-faint, #64748b);
+  font-size: 11px;
+  font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 /* 取消按钮：放在头部右侧对齐，跟标题同基线。
    实心 type="danger"（红底白字）+ 阴影 + hover 加深，
    高亮"这是个会立即终止流程的危险操作"。 */
@@ -1586,6 +1701,40 @@ onUnmounted(() => {
   color: #94a3b8;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* 阶段内进度条：done=满绿、active=蓝色流光、todo=空轨道。
+   与顶部全局细进度条呼应——每一步自己走到哪，一眼可读。 */
+.step-bar {
+  margin-top: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+.step-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #cbd5e1;
+  transition: width 0.6s ease;
+}
+.step-done .step-bar-fill {
+  background: #10b981;
+}
+.step-active .step-bar-fill {
+  position: relative;
+  background: linear-gradient(90deg, #60a5fa, var(--primary, #2563eb));
+}
+.step-active .step-bar-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: step-bar-sheen 1.6s ease-in-out infinite;
+}
+@keyframes step-bar-sheen {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 .step-label {
   font-size: 12.5px;

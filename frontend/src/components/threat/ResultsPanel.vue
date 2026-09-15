@@ -353,6 +353,11 @@ async function doRename() {
 }
 
 onMounted(() => load(1))
+
+// 建模完成后由父组件（ThreatModeling.vue）调用：三个 tab 用 v-show 常驻挂载，
+// 本组件的 onMounted 只在首次进入页面时执行一次；不主动 reload 的话，
+// 刚完成的建模结果不会出现在历史列表里，用户得手动刷新页面才能看到。
+defineExpose({ reload: () => load(1) })
 </script>
 
 <style scoped>

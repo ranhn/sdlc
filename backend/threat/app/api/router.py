@@ -388,6 +388,13 @@ async def get_task(
         task = task_manager.get(task_id)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    # 总耗时：结束用 finished_at 定值；运行中用当前时间算实时值；
+    # 未开始（pending，started_at 为空）则不给。
+    _started = task.get("started_at")
+    _elapsed = None
+    if _started:
+        _ended = task.get("finished_at") or nc.epoch()
+        _elapsed = max(0.0, _ended - _started)
     return TaskResponse(
         id=task["id"],
         status=task["status"],
@@ -395,6 +402,9 @@ async def get_task(
         steps=task["steps"],
         step_index=task["step_index"],
         metrics=task.get("metrics") or {},
+        started_at=_started,
+        elapsed=_elapsed,
+        stage_timings=task.get("stage_timings") or [],
         log=[
             TaskStepLog(
                 time=entry["time"],

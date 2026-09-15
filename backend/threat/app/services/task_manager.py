@@ -131,8 +131,11 @@ class TaskManager:
                 record["error"] = "服务重启导致任务中断，请重新发起建模"
                 record["finished_at"] = record.get("finished_at") or nc.epoch()
                 interrupted += 1
-            # 兼容老快照：metrics 字段是后加的，缺失时补空对象，避免前端读到 undefined
+            # 兼容老快照：metrics/stage_timings/started_at 字段是后加的，
+            # 缺失时补默认值，避免前端读到 undefined
             record.setdefault("metrics", {})
+            record.setdefault("stage_timings", [])
+            record.setdefault("started_at", None)
             self._tasks[task_id] = record
             restored += 1
         if restored:
@@ -157,6 +160,11 @@ class TaskManager:
             # 实时指标：建模过程中不断覆盖更新（组件数/流数/自检修复数…），
             # 供前端「建模中」右栏仪表盘展示，无需等最终 result。
             "metrics": {},
+            # 阶段计时（P1）：与 steps 对齐的数组，每项 {start, end}（epoch 秒）。
+            # end 为 None 表示该阶段仍在进行中；未开始的阶段为 None 占位。
+            # 权威数据源在后端——前端本地估算跨刷新/恢复会失真。
+            "stage_timings": [],
+            "started_at": None,  # 首次进入 running 的时间（总耗时计算基准）
             "result": None,
             "error": None,
             "cancelled": False,  # 取消标志，供长任务在各步骤间检查
@@ -195,7 +203,22 @@ class TaskManager:
         return bool(task and task["cancelled"])
 
     def mark_running(self, task_id: str) -> None:
-        self._update(task_id, status=TaskStatus.RUNNING)
+        task = self._tasks.get(task_id)
+        if not task:
+            return
+        # 总耗时基准：只记首次（重试/重复调用不重置）
+        if not task.get("started_at"):
+            task["started_at"] = nc.epoch()
+        task["status"] = TaskStatus.RUNNING
+        self._persist(task_id)
+
+    @staticmethod
+    def _close_running_stages(task: dict[str, Any]) -> None:
+        """把所有「已开启但未结束」的阶段计时关闭（用于阶段切换与任务收尾）。"""
+        now = nc.epoch()
+        for tm in task.get("stage_timings") or []:
+            if isinstance(tm, dict) and tm.get("start") and not tm.get("end"):
+                tm["end"] = now
 
     def mark_step(
         self,
@@ -218,7 +241,22 @@ class TaskManager:
         task = self._tasks.get(task_id)
         if not task:
             return
-        task["step_index"] = max(0, min(index, max(0, len(task["steps"]) - 1)))
+        old_index = task.get("step_index", 0)
+        new_index = max(0, min(index, max(0, len(task["steps"]) - 1)))
+        task["step_index"] = new_index
+        # 阶段计时：进入新阶段时关闭旧阶段、开启新阶段；同一阶段内的
+        # sub_progress 推进（重复调用）不重置 start。
+        timings = task.setdefault("stage_timings", [])
+        while len(timings) < len(task["steps"]):
+            timings.append(None)
+        now = nc.epoch()
+        if new_index != old_index:
+            self._close_running_stages(task)  # 跳阶段也能把中间阶段关干净
+        slot = timings[new_index]
+        if slot is None:
+            timings[new_index] = {"start": now, "end": None}
+        elif not slot.get("start"):
+            slot["start"] = now
         steps_n = max(1, len(task["steps"]))
         sub = 0.0 if sub_progress is None else max(0.0, min(1.0, float(sub_progress)))
         # 阶段完成（sub=1.0）才把进度推到下一阶段起点；阶段内推进时按 (i+sub) 算
@@ -269,6 +307,7 @@ class TaskManager:
         task = self._tasks.get(task_id)
         if not task:
             return
+        self._close_running_stages(task)
         task["status"] = TaskStatus.SUCCESS
         task["result"] = result
         task["progress"] = 100
@@ -280,6 +319,7 @@ class TaskManager:
         task = self._tasks.get(task_id)
         if not task:
             return
+        self._close_running_stages(task)
         task["status"] = TaskStatus.CANCELLED
         task["cancelled"] = True
         task["finished_at"] = nc.epoch()
@@ -290,6 +330,7 @@ class TaskManager:
         task = self._tasks.get(task_id)
         if not task:
             return
+        self._close_running_stages(task)
         task["status"] = TaskStatus.ERROR
         task["error"] = error
         task["status_code"] = status_code
