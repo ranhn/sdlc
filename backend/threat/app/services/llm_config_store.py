@@ -21,6 +21,10 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+# 统一网络时钟（NTP 校准）。缺失会导致 set_config 调 _now_iso() 时
+# 抛 NameError —— 路由层只捕获 ValueError，于是表现为 500。
+from app.utils import network_clock as nc
+
 logger = logging.getLogger(__name__)
 
 # 磁盘持久化文件路径：与本模块同目录
