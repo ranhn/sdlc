@@ -60,6 +60,16 @@ class TaskNotFoundError(Exception):
     """任务不存在或已过期。"""
 
 
+# 日志分级白名单：前端按 level 做降噪/折叠，非法值统一归为 milestone。
+_LOG_LEVELS = ("milestone", "detail", "warn", "error")
+
+
+def _norm_level(level: str | None) -> str:
+    """把日志级别归一化到白名单，未知值退化为 milestone。"""
+    lv = (level or "").strip().lower()
+    return lv if lv in _LOG_LEVELS else "milestone"
+
+
 class TaskManager:
     """异步任务注册表（内存 + JSON 落盘）。"""
 
@@ -121,6 +131,8 @@ class TaskManager:
                 record["error"] = "服务重启导致任务中断，请重新发起建模"
                 record["finished_at"] = record.get("finished_at") or nc.epoch()
                 interrupted += 1
+            # 兼容老快照：metrics 字段是后加的，缺失时补空对象，避免前端读到 undefined
+            record.setdefault("metrics", {})
             self._tasks[task_id] = record
             restored += 1
         if restored:
@@ -142,6 +154,9 @@ class TaskManager:
             "step_index": 0,
             "progress": 0,  # 0~100
             "log": [],
+            # 实时指标：建模过程中不断覆盖更新（组件数/流数/自检修复数…），
+            # 供前端「建模中」右栏仪表盘展示，无需等最终 result。
+            "metrics": {},
             "result": None,
             "error": None,
             "cancelled": False,  # 取消标志，供长任务在各步骤间检查
@@ -188,6 +203,7 @@ class TaskManager:
         index: int,
         message: str | None = None,
         sub_progress: float | None = None,
+        level: str = "milestone",
     ) -> None:
         """标记当前进度阶段。index 为 0 基的阶段下标。
 
@@ -196,6 +212,8 @@ class TaskManager:
         让长 LLM 调用的阶段不再"卡在固定 25%/50% 上很久"。
         例如：DFD 提取阶段（index=0, steps=4）下，sub_progress=0.6
         会显示 progress = 15% 而非 0%。
+
+        ``level`` 为日志分级（milestone/detail/warn/error），供前端降噪过滤。
         """
         task = self._tasks.get(task_id)
         if not task:
@@ -208,14 +226,44 @@ class TaskManager:
             (task["step_index"] + sub) / steps_n * 100
         )
         if message:
-            task["log"].append({"time": nc.epoch(), "message": message})
+            task["log"].append(
+                {"time": nc.epoch(), "message": message, "level": _norm_level(level)}
+            )
         self._persist(task_id)
 
-    def add_log(self, task_id: str, message: str) -> None:
+    def add_log(self, task_id: str, message: str, level: str = "milestone") -> None:
+        """追加一条任务日志。
+
+        ``level`` 供前端分级降噪：
+          - milestone：阶段里程碑（默认展示）
+          - detail   ：阶段内细节（前端默认折叠）
+          - warn     ：非阻塞告警
+          - error    ：真实失败
+        """
         task = self._tasks.get(task_id)
         if task:
-            task["log"].append({"time": nc.epoch(), "message": message})
+            task["log"].append(
+                {"time": nc.epoch(), "message": message, "level": _norm_level(level)}
+            )
             self._persist(task_id)
+
+    def set_metrics(self, task_id: str, **metrics: Any) -> None:
+        """更新任务实时指标（供前端「建模中」右栏仪表盘展示）。
+
+        与 log 不同，这里是**就地覆盖**的键值（componentCount/flowCount/
+        selfcheckCount 等），前端拿到的是"当前已知的完整快照"而非增量。
+        值传 None 表示删除该键（例如某指标已失效）。
+        """
+        task = self._tasks.get(task_id)
+        if not task:
+            return
+        bucket = task.setdefault("metrics", {})
+        for k, v in metrics.items():
+            if v is None:
+                bucket.pop(k, None)
+            else:
+                bucket[k] = v
+        self._persist(task_id)
 
     def complete(self, task_id: str, result: Any) -> None:
         task = self._tasks.get(task_id)

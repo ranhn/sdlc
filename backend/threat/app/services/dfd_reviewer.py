@@ -199,7 +199,11 @@ class DFDReviewer:
 
         Returns:
             {"components": <修正后的组件列表>, "flows": <修正后的流列表>,
-             "log": [<自校验日志条目 str>]}
+             "log": [<自校验日志条目 str>], "stats": <计数信息 dict>}
+            ``stats`` 供前端实时指标卡使用：
+              - findings：AI 报告的结构问题条数
+              - fixed   ：实际采纳并落地的修正动作���
+              - skipped ：被执行条件拦下（未采纳）的条数
             任何异常都返回原始 components/flows 与一条错误日志（不抛出）。
         """
         original = (components, flows)
@@ -218,6 +222,7 @@ class DFDReviewer:
                 "components": components,
                 "flows": flows,
                 "log": [f"[自校验] 执行失败，已跳过（{type(exc).__name__}）"],
+                "stats": {"findings": 0, "fixed": 0, "skipped": 0, "degraded": True},
             }
 
         if not isinstance(raw, dict):
@@ -225,6 +230,7 @@ class DFDReviewer:
                 "components": components,
                 "flows": flows,
                 "log": ["[自校验] 返回格式非法，已跳过"],
+                "stats": {"findings": 0, "fixed": 0, "skipped": 0, "degraded": True},
             }
 
         # 确定性纠偏：只采纳满足约束的修正
@@ -238,16 +244,20 @@ class DFDReviewer:
         comps = self._normalize_roles(comps, flows_fixed)
 
         # 生成日志：问题 + 实际采纳的修正
-        log = self._build_log(raw.get("issues"), components, flows, comps, flows_fixed)
+        log, stats = self._build_log(
+            raw.get("issues"), components, flows, comps, flows_fixed
+        )
         changed = (comps, flows_fixed) != original
+        stats["degraded"] = False
         logger.info(
-            "DFD AI 自校验完成：%d 条问题，%s（%d 组件 %d 流）",
-            len(log),
+            "DFD AI 自校验完成：%d 条问题 / %d 项已修复，%s（%d 组件 %d 流）",
+            stats["findings"],
+            stats["fixed"],
             "已修正" if changed else "无需修正",
             len(comps),
             len(flows_fixed),
         )
-        return {"components": comps, "flows": flows_fixed, "log": log}
+        return {"components": comps, "flows": flows_fixed, "log": log, "stats": stats}
 
     # ---- 序列化 ----
     def _serialize(
@@ -455,27 +465,42 @@ class DFDReviewer:
         orig_flows: list[dict[str, Any]],
         new_components: list[dict[str, Any]],
         new_flows: list[dict[str, Any]],
-    ) -> list[str]:
+    ) -> tuple[list[str], dict[str, int]]:
+        """构建自校验日志与计数。
+
+        文案原则（P1 降噪）：自校验是「增强动作」而非「错误」，因此措辞统一为
+        中性的「发现 / 已校正」；不使用 error/warning/失败 等字眼，
+        避免前端把正常自检渲染成一片红色告警，误导用户以为建模出了问题。
+
+        Returns:
+            (log, stats)；stats 含 findings / fixed / skipped 三个计数。
+        """
         log: list[str] = []
+        findings = 0
+
         if isinstance(issues, list):
             for it in issues[:30]:  # 限制条数，避免日志膨胀
                 if not isinstance(it, dict):
                     continue
-                sev = it.get("severity") or "info"
                 desc = str(it.get("description") or "").strip()
                 if desc:
-                    log.append(f"[自校验·{sev}] {desc}")
+                    findings += 1
+                    log.append(f"[结构自查] {desc}")
 
-        # 记录实际采纳的组件修正
-        for oc, nc in zip(orig_components, new_components):
+        # 记录实际采纳的组件修正（原 zip 只覆盖到较短列表，改为按 id 对齐更稳）
+        orig_comp_by_id = {c.get("id"): c for c in orig_components}
+        for nc in new_components:
+            oc = orig_comp_by_id.get(nc.get("id"))
+            if oc is None:
+                continue
             if oc.get("type") != nc.get("type"):
                 log.append(
-                    f"[自校验·修正] 组件「{oc.get('name', '')}」类型 "
+                    f"[已校正] 组件「{oc.get('name', '')}」类型 "
                     f"{oc.get('type')} → {nc.get('type')}"
                 )
             elif oc.get("lifecycle") != nc.get("lifecycle"):
                 log.append(
-                    f"[自校验·修正] 组件「{oc.get('name', '')}」生命周期 "
+                    f"[已校正] 组件「{oc.get('name', '')}」生命周期 "
                     f"{oc.get('lifecycle')} → {nc.get('lifecycle')}"
                 )
 
@@ -491,10 +516,18 @@ class DFDReviewer:
                 or of.get("name") != nf.get("name")
             ):
                 log.append(
-                    f"[自校验·修正] 数据流「{nf.get('name', '')}」端点/名称已校正"
+                    f"[已校正] 数据流「{nf.get('name', '')}」端点/名称已校正"
                 )
 
         removed = len(orig_flows) - len(new_flows)
         if removed > 0:
-            log.append(f"[自校验·修正] 移除 {removed} 条异常数据流（自环/悬空/重复）")
-        return log
+            log.append(f"[已校正] 剔除 {removed} 条异常数据流（自环/悬空/重复）")
+
+        # fixed = 除「结构自查」明细外的所有条数（即真正落地的动作）
+        fixed = sum(1 for line in log if line.startswith("[已校正]"))
+        return log, {
+            "findings": findings,
+            "fixed": fixed,
+            # skipped：AI 报了问题但未产生对应修正动作（有解释价值）
+            "skipped": max(0, findings - fixed),
+        }

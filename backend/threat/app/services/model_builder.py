@@ -1726,6 +1726,15 @@ class ThreatModelBuilder:
             threat["cwe"] = t["cwe"]
         if t.get("references"):
             threat["references"] = t["references"]
+        # P1：现有安全措施（与 mitigation 区分：一个说现状，一个说待办）。
+        # 「未知」视为无有效信息，不写入，避免报告里出现无意义的「未知」列。
+        _existing = (t.get("existingControls") or "").strip()
+        if _existing and _existing not in ("未知", "无", "-"):
+            threat["existingControls"] = _existing
+        # P1：合规映射（该威胁触达的法规条款）
+        _comp_refs = t.get("complianceRefs") or []
+        if isinstance(_comp_refs, list) and _comp_refs:
+            threat["complianceRefs"] = [str(x) for x in _comp_refs if str(x).strip()]
         # DREAD 评级（STRIDE-AI）：保留五维评分与总分
         if isinstance(t.get("dread"), dict):
             threat["dread"] = t["dread"]

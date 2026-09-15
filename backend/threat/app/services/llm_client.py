@@ -98,8 +98,14 @@ class LLMClient:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            # 网络层显式超时，避免长时间挂起（连接 10s，读取 3 分钟）
-            timeout=httpx.Timeout(180.0, connect=10.0),
+            # 网络层显式超时，避免长时间挂起。
+            # 读取超时默认 600s（LLM_READ_TIMEOUT 可调）：推理型模型单次
+            # 生成常见 2~5 分钟，180s 会把正常生成误判为超时、反复重试
+            # 后直接中断整个建模任务。
+            timeout=httpx.Timeout(
+                settings.llm_read_timeout,
+                connect=settings.llm_connect_timeout,
+            ),
             max_retries=settings.llm_max_retries,
         )
 

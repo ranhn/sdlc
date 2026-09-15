@@ -36,9 +36,18 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
   const currentTaskId = ref(_loadPersistedTaskId())
   const analyzeProgress = ref(0)
   const analyzeStage = ref(currentTaskId.value ? '恢复中：正在向后端查询任务状态…' : '')
+  // 全量阶段名（后端 steps，长度=流水线步骤数）——用于左栏阶段流水线渲染
   const analyzeSteps = ref([])
+  // 当前阶段下标（0 基，来自后端 step_index）——流水线用它区分 已完成/进行中/未开始
+  const analyzeStepIndex = ref(0)
+  // 后端透出的实时指标快照（componentCount/flowCount/selfcheckFixed…）
+  // 用于「建模中」右栏仪表盘，任务完成前就有真实数据可看。
+  const analyzeMetrics = ref({})
+  // 各阶段耗时（step_index -> 进入该阶段的 epoch 秒），用于流水线展示「2.3s」
+  const stepStartedAt = ref({})
+  // 日志：带 level 分级（milestone/detail/warn/error），前端据此降噪折叠
   const analyzeLogs = ref(currentTaskId.value ? [
-    { time: '00:00:00', msg: '检测到上次未完成的任务，正在自动恢复轮询…' },
+    { time: '00:00:00', msg: '检测到上次未完成的任务，正在自动恢复轮询…', level: 'milestone' },
   ] : [])
 
   // ---- 结果数据 ----
@@ -56,12 +65,46 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
   const hasResult = computed(() => !!lastResultId.value)
 
   // ---- 日志操作 ----
-  function appendLog(msg) {
+  /**
+   * 追加日志。第二个参数可为字符串级别（milestone/detail/warn/error），
+   * 也可传入完整对象 { message, level, ts }（后端轮询时用）。
+   * 未指定 level 时按 milestone 处理，保持向后兼容。
+   */
+  function appendLog(msg, level) {
     if (!msg) return
-    const text = typeof msg === 'string' ? msg : (msg?.message || msg?.msg || String(msg))
+    let text, lv, ts
+    if (typeof msg === 'object' && msg !== null && !Array.isArray(msg)) {
+      text = msg.message || msg.msg || ''
+      lv = msg.level
+      ts = msg.ts
+    } else {
+      text = typeof msg === 'string' ? msg : (msg?.message || msg?.msg || String(msg))
+    }
     if (!text) return
-    analyzeLogs.value.push({ time: fmtTime(), msg: text })
-    if (analyzeLogs.value.length > 80) analyzeLogs.value.shift()
+    analyzeLogs.value.push({
+      time: ts != null ? fmtTime(new Date(ts * 1000)) : fmtTime(),
+      msg: text,
+      level: normLevel(lv),
+    })
+    if (analyzeLogs.value.length > 200) analyzeLogs.value.shift()
+  }
+
+  /** 日志级别白名单归一化，未知值退化为 milestone（默认展示） */
+  function normLevel(lv) {
+    const s = String(lv || '').toLowerCase()
+    return ['milestone', 'detail', 'warn', 'error'].includes(s) ? s : 'milestone'
+  }
+
+  /** 批量合并后端日志（按 msg 去重），保留后端 level 与真实时间戳 */
+  function mergeLogs(entries) {
+    if (!Array.isArray(entries)) return
+    for (const e of entries) {
+      if (!e) continue
+      const text = typeof e === 'string' ? e : (e?.message || e?.msg)
+      if (!text) continue
+      if (analyzeLogs.value.some((x) => x.msg === text)) continue
+      appendLog({ message: text, level: e?.level, ts: e?.time })
+    }
   }
 
   function fmtTime(d) {
@@ -76,6 +119,9 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeProgress.value = 0
     analyzeStage.value = '正在提交任务…'
     analyzeSteps.value = []
+    analyzeStepIndex.value = 0
+    analyzeMetrics.value = {}
+    stepStartedAt.value = {}
     analyzeLogs.value = []
     // 重要：开始新建模时清掉上次的结果数据。
     // 否则分析页右栏 ThreatPanel 会一直展示「上一次的」KPI/严重度/威胁列表，
@@ -100,11 +146,42 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     if (stage) analyzeStage.value = stage
   }
 
+  /**
+   * 用后端权威数据同步「阶段」相关状态（steps / step_index / metrics）。
+   * 注意：不写日志——日志由 mergeLogs 单独合并，否则每次轮询都会重复追加。
+   */
+  function syncTaskMeta({ steps, stepIndex, metrics, stage } = {}) {
+    if (Array.isArray(steps) && steps.length) analyzeSteps.value = steps
+    if (typeof stepIndex === 'number' && stepIndex >= 0) {
+      const prev = analyzeStepIndex.value
+      analyzeStepIndex.value = stepIndex
+      // 首次进入某阶段时记录起始时间，供流水线展示阶段耗时
+      if (prev !== stepIndex && !stepStartedAt.value[stepIndex]) {
+        stepStartedAt.value = { ...stepStartedAt.value, [stepIndex]: Date.now() }
+      }
+    }
+    if (metrics && typeof metrics === 'object') {
+      analyzeMetrics.value = { ...analyzeMetrics.value, ...metrics }
+    }
+    if (stage) analyzeStage.value = stage
+  }
+
   function addStep(step) {
     if (step && !analyzeSteps.value.includes(step)) {
       analyzeSteps.value.push(step)
       appendLog(step)
     }
+  }
+
+  /** 取某阶段已耗时（秒，一位小数）；进行中的阶段按当前时间实时算 */
+  function stepDuration(i) {
+    const start = stepStartedAt.value[i]
+    if (!start) return null
+    // 下一阶段的开始时间即为本阶段结束时间；最后阶段用「现在」
+    const next = stepStartedAt.value[i + 1]
+    const end = next || (analyzing.value ? Date.now() : null)
+    if (!end) return null
+    return Math.max(0, (end - start) / 1000)
   }
 
   // ---- 完成分析 ----
@@ -189,6 +266,9 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeProgress.value = 0
     analyzeStage.value = ''
     analyzeSteps.value = []
+    analyzeStepIndex.value = 0
+    analyzeMetrics.value = {}
+    stepStartedAt.value = {}
     analyzeLogs.value = []
     _clearPersistedTaskId()
     stopPolling()
@@ -212,6 +292,9 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     analyzeProgress,
     analyzeStage,
     analyzeSteps,
+    analyzeStepIndex,
+    analyzeMetrics,
+    stepStartedAt,
     analyzeLogs,
     model,
     lastResultId,
@@ -224,8 +307,11 @@ export const useThreatAnalysisStore = defineStore('threat-analysis', () => {
     hasResult,
     // actions
     appendLog,
+    mergeLogs,
     startAnalysis,
     updateProgress,
+    syncTaskMeta,
+    stepDuration,
     addStep,
     finishAnalysis,
     failAnalysis,

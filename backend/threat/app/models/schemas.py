@@ -92,10 +92,19 @@ class AnalyzeResponse(BaseModel):
 
 
 class TaskStepLog(BaseModel):
-    """任务日志条目。"""
+    """任务日志条目。
+
+    ``level`` 用于前端日志分级降噪（P1）：
+      - milestone：阶段级里程碑，默认视图始终展示
+      - detail   ：阶段内细节（如逐条自检结果），默认折叠
+      - warn     ：非阻塞性告警（降级、跳过等），默认展示
+      - error    ：真实失败，默认展示
+    未显式指定时按 milestone 处理，保证老任务快照兼容。
+    """
 
     time: float
     message: str
+    level: str = Field("milestone", description="milestone | detail | warn | error")
 
 
 class TaskResponse(BaseModel):
@@ -106,6 +115,13 @@ class TaskResponse(BaseModel):
     progress: int = Field(..., description="0~100 的真实进度百分比")
     steps: list[str] = Field(default_factory=list)
     step_index: int = Field(0, description="当前进度阶段下标（0 基）")
+    metrics: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "建模过程中的实时指标快照（componentCount/flowCount/selfcheckCount 等），"
+            "供前端「建模中」仪表盘展示，无需等待最终结果"
+        ),
+    )
     log: list[TaskStepLog] = Field(default_factory=list)
     result: Optional[dict[str, Any]] = Field(
         None, description="任务成功后的结果（含 model/summary/stats）"

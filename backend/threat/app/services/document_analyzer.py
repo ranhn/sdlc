@@ -496,6 +496,69 @@ def _skeleton_normalize(
     return comps_sorted, flows_sorted, log
 
 
+# ---------------------------------------------------------------------------
+# P1：系统说明（报告「建模对象」章）的字段清洗
+# ---------------------------------------------------------------------------
+# LLM 产出的自由文本可能夹带空项、超长段落或非字符串类型，报告里直接渲染
+# 会撑破表格。这里统一做「去空 + 转字符串 + 限长」，并限制条目数量。
+_PROFILE_MAX_ITEMS = 12
+_PROFILE_MAX_LEN = 400
+_PROFILE_LIST_FIELDS = ("inScope", "outOfScope", "assumptions")
+_PROFILE_OBJ_FIELDS = {
+    "architecture": ("layer", "description", "components"),
+    "journeys": ("name", "description"),
+    "attackSurface": ("surface", "reachability", "protocol", "authentication", "risk"),
+}
+
+
+def _clean_text(v: Any, limit: int = _PROFILE_MAX_LEN) -> str:
+    """把任意值压成单行短文本。"""
+    if v is None:
+        return ""
+    s = " ".join(str(v).split())
+    return s[:limit]
+
+
+def _normalize_system_profile(raw: dict[str, Any]) -> dict[str, Any]:
+    """清洗 systemProfile，只保留有内容的字段。
+
+    返回空 dict 表示没有可用信息，报告侧据此整章省略。
+    """
+    out: dict[str, Any] = {}
+
+    overview = _clean_text(raw.get("overview"))
+    if overview:
+        out["overview"] = overview
+
+    # 字符串列表字段
+    for field in _PROFILE_LIST_FIELDS:
+        items = raw.get(field)
+        if not isinstance(items, list):
+            continue
+        cleaned = [_clean_text(x, 200) for x in items]
+        cleaned = [x for x in cleaned if x]
+        if cleaned:
+            out[field] = cleaned[:_PROFILE_MAX_ITEMS]
+
+    # 对象列表字段
+    for field, keys in _PROFILE_OBJ_FIELDS.items():
+        items = raw.get(field)
+        if not isinstance(items, list):
+            continue
+        rows = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row = {k: _clean_text(item.get(k)) for k in keys}
+            # 至少要有一个非空字段，否则是噪声行
+            if any(row.values()):
+                rows.append(row)
+        if rows:
+            out[field] = rows[:_PROFILE_MAX_ITEMS]
+
+    return out
+
+
 class DocumentAnalyzer:
     """负责将文档转化为 DFD 元素列表。"""
 
@@ -549,7 +612,28 @@ class DocumentAnalyzer:
         "isPublicNetwork": true/false
       }
     }
-  ]
+  ],
+  "systemProfile": {
+    "overview": "系统概述：它是什么产品、解决什么问题、面向哪类用户（2~4 句）",
+    "architecture": [
+      {"layer": "层级名称，如终端层/接入层/服务层/数据层", "description": "该层职责", "components": "该层关键组件，顿号分隔"}
+    ],
+    "journeys": [
+      {"name": "关键用户旅程/场景名称，如「设备配网」「远程控制」", "description": "该场景的完整流程"}
+    ],
+    "inScope": ["本次建模覆盖的系统部分"],
+    "outOfScope": ["明确排除的部分，如「第三方平台内部实现」「云基础设施（视为可信）」"],
+    "assumptions": ["建模依赖的前提假设，如「云端物理安全由云厂商负责」"],
+    "attackSurface": [
+      {
+        "surface": "暴露面，如「公网 API 网关」",
+        "reachability": "可达范围：公网/局域网/本地/物理接触",
+        "protocol": "协议与端口",
+        "authentication": "当前认证方式",
+        "risk": "风险提示"
+      }
+    ]
+  }
 }
 
 严格要求：
@@ -559,6 +643,16 @@ class DocumentAnalyzer:
 3. 数据流（flows）描述组件之间传递数据的方向，sourceId/targetId 必须引用 components 中已定义的 id。
 4. 组件数量应覆盖文档中出现的所有关键组件，通常在 5~15 个之间。
 5. 必须基于文档内容分析，不要臆造不存在的组件。
+5.1 **系统说明（systemProfile）** 用于生成报告中的「建模对象」章节，是本次
+   建模的边界声明，直接影响结论的适用范围，需认真填写：
+   - 所有内容**必须来自文档**，文档未提及的字段留空（空数组或空字符串），
+     不要用常识补齐——凭空推断的范围会让读者误以为已覆盖实际未分析的部分；
+   - outOfScope 与 assumptions 尤其重要：威胁建模第一原则是先划清边界，
+     明确「哪些不在范围内」和「依赖什么假设」，否则结论会被错误外推；
+   - attackSurface 由架构推断得出，允许合理推断传输协议与认证方式，
+     但不得虚构文档中完全不存在的暴露面；
+   - architecture 通常 2~5 层，journeys 通常 3~6 个，
+     attackSurface 通常 3~8 条。
 6. 所有字段 key 保持英文（与 Threat Dragon 兼容），值类字段（title/description/name、
    summary.title、summary.description、summary.owner 等自由文本）必须使用简体中文输出。
    专有名词、协议名（如 HTTPS/TLS/OAuth2/JWT）、CWE 编号可直接英文。
@@ -990,12 +1084,16 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
             f"新增 {len(new_comp_ids)} 个组件、{added_flow} 条数据流"
         )
         diagram["autofixLog"] = log
-        return {
+        out = {
             "summary": validated.get("summary", {}),
             "diagram": diagram,
             "components": comps,
             "flows": flows,
         }
+        # 自省补全只改结构，不动系统说明——但需透传，否则补全后字段丢失
+        if validated.get("systemProfile"):
+            out["systemProfile"] = validated["systemProfile"]
+        return out
 
     def _validate(self, data: dict[str, Any], methodology: str = "STRIDE") -> dict[str, Any]:
         """校验并规范化 LLM 返回的数据。
@@ -1162,9 +1260,15 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
                 len(skeleton_comps), len(skeleton_flows),
             )
 
-        return {
+        out = {
             "summary": data.get("summary", {}),
             "diagram": diagram,
             "components": skeleton_comps,
             "flows": skeleton_flows,
         }
+        # P1：系统说明（报告「建模对象」章的数据源）。此处为白名单重建，
+        # 必须显式透传，否则该字段会被丢弃导致报告缺章。
+        _profile = data.get("systemProfile")
+        if isinstance(_profile, dict) and _profile:
+            out["systemProfile"] = _normalize_system_profile(_profile)
+        return out

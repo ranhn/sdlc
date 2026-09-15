@@ -37,6 +37,11 @@ class Settings(BaseModel):
     )
     # LLM 网络请求重试次数（openai SDK 的 max_retries）
     llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    # LLM 网络超时（秒）：连接 + 读取。
+    # 推理型模型（gpt-5.6-sol 等）单次生成可能超过 3 分钟，读超时默认 600s，
+    # 避免威胁分析批次在 LLM 正常思考时被误判为超时而中断建模。
+    llm_read_timeout: float = float(os.getenv("LLM_READ_TIMEOUT", "600"))
+    llm_connect_timeout: float = float(os.getenv("LLM_CONNECT_TIMEOUT", "30"))
     # 生成稳定性：固定随机种子（同一模型+seed 下结果可复现）。
     # 设为 0 表示不传 seed（部分国产模型不支持 seed 时置 0 关闭）。
     llm_seed: int = int(os.getenv("LLM_SEED", "42"))

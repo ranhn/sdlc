@@ -44,40 +44,112 @@
     <div v-show="activeTab === 'analysis'" class="threat-tab threat-analysis-tab">
       <div class="analysis-grid" :class="{ 'side-collapsed': sideCollapsed }">
         <div class="analysis-col analysis-col-main">
-          <!-- 分析进度 -->
+          <!-- 建模中：一体化「任务控制台」——横向流水线 + KPI 数字带 + 日志台，
+               全部收纳在一屏内；不再左/中/右三块摊开，也不再与右栏重复展示指标。 -->
           <div v-if="analyzing" class="mid-progress">
+            <!-- 行 1：状态标题 + 大号百分比 + 取消 -->
             <header class="progress-head">
               <div class="head-l">
                 <span class="head-pulse" aria-hidden="true" />
-                <span class="progress-title">AI 威胁建模分析中…</span>
+                <span class="progress-title">AI 威胁建模分析中</span>
                 <span class="progress-stage">{{ analyzeStage || '处理中…' }}</span>
               </div>
-              <el-button class="cancel-btn" size="small" type="danger" @click="onCancelAnalyze">
-                <el-icon class="cancel-ico"><Close /></el-icon>
-                <span>取消建模</span>
-              </el-button>
-            </header>
-            <div class="progress-bar-wrap">
-              <el-progress
-                :percentage="analyzeProgress"
-                :stroke-width="6"
-                :color="'var(--primary)'"
-                :show-text="false"
-              />
-              <span class="progress-bar-num">{{ analyzeProgress }}%</span>
-            </div>
-            <div class="progress-log">
-              <div
-                v-for="(log, i) in analyzeLogs"
-                :key="i"
-                class="log-row"
-                :class="['log-' + classifyLog(log.msg), { 'log-latest': i === analyzeLogs.length - 1 && analyzing }]"
-              >
-                <span class="log-dot" aria-hidden="true">{{ logIcon(log.msg) }}</span>
-                <span class="log-time">{{ log.time }}</span>
-                <span class="log-text">{{ log.msg }}</span>
+              <div class="head-r">
+                <span class="progress-pct">{{ analyzeProgress }}<i>%</i></span>
+                <el-button class="cancel-btn" size="small" type="danger" plain @click="onCancelAnalyze">
+                  <el-icon class="cancel-ico"><Close /></el-icon>
+                  <span>取消建模</span>
+                </el-button>
               </div>
-              <span v-if="!analyzeLogs.length" class="log-empty">准备建模…</span>
+            </header>
+
+            <!-- 行 1.5：全宽细进度条。大数字是「读」的，这条是「看」的——
+                 持续平滑位移给页面连续的生命感，也是 % 数字的视觉锚点 -->
+            <div class="progress-track" aria-hidden="true">
+              <i class="progress-fill" :style="{ width: (analyzeProgress || 0) + '%' }" />
+            </div>
+
+            <!-- 行 2：横向流水线（4 阶段卡片 + 连接线），卡片内直接给产出摘要 -->
+            <ol class="stepper">
+              <li
+                v-for="(s, i) in pipeline"
+                :key="i"
+                class="step"
+                :class="'step-' + s.state"
+              >
+                <div class="step-top">
+                  <span class="step-node" aria-hidden="true">
+                    <svg v-if="s.state === 'done'" viewBox="0 0 16 16" width="10" height="10">
+                      <path d="M3.5 8.5l3 3 6-6.5" fill="none" stroke="currentColor"
+                            stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <i v-else-if="s.state === 'active'" class="step-node-dot" />
+                  </span>
+                  <span v-if="i < pipeline.length - 1" class="step-line" />
+                  <span v-if="s.duration != null" class="step-time">{{ s.duration }}s</span>
+                </div>
+                <span class="step-label">{{ s.short }}</span>
+                <span v-if="s.summary && s.state !== 'active'" class="step-summary">{{ s.summary }}</span>
+                <span v-else-if="s.state === 'active'" class="step-summary doing">
+                  <span class="pipe-ellipsis"><i /><i /><i /></span>
+                  <span>{{ s.summary || '进行中…' }}</span>
+                </span>
+              </li>
+            </ol>
+
+            <!-- 行 3：日志台（自适应剩余高度，自动滚到底）+ 右侧严重度侧栏（有数据时才出现） -->
+            <div class="mc-bottom">
+              <div class="log-console">
+                <!-- 终端标题栏：三圆点 + 标题 + 实时徽标，
+                     让深色日志区看起来是「有意的终端组件」而非突兀黑块 -->
+                <div class="log-chrome">
+                  <span class="chrome-dots" aria-hidden="true"><i /><i /><i /></span>
+                  <span class="chrome-title">实时日志</span>
+                  <span class="chrome-badge">{{ visibleLogs.length }} 条 · 自动滚动</span>
+                </div>
+                <div ref="logBoxRef" class="progress-log">
+                  <div
+                    v-for="(log, i) in visibleLogs"
+                    :key="log.msg + i"
+                    class="log-row"
+                    :class="['log-' + classifyLog(log), { 'log-latest': i === visibleLogs.length - 1 && analyzing }]"
+                  >
+                    <span class="log-dot" aria-hidden="true">{{ logIcon(log) }}</span>
+                    <span class="log-time">{{ log.time }}</span>
+                    <span class="log-text">{{ log.msg }}</span>
+                  </div>
+                  <span v-if="!visibleLogs.length" class="log-empty">准备建模…</span>
+                </div>
+                <button
+                  v-if="detailLogs.length"
+                  class="log-toggle"
+                  type="button"
+                  @click="showDetailLogs = !showDetailLogs"
+                >
+                  <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"
+                       :class="{ open: showDetailLogs }">
+                    <path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.9"
+                          stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  {{ showDetailLogs ? '收起详细日志' : `展开 ${detailLogs.length} 条详细日志` }}
+                </button>
+              </div>
+
+              <aside v-if="liveMetrics.threatBySeverity" class="mc-side">
+                <div class="mc-side-block">
+                  <span class="mc-side-title">威胁严重度</span>
+                  <div class="sev-chips">
+                    <span
+                      v-for="(n, k) in liveMetrics.threatBySeverity"
+                      :key="k"
+                      class="sev-chip"
+                      :class="'sev-' + String(k).toLowerCase()"
+                    >
+                      {{ k }} <b>{{ n }}</b>
+                    </span>
+                  </div>
+                </div>
+              </aside>
             </div>
           </div>
 
@@ -203,6 +275,8 @@
         </div>
 
         <div class="analysis-col analysis-col-side">
+          <!-- 建模期间的实时指标已并入左侧「任务控制台」，右栏保持威胁清单位，
+               任务完成即就地填充，前后衔接无跳变。 -->
           <ThreatPanel
             :model="model"
             :result-id="lastResultId"
@@ -401,6 +475,8 @@ const currentTaskId = computed(() => store.currentTaskId)
 const analyzeProgress = computed(() => store.analyzeProgress)
 const analyzeStage = computed(() => store.analyzeStage)
 const analyzeSteps = computed(() => store.analyzeSteps)
+const analyzeStepIndex = computed(() => store.analyzeStepIndex)
+const liveMetrics = computed(() => store.analyzeMetrics || {})
 const analyzeLogs = computed(() => store.analyzeLogs)
 const model = computed(() => store.model)
 const lastResultId = computed(() => store.lastResultId)
@@ -795,26 +871,25 @@ function startTaskPolling(taskId) {
     try {
       const t = await getTask(taskId)
       const status = t?.status
-      const backendLog = Array.isArray(t?.log) ? t.log : []
-      for (const m of backendLog) {
-        if (!m) continue
-        const text = typeof m === 'string' ? m : (m?.message || m?.msg)
-        if (!text) continue
-        if (store.analyzeLogs.some((x) => x.msg === text)) continue
-        store.appendLog(text)
-      }
+      // 合并后端日志（保留 level 与真实时间戳，前端据此分级降噪）
+      store.mergeLogs(Array.isArray(t?.log) ? t.log : [])
       if (status === 'pending' || status === 'queued') {
-        store.appendLog('排队中，等待 LLM 资源…')
+        if (!store.analyzeLogs.some((x) => x.msg.includes('排队中'))) {
+          store.appendLog('排队中，等待 LLM 资源…', 'warn')
+        }
       } else if (status === 'running' || status === 'processing') {
         const p = typeof t?.progress === 'number' ? t.progress : 0
         const idx = t?.step_index || 0
         const steps = Array.isArray(t?.steps) ? t.steps : []
         const active = steps[idx] || t?.stage || '正在分析…'
         store.updateProgress(p, active)
-        store.addStep(active)
-        for (let i = 0; i <= idx && i < steps.length; i++) {
-          store.addStep(steps[i])
-        }
+        // 同步阶段/指标（权威数据源），注意不写日志——日志由 mergeLogs 负责
+        store.syncTaskMeta({
+          steps,
+          stepIndex: idx,
+          metrics: t?.metrics || {},
+          stage: active,
+        })
       } else if (status === 'success' || status === 'succeeded' || status === 'completed') {
         const taskResult = t?.result || {}
         store.finishAnalysis({
@@ -881,7 +956,7 @@ async function onAnalyzeRequest(payload) {
     store.updateProgress(0, '任务已提交，等待后端返回进度…')
     store.appendLog('任务已提交 (ID: ' + taskId.slice(0, 8) + ')')
     if (submitResp?.deduped) {
-      store.appendLog('P0-1：同输入 5 秒内复用已注册任务（去重命中）')
+      store.appendLog('同输入在 5 秒窗口内复用已有任务（去重命中）', 'detail')
     }
     startTaskPolling(taskId)
   } catch (err) {
@@ -890,26 +965,131 @@ async function onAnalyzeRequest(payload) {
   }
 }
 
-// ---- 进度日志视觉分类 ----
-// 按消息文本推断语义（不依赖 store 改 schema），
-// 给每行加左侧图标 + 颜色 + 最新行高亮，把「文本流」变成「步骤列表」。
-function classifyLog(msg) {
-  const m = String(msg || '')
+// ══════════════════════════════════════════════════════════════
+// 进度区：阶段流水线 + 日志分级降噪
+// ══════════════════════════════════════════════════════════════
+
+// 详细日志是否展开（默认收起，把「一大片文字」压成「里程碑列表」）
+const showDetailLogs = ref(false)
+
+/**
+ * 阶段流水线：把后端 steps + step_index 渲染成横向步进条。
+ * state: done（已完成，打勾）/ active（进行中，脉冲）/ todo（未开始）
+ * short : 卡片上展示的短标签（后端 step 是长句，横排卡片放不下）
+ * summary: 该阶段的产出摘要（取自实时指标，让"做完了什么"一目了然）
+ */
+const pipeline = computed(() => {
+  const steps = analyzeSteps.value || []
+  const idx = analyzeStepIndex.value || 0
+  const m = liveMetrics.value || {}
+  return steps.map((label, i) => {
+    const state = i < idx ? 'done' : (i === idx ? 'active' : 'todo')
+    return {
+      label,
+      short: shortStepLabel(label),
+      state,
+      summary: stageSummary(i, state, m, steps.length),
+      duration: state === 'todo' ? null : store.stepDuration(i),
+    }
+  })
+})
+
+/** 后端阶段名是完整句（如「解析需求与架构文档，提取 DFD 元素」），
+ *  横向卡片只放得下短语。按关键词映射，未命中时截断兜底。 */
+function shortStepLabel(s) {
+  const m = String(s || '')
+  if (/解析|提取/.test(m)) return '文档解析 · DFD 提取'
+  // 报告步（如「生成 STRIDE 风险评估报告」）必须先于方法论匹配，
+  // 否则会被 STRIDE 命中，与第 2 步「STRIDE 威胁识别」重名
+  if (/报告|评估/.test(m)) return '风险评估报告'
+  const mm = m.match(/STRIDE|MAESTRO|PASTA|攻击树/i)
+  if (mm) return `${mm[0].toUpperCase()} 威胁识别`
+  if (/威胁分析|威胁识别/.test(m)) return '威胁识别'
+  if (/模型/.test(m)) return '威胁模型构建'
+  return m.length > 12 ? m.slice(0, 12) + '…' : m
+}
+
+/**
+ * 阶段产出摘要：用真实指标说话，避免"进度条走到哪"这种无信息量的表达。
+ * 注意只在状态匹配时输出对应指标，否则会串台（比如 DFD 阶段显示威胁数）。
+ */
+function stageSummary(i, state, m, total) {
+  if (state === 'todo') return ''
+  const isLast = i === total - 1
+  // 步骤 0（DFD 提取）：实体/数据流是本步产出；自校验也发生在 DFD 阶段，
+  // 证据挂在这里，而不是串台到「STRIDE 威胁识别」卡片上
+  if (i === 0 && m.componentCount != null) {
+    const base = `${m.componentCount} 个实体 · ${m.flowCount ?? 0} 条数据流`
+    if (m.selfcheckDegraded) return `${base} · 自校验降级跳过`
+    if (m.selfcheckFindings != null) return `${base} · 自校正 ${m.selfcheckFixed ?? 0} 项`
+    return base
+  }
+  // 步骤 1（STRIDE 分析）：威胁数是本步产出
+  if (i === 1 && m.threatCount != null) {
+    return `识别 ${m.threatCount} 条威胁`
+  }
+  // 步骤 2（构建 Threat Dragon 模型）：完成后的证据
+  if (i === 2 && state === 'done') {
+    return '威胁模型已生成'
+  }
+  if (isLast && state === 'active') return '生成模型与报告…'
+  return ''
+}
+
+/** 日志行视觉分类：优先用后端 level（权威），缺失时按文本推断（老任务兜底） */
+function classifyLog(log) {
+  const lv = typeof log === 'object' ? log?.level : undefined
+  const m = String(typeof log === 'object' ? log?.msg : log || '')
+  // 后端 level 优先：warn/error 直接映射；detail 用中性灰（不再是"红色错误"）
+  if (lv === 'error') return 'err'
+  if (lv === 'warn') return 'wait'
+  if (lv === 'detail') return 'info'
+  // 以下为无 level 时的文本推断兜底（老任务快照没有 level 字段）。
+  // 判定顺序：终态 -> 排队/降级 -> 中性明细 -> 进行时。
+  // 关键：「完成」「识别出」等终态词必须排在 doing 之前，否则
+  // 「结构自校验完成」会被"校验"命中、「识别出 N 个组件」会被"识别"命中而误判为进行中。
   if (/失败|错误|中断/.test(m)) return 'err'
-  if (/已识别|已解析|已生成|已建立|已提交|已就绪|完成/.test(m)) return 'ok'
-  if (/排队中/.test(m)) return 'wait'
-  if (/正在|解析|识别|提取|建立|调用/.test(m)) return 'doing'
+  if (/识别出|已解析|已生成|已建立|已提交|已就绪|已合并|完成|就绪|已校正/.test(m)) return 'ok'
+  if (/排队中|降级|跳过|未命中/.test(m)) return 'wait'
+  if (/^\[(结构自查)\]/.test(m)) return 'info'
+  // 进行时：动名词，或以「中…」收尾（如「DFD AI 自校验中…」）
+  if (/正在|解析|识别|提取|建立|调用|自校验|构建|分析/.test(m)) return 'doing'
+  if (/中…?$/.test(m)) return 'doing'
   return 'info'
 }
-function logIcon(msg) {
-  switch (classifyLog(msg)) {
+function logIcon(log) {
+  switch (classifyLog(log)) {
     case 'ok':   return '✓'
     case 'err':  return '✕'
-    case 'wait': return '⏳'
+    case 'wait': return '!'
     case 'doing':return '⋯'
     default:     return '·'
   }
 }
+
+// 里程碑日志（默认展示）：过滤掉 detail 明细
+const milestoneLogs = computed(() =>
+  analyzeLogs.value.filter((l) => (l.level || 'milestone') !== 'detail')
+)
+// 明细日志（默认折叠）：自校验逐条结果等
+const detailLogs = computed(() =>
+  analyzeLogs.value.filter((l) => (l.level || 'milestone') === 'detail')
+)
+const visibleLogs = computed(() =>
+  showDetailLogs.value ? analyzeLogs.value : milestoneLogs.value
+)
+
+// ---- 日志台自动滚底：新里程碑到达时始终让最新行可见 ----
+const logBoxRef = ref(null)
+watch(
+  () => analyzeLogs.value.length,
+  async () => {
+    if (!analyzing.value) return
+    await nextTick()
+    const el = logBoxRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  }
+)
 
 async function onCancelAnalyze() {
   const tid = store.currentTaskId
@@ -1201,12 +1381,12 @@ onUnmounted(() => {
   flex: 1;
 }
 .mid-progress {
-  /* 分析进度面板：纵向三段——头部（标题+取消按钮） / 进度条 / 日志列表。
-     三段独立卡片化，避免「一大块白板」造成的视觉坍塌。 */
+  /* 一体化「任务控制台」：标题行 / 横向流水线 / KPI 带 / 日志台+侧栏。
+     四行紧凑收纳，flex:1 填满画布列高度，整屏无滚动。 */
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px 20px;
+  gap: 12px;
+  padding: 16px 18px;
   min-height: 0;
   flex: 1;
 }
@@ -1270,23 +1450,373 @@ onUnmounted(() => {
   margin-right: 4px;
   font-size: 13px;
 }
-.progress-bar-wrap {
+
+/* ══════════════════════════════════════════════════════════════
+   建模「任务控制台」：横向流水线 + KPI 数字带 + 日志台，一屏收纳。
+   旧版纵向时间轴 / 分段进度条 / 右栏重复指标均已废弃——
+   所有进度信息合并到这一块面板里，不再跨栏摊开。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 行 1 右侧：大号百分比 + 取消按钮 ── */
+.head-r {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-shrink: 0;
 }
-.progress-bar-wrap :deep(.el-progress) {
-  flex: 1;
-}
-.progress-bar-num {
+.progress-pct {
   font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
-  font-size: 12px;
+  font-size: 24px;
   font-weight: 700;
+  line-height: 1;
   color: var(--primary, #2563eb);
-  min-width: 40px;
-  text-align: right;
   font-variant-numeric: tabular-nums;
+}
+.progress-pct i {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: 1px;
+  color: #60a5fa;
+}
+/* ── 行 1.5：全宽细进度条 ── 持续平滑位移，给「正在推进」的连续反馈 */
+.progress-track {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: #eef2f7;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #60a5fa, #2563eb);
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 流动高光：未到 100% 时一直有光带掠过 */
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: fill-sheen 1.8s ease-in-out infinite;
+}
+@keyframes fill-sheen {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+/* ── 行 2：横向流水线（步进条） ── */
+.stepper {
+  list-style: none;
+  margin: 0;
+  padding: 14px 16px 12px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fbfdff, #f6f9fd);
+  flex-shrink: 0;
+}
+.step {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* 顶部行：状态节点 → 连接线 → 右侧耗时 */
+.step-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.step-node {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #fff;
+  border: 2px solid #cbd5e1;
+  color: transparent;
+  transition: background 0.25s, border-color 0.25s, color 0.25s;
+}
+.step-done .step-node {
+  background: #10b981;
+  border-color: #10b981;
+  color: #fff;
+}
+/* 进行中：蓝底 + 中心白点 + 脉冲环 */
+.step-active .step-node {
+  border-color: var(--primary, #2563eb);
+  background: var(--primary, #2563eb);
+  animation: step-node-pulse 1.8s ease-out infinite;
+}
+.step-node-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+@keyframes step-node-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45); }
+  70%  { box-shadow: 0 0 0 7px rgba(37, 99, 235, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+}
+/* 连接线：从本节点延伸到下一张卡片 */
+.step-line {
+  flex: 1;
+  height: 2px;
+  border-radius: 1px;
+  background: #e2e8f0;
+}
+.step-done .step-line {
+  background: #86efac;
+}
+.step-time {
+  font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
+  font-size: 10px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.step-label {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #64748b;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.step-done .step-label {
+  color: #334155;
+}
+.step-active .step-label {
+  color: var(--primary, #1d4ed8);
+  font-weight: 700;
+}
+/* 产出摘要：完成=绿、进行中=蓝（.doing），是「这步真干了活」的证据 */
+.step-summary {
+  margin-top: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #0f766e;
+  background: rgba(16, 185, 129, 0.08);
+  border-left: 2px solid #34d399;
+  padding: 2px 7px;
+  border-radius: 0 4px 4px 0;
+  word-break: break-word;
+  animation: summary-in 0.32s ease both;
+}
+.step-summary.doing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.07);
+  border-left-color: #60a5fa;
+}
+@keyframes summary-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* 进行中的三点省略动画 */
+.pipe-ellipsis {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+.pipe-ellipsis i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ellipsis-bounce 1.1s ease-in-out infinite;
+}
+.pipe-ellipsis i:nth-child(2) { animation-delay: 0.16s; }
+.pipe-ellipsis i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes ellipsis-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30%           { opacity: 1;   transform: translateY(-2px); }
+}
+
+/* 展开详细日志的折叠按钮：终端底栏样式（浅灰虚线按钮在深色容器里会突兀） */
+.log-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+  width: 100%;
+  padding: 6px;
+  font-size: 11px;
+  font-family: inherit;
+  color: #94a3b8;
+  background: #0b1222;
+  border: none;
+  border-top: 1px solid #1e293b;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.log-toggle:hover {
+  color: #bfdbfe;
+  background: #101a30;
+}
+.log-toggle svg {
+  transition: transform 0.2s ease;
+}
+.log-toggle svg.open {
+  transform: rotate(180deg);
+}
+
+/* ── 行 4：日志台（占主要高度）+ 紧凑分布侧栏 ── */
+.mc-bottom {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.log-console {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* 终端化容器：chrome 头 + 日志区 + 折叠按钮统一包进深色圆角壳，
+     黑色大块从此有明确边界和组件语义 */
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  overflow: hidden;
+}
+/* 终端标题栏 */
+.log-chrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: #0b1222;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+.chrome-dots {
+  display: inline-flex;
+  gap: 5px;
+}
+.chrome-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.chrome-dots i:nth-child(1) { background: #f87171; }
+.chrome-dots i:nth-child(2) { background: #fbbf24; }
+.chrome-dots i:nth-child(3) { background: #34d399; }
+.chrome-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.05em;
+}
+.chrome-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+.chrome-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  animation: chrome-blink 1.6s ease-in-out infinite;
+}
+@keyframes chrome-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.mc-side {
+  width: 218px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow-y: auto;
+}
+.mc-side-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 相邻块之间加虚线分隔，右栏多块时结构更清晰 */
+.mc-side-block + .mc-side-block {
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 10px;
+}
+.mc-side-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+}
+/* 严重度 chip */
+.sev-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.sev-chip {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+.sev-chip b {
+  font-weight: 700;
+  margin-left: 2px;
+}
+.sev-chip.sev-critical { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.sev-chip.sev-high     { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+.sev-chip.sev-medium   { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.sev-chip.sev-low      { background: #f0fdf4; color: #15803d; border-color: #bbf7d0; }
+/* 窄屏：流水线两行折行、侧栏挪到日志下方 */
+@media (max-width: 1180px) {
+  .stepper {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px 10px;
+  }
+  .step-line {
+    display: none;
+  }
+  .mc-bottom {
+    flex-direction: column;
+  }
+  .mc-side {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .mc-side-block {
+    flex: 1;
+    min-width: 200px;
+  }
 }
 /* 画布编辑工具条 —— 与下方 DfdGraph 的 .graph-head 共享同一基线，
    两行视觉上是连续的"工具栏 + 筛选 chip"组合，避免错位。 */
@@ -1492,28 +2022,16 @@ onUnmounted(() => {
   writing-mode: horizontal-tb;
   flex-shrink: 0;
 }
-.progress-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.progress-title {
-  font-weight: 600;
-  color: #1e293b;
-}
-.progress-stage {
-  font-size: 12px;
-  color: #64748b;
-}
+/* 历史遗留的重复定义已移除：.progress-head / .progress-title / .progress-stage
+   在「建模进度区」段落中已有完整定义，此处重复会按 CSS 先后顺序覆盖新版样式。 */
 .progress-log {
+  /* 位于 .progress-side（flex column）内：占满剩余高度并独立滚动。
+     加 min-height:120px 保证极窄视口下仍能看到若干行，不会塌成 0。 */
   flex: 1;
-  min-height: 0;
+  min-height: 120px;
   overflow-y: auto;
-  /* 日志列表：深色终端风格背景（用户偏好）。
+  /* 日志列表：深色终端风格背景���用户偏好）。
      深蓝���底 + 浅色文本 + 细边框，让分类色（绿/红/蓝/黄）的图标更跳。 */
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-radius: 10px;
   padding: 8px 10px;
   font-size: 12.5px;
   scrollbar-width: thin;
@@ -1540,6 +2058,20 @@ onUnmounted(() => {
   border-radius: 6px;
   color: #cbd5e1;
   transition: background 0.15s;
+  /* P2 微交互：新日志淡入 + 轻微上移，避免"硬刷"造成的跳跃感 */
+  animation: log-in 0.24s ease both;
+}
+@keyframes log-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .log-row,
+  .step-summary,
+  .step-node,
+  .progress-fill::after,
+  .chrome-badge::before,
+  .kpi b.pending { animation: none; }
 }
 .log-row + .log-row {
   margin-top: 1px;
@@ -1593,6 +2125,16 @@ onUnmounted(() => {
 .log-text {
   color: #e2e8f0;
   word-break: break-word;
+}
+/* info（自校验明细等）：整体压暗一档，视觉上"是背景信息，不是告警"。
+   这是修正「正常自检被渲染成满屏红」的关键——明细行不再有攻击性色彩。 */
+.log-info .log-text {
+  color: #94a3b8;
+}
+.log-info .log-dot {
+  color: #94a3b8;
+  border-color: #334155;
+  background: #1e293b;
 }
 .log-empty {
   color: #64748b;

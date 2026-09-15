@@ -394,7 +394,16 @@ async def get_task(
         progress=task["progress"],
         steps=task["steps"],
         step_index=task["step_index"],
-        log=[TaskStepLog(time=entry["time"], message=entry["message"]) for entry in task["log"]],
+        metrics=task.get("metrics") or {},
+        log=[
+            TaskStepLog(
+                time=entry["time"],
+                message=entry["message"],
+                # 老快照无 level 字段，兜底为 milestone（默认展示）
+                level=entry.get("level") or "milestone",
+            )
+            for entry in task["log"]
+        ],
         result=task["result"],
         error=task["error"],
         status_code=task.get("status_code"),
@@ -466,6 +475,9 @@ async def _run_analysis_task(
 
         method = normalize_methodology(methodology)
         task_manager.add_log(task_id, f"采用威胁建模方法论：{method}")
+        # 实时指标卡：先把「已确定」的上下文指标推给前端，
+        # 让右栏仪表盘在任务刚启动时就不是空白。
+        task_manager.set_metrics(task_id, methodology=method, industry=industry)
 
         # P2-12：轻量架构推理——用户没给 architecture 时，从 requirements 推断
         inferred_arch_meta: dict[str, Any] | None = None
@@ -621,6 +633,17 @@ async def _run_analysis_task(
             task_id,
             f"识别出 {len(components)} 个组件、{len(flows)} 条数据流",
         )
+        # 实时指标卡：DFD 提取完成后立刻透出实体规模 + 组件类型分布
+        _type_dist: dict[str, int] = {}
+        for _c in components:
+            _t = str(_c.get("type") or "unknown")
+            _type_dist[_t] = _type_dist.get(_t, 0) + 1
+        task_manager.set_metrics(
+            task_id,
+            componentCount=len(components),
+            flowCount=len(flows),
+            componentTypes=_type_dist,
+        )
 
         # 1.5 DFD AI 自校验：让 LLM 对生成的 components/flows 做一次合理性自查
         #    并确定性纠偏（类型/生命周期合法化、去自环/悬空/重复）。可配置关闭，
@@ -639,8 +662,27 @@ async def _run_analysis_task(
                     hb_task.cancel()
             components = review_result["components"]
             flows = review_result["flows"]
+            # 自校验明细降级为 detail：前端默认折叠，只在「展开详细日志」时显示。
+            # 这样既不丢审计信息，也不会让正常自检把日志区刷成一片红。
             for log_line in review_result["log"]:
-                task_manager.add_log(task_id, log_line)
+                task_manager.add_log(task_id, log_line, level="detail")
+            _rv = review_result.get("stats") or {}
+            task_manager.set_metrics(
+                task_id,
+                selfcheckFindings=_rv.get("findings", 0),
+                selfcheckFixed=_rv.get("fixed", 0),
+                selfcheckDegraded=bool(_rv.get("degraded")),
+            )
+            if _rv.get("degraded"):
+                task_manager.add_log(
+                    task_id, "结构自校验降级跳过（不影响本次建模结果）", level="warn"
+                )
+            else:
+                task_manager.add_log(
+                    task_id,
+                    f"结构自校验完成：发现 {_rv.get('findings', 0)} 项结构问题，"
+                    f"已自动校正 {_rv.get('fixed', 0)} 项",
+                )
         task_manager.mark_step(task_id, 1, sub_progress=0.95)
 
         # 2. 威胁识别（组件 + 数据流都纳入方法论分析）
@@ -678,6 +720,12 @@ async def _run_analysis_task(
             _finish_cancelled(task_id)
             return
         task_manager.mark_step(task_id, 2)
+        # 实时指标卡：威胁识别完成后透出威胁规模与严重度分布
+        task_manager.set_metrics(
+            task_id,
+            threatCount=len(threats),
+            threatBySeverity=_count_by_severity(threats),
+        )
 
         # 3. 构建模型
         builder = ThreatModelBuilder()
@@ -701,6 +749,11 @@ async def _run_analysis_task(
             "industry": industry,
             "metrics": _build_metrics(method, components, flows, threats),
         }
+        # P1：系统说明（建模对象）。DFD 提取阶段同步产出，供 Word/Markdown
+        # 报告生成「系统说明」章；缺失时报告侧整章省略。
+        _profile = dfd.get("systemProfile")
+        if isinstance(_profile, dict) and _profile:
+            stats["systemProfile"] = _profile
 
         # 完成：存储最终结果（并持久化到历史库，供结果页查看/导出）
         source_text = (requirements or "")[:4000]

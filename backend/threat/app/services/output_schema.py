@@ -119,6 +119,71 @@ DFD_JSON_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        # P1：系统说明（报告「建模对象」章）。
+        # 与 DFD 提取共用同一次调用，不额外增加耗时；LLM 无法判断的字段
+        # 允许留空，报告侧整章省略（不写「无数据」）。
+        "systemProfile": {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {
+                "overview": {
+                    "type": "string",
+                    "description": "产品/系统概述：它是什么、解决什么问题、面向谁",
+                },
+                "architecture": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "layer": {"type": "string", "description": "层级名称，如终端层/接入层/服务层/数据层"},
+                            "description": {"type": "string"},
+                            "components": {"type": "string", "description": "该层的关键组件，顿号分隔"},
+                        },
+                    },
+                },
+                "journeys": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "name": {"type": "string", "description": "用户旅程/关键场景名称"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+                "inScope": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "本次建模覆盖的系统范围",
+                },
+                "outOfScope": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "明确排除在外的部分（如第三方平台内部、云基础设施）",
+                },
+                "assumptions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "建模所依赖的前提假设（如「云平台基础设施可信」）",
+                },
+                "attackSurface": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "properties": {
+                            "surface": {"type": "string", "description": "暴露面，如公网 API、蓝牙配网"},
+                            "reachability": {"type": "string", "description": "可达范围：公网/局域网/本地"},
+                            "protocol": {"type": "string", "description": "协议与端口"},
+                            "authentication": {"type": "string", "description": "当前认证方式"},
+                            "risk": {"type": "string", "description": "风险提示"},
+                        },
+                    },
+                },
+            },
+        },
     },
 }
 
@@ -139,9 +204,15 @@ def build_threat_schema(methodology: str, allowed_types: list[str]) -> dict[str,
         "status": {"type": "string", "enum": ["Open", "Mitigated", "NotApplicable"]},
         "description": {"type": "string"},
         "mitigation": {"type": "string"},
+        # 现有安全措施：描述「当前已有什么防护」，是残余风险判定的前提。
+        # 与 mitigation（接下来要做什么）严格区分，二者不可混淆。
+        "existingControls": {"type": "string"},
         "score": {"type": "string", "enum": SEVERITY_ENUM},
         "cwe": {"type": "string"},
         "references": {"type": "array", "items": {"type": "string"}},
+        # 合规映射：该威胁触达的法规域编号（如 GDPR Art.32 / EN18031 §5.2）。
+        # 仅表示「触达」，不构成合规结论。
+        "complianceRefs": {"type": "array", "items": {"type": "string"}},
     }
     if is_ai:
         threat_props["dread"] = {

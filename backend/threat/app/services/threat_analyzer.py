@@ -203,10 +203,12 @@ class ThreatAnalyzer:
       "severity": "Low | Medium | High | Critical",
       "status": "Open",
       "description": "详细的威胁描述，包括攻击场景",
+      "existingControls": "该元素当前已有的安全措施（如 TLS、鉴权中间件、字段加密等）；若从输入中无法判断则填「未知」，不要编造",
       "mitigation": "具体的缓解措施，给出可操作的方案",
       "score": "风险评估（与 severity 一致的英文名）",
       "cwe": "CWE 编号，如 CWE-287；不确定时可留空字符串",
-      "references": ["可选的参考资料链接，如 OWASP 文档；没有则留空数组"]
+      "references": ["可选的参考资料链接，如 OWASP 文档；没有则留空数组"],
+      "complianceRefs": ["该威胁触达的法规域编号，如 GDPR Art.32、EN18031 §5.2、CRA Annex I §1；无则留空数组"]
       {dread_field}
     }}
   ]
@@ -220,7 +222,15 @@ class ThreatAnalyzer:
 5. severity 使用四档：Low/Medium/High/Critical，能导致数据泄露/提权/支付损失的通常为 High 或 Critical。
 6. mitigation 必须具体、可执行，说明如何缓解该威胁。
 7. componentId 必须使用输入中给出的元素 id（组件 id 或数据流 id）。
-8. 自由文本类字段（title/description/mitigation）必须使用简体中文输出。
+8. existingControls 与 mitigation 必须严格区分，不可混为一谈：
+   - existingControls 回答「当前已经有什么防护」，只能依据输入中给出的元素属性
+     推断（如 isEncrypted=true 说明链路已加密、storesCredentials=true 说明存了凭据），
+     无法判断时填「未知」；
+   - mitigation 回答「接下来要做什么」，是尚未实施或需强化的动作。
+   若把待办事项写进 existingControls，会导致读者误判风险已被覆盖。
+9. complianceRefs 只在威胁确实触达某法规条款时填写（如数据泄露类威胁触达
+   GDPR Art.32），不要为凑数量而堆砌；仅表示触达，不代表合规结论。
+10. 自由文本类字段（title/description/mitigation）必须使用简体中文输出。
    仅以下三类内容允许保留英文：(a) severity/status/type 等枚举字段的英文值；
    (b) CWE 编号与缩写协议名；(c) references 数组中的合法 URL。
 {dread_score_note}
