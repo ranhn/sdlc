@@ -304,6 +304,11 @@ const containerRef = ref(null)
 let graph = null
 let allCellsRef = []  // 当前 DFD 全量 cells，供 addNode 内做"空 trust boundary 隐藏"判定
 
+// D2/D5: 后端布局期算出的路由/标签提示表 { flowId: {labelT, labelOffset, crossOffset} }。
+// 由 render() 从 diagram.layoutHints 提取；addEdge 渲染时需要读它。
+// 用普通变量（非 ref）即可——只在 render 期间被消费，不参与响应式渲染。
+let currentLayoutHints = null
+
 const tooltip = ref({ visible: false, name: '', threats: [], style: {} })
 
 // 当前选中的数据流详情;null = 未选中
@@ -857,6 +862,7 @@ function render(model) {
     return
   }
   graph.clearCells()
+  currentLayoutHints = null   // 避免无模型/缺 diagram 时残留上一次的 hints
   if (!model) return
   const diagram = model.detail?.diagrams?.[0]
   if (!diagram) {
@@ -866,6 +872,9 @@ function render(model) {
   const cells = diagram.cells || []
   // 供 addNode 内"空 trust boundary 判定"使用
   allCellsRef = cells
+  // D2/D5：后端布局提示（标签锚点 / 跨泳道过道错位）。老模型没有这个字段，
+  // 此时为 null，addEdge 会退回原有的哈希分散策略，行为与修复前一致。
+  currentLayoutHints = diagram.layoutHints || null
   console.log('[DfdGraph] render start', {
     cellsCount: cells.length,
     lanesCount: (diagram.lanes || []).length,
@@ -1066,6 +1075,19 @@ function labelPos(seed) {
   return { distance, offset }
 }
 
+/**
+ * D6: 并行边路由 padding 层级（0~3）。
+ * X6 manhattan 路由对每条边独立求解，并列的多条边会算出完全相同的绕行
+ * 路径而重合。用边的稳定 id 哈希分到 4 个 padding 档位，让并行边在节点
+ * 周界的绕行距离不同，路径自然分层。
+ */
+function edgePadLevel(seed) {
+  let h = 0
+  const s = String(seed || '')
+  for (let i = 0; i < s.length; i += 1) h = (h * 37 + s.charCodeAt(i)) >>> 0
+  return h % 4
+}
+
 // 推断 cell 属于哪个 BoundaryBox（基于位置包含关系）
 // 返回 boundary id 或 null（不在任何 boundary 内）
 function findContainingBoundary(cell, allCells) {
@@ -1131,7 +1153,7 @@ function addEdge(cell) {
   if (isPublicNetwork) stroke = '#ea580c'
   else if (isEncrypted) stroke = '#16a34a'
 
-  // 标签：加密/公网带语义图标(放在边上 0.5 处),普通流仅显示名称
+  // 标签：加密/公网带语义图标，普通流仅显示名称
   const hint = isEncrypted ? '🔒 ' : isPublicNetwork ? '🌐 ' : ''
   const labelText = (data.name || '').trim() ? hint + wrapLabel(data.name, 22) : hint
   const labelFill = isEncrypted
@@ -1139,6 +1161,28 @@ function addEdge(cell) {
     : isPublicNetwork
     ? '#c2410c'
     : STYLE.Flow.text
+
+  // —— 标签位置 & 路由 padding：优先用后端布局提示（D5/D2），否则退回哈希分散 ——
+  // 后端在「同一节点对存在多条流」时会给出分散的 labelT/labelOffset，
+  // 这是真正能消除标签叠压的机制（哈希是纯随机，撞车概率不低）。
+  // 注意：currentLayoutHints 是普通变量（非 ref），老模型/无提示时为 null，
+  // 之前误写成 .value 导致 TypeError → render 循环中止 → 所有数据流消失。
+  const layoutHints = currentLayoutHints || {}
+  const flowHint = (data.flowId && layoutHints[data.flowId]) || null
+  const hp = labelPos(cell.id)   // 兜底：保持原有哈希分散行为
+  const labelDistance = flowHint && typeof flowHint.labelT === 'number'
+    ? flowHint.labelT
+    : hp.distance
+  const labelOffset = flowHint && typeof flowHint.labelOffset === 'number'
+    ? flowHint.labelOffset
+    : hp.offset
+
+  // D6: 并行边路径分层。
+  // X6 的 manhattan 路由本身会绕开节点，但**每条边独立计算**、彼此不知道
+  // 对方存在 → 多条边挤同一通道时路径完全重合（截图里"线叠在一起"）。
+  // 这里按边的稳定哈希给不同的 padding，使并行边在节点周界的绕行位置上
+  // 自然错开，成本极低且不影响单边观感。
+  const padLevel = edgePadLevel(cell.id)
 
   const edge = graph.addEdge({
     id: cell.id,
@@ -1156,11 +1200,11 @@ function addEdge(cell) {
     // X6 自动计算最少折点的正交路径，配合大 padding 在节点周界避让，链路清晰不交叉。
     // 若个别流需要绕行避让节点，可通过 connector 起点方向控制；默认最短正交路径。
     router: 'manhattan',
-    routerArgs: { padding: 32, step: 8, maxDirectionChange: 3 },
+    routerArgs: { padding: 32 + padLevel * 14, step: 8, maxDirectionChange: 3 },
     labels: labelText
       ? [
           {
-            position: { distance: 0.5, offset: 0 },
+            position: { distance: labelDistance, offset: labelOffset },
             attrs: {
               label: {
                 text: labelText,
