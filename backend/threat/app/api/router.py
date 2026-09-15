@@ -1069,7 +1069,11 @@ async def export_result(
         raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
 
     # 统一文件名：威胁建模标题 + 时间戳
-    title = (record.get("title") or "threat-model").strip() or "threat-model"
+    title = (record.get("title") or "威胁建模报告").strip() or "威胁建模报告"
+    # 清洗文件系统/HTTP header 不安全字符（Windows 保留字符、控制符、首尾空白）。
+    # 不清洗的话浏览器会把 : / 等替换成 _，且可能触发下载被拦截。
+    _bad_chars = '\\/:*?"<>|\r\n\t\x00'
+    title = "".join(c for c in title if c not in _bad_chars and ord(c) >= 32).strip() or "威胁建模报告"
     # ASCII-only safe title for HTTP header (Python 3 str.isalnum() 接受 Unicode，需要 .isascii() 限制)
     ascii_title = "".join(c if c.isascii() and c.isalnum() else "_" for c in title)
     ascii_title = "".join(c for c in ascii_title if c.isalnum() or c in "_-").strip("_-_") or "export"

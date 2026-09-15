@@ -201,10 +201,22 @@ export async function downloadResult(resultId, format = 'json', filename) {
     params: { format },
     responseType: 'blob',
   })
-  // 优先使用后端返回的 Content-Disposition 文件名
+  // 优先解析 RFC 5987 的 filename*=（UTF-8 百分号编码，承载中文等非 ASCII 文件名），
+  // 拿不到再退回 ASCII fallback 的 filename=。此前只用单正则会先命中 ASCII fallback，
+  // 导致中文标题建模导出时文件名退化为 export_YYYYMMDD_HHMMSS.docx。
   const cd = headers?.['content-disposition'] || ''
-  const match = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
-  const serverFilename = match ? decodeURIComponent(match[1].replace(/['"]/g, '')) : null
+  let serverFilename = null
+  const starMatch = cd.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;\n]+)/)
+  if (starMatch) {
+    try {
+      serverFilename = decodeURIComponent(starMatch[1])
+    } catch {
+      serverFilename = starMatch[1]
+    }
+  } else {
+    const m = cd.match(/filename\s*=\s*(?:"([^"]*)"|([^;\n]*))/)
+    serverFilename = m ? (m[1] || m[2] || '').trim() : null
+  }
 
   const blob = new Blob([data], { type: _mime(format) })
   const url = URL.createObjectURL(blob)
