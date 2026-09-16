@@ -1218,6 +1218,17 @@ async function toggleOOS(item, t, e) {
 }
 .rd-export-group { position: relative; display: inline-block; }
 .rd-export-group:hover .rd-export-menu { display: flex; }
+/* 悬停桥：按钮下方 6px 透明延伸区。菜单定位在 calc(100% + 4px)，与按钮
+   之间有一段不属于任何元素的空隙，鼠标移向菜单途中 :hover 会断开导致
+   菜单秒收、永远点不到；::after 归属于按钮组，跨过空隙时悬停保持连续。 */
+.rd-export-group::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 6px;
+}
 .rd-export-menu {
   display: none;
   position: absolute;

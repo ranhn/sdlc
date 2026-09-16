@@ -724,6 +724,14 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
    properties.protocol 写明 HTTPS / TLS / MQTT 等具体协议，并按上述规则标记加密与公网。
 6. **信任边界（trustboundary）必须存在**：至少划分「用户侧（公网）」与「服务侧（内网）」两层，
    所有跨边界的流都要标记 isPublicNetwork。
+6.1 **组件与数据流的 properties 必须逐项填写（与 lifecycle 同级的硬性要求）**：
+   - flows 每条必须给出 protocol（写具体协议名，如 HTTPS/TLS/AMQP/MySQL 协议，无法判断写 unknown）
+     与 isEncrypted、isPublicNetwork（布尔值）；
+   - datastore 必须判定 storesCredentials（是否存储凭据/密钥/连接串）、isALog（是否日志类存储）；
+   - process 必须给出 privilegeLevel（如「普通业务」「管理后台」「系统级/root」）；
+   - isWebApplication / handlesCardPayment / handlesGoodsOrServices 等按文档事实标注；
+   - 文档无法判断的字段填 false 或 "unknown"，**禁止整体省略 properties、也禁止省略其中字段**——
+     省略会导致报告「关键属性」列整列为空、威胁类型判定失准。
 7. **数据/数据内容不是组件**：「健康数据」「订单数据」「日志」「用户信息」等
    表示「数据本身」的词是数据流的传输内容，**不能建成组件**；它们只能作为
    数据流的 description 或 name 出现。

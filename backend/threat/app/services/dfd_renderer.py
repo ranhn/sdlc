@@ -192,16 +192,51 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
             _vertical_text(draw, label, x0 + S(8), (y0 + y1) / 2, f_lane, LANE_STYLE["text"], S)
 
     # ---------- 6. 第二层：信任边界容器 ----------
+    _drawn_tb: list[tuple[float, float, float, float]] = []
     for c in boundary_cells:
         if _boundary_child_count(c, all_cells) == 0:
             continue  # 空边界不画（与前端 visible:false 一致）
         style = NODE_STYLE["tm.BoundaryBox"]
         x0, y0, x1, y1 = _rect_of(c)
+        # 收缩到子节点实际范围：建模产物里边界框可能远大于内容（布局
+        # 兜底尺寸 / 成员推断偏差），大片空白也被涂上底色会连成灰板。
+        # 只缩不涨——子节点包围盒加内边距后若仍超出原框，以原框为准。
+        _inner = _boundary_children_bbox(c, all_cells)
+        if _inner:
+            _pad_x, _pad_y = 30.0, 26.0
+            _fx0 = max(x0, _inner[0] - _pad_x)
+            _fy0 = max(y0, _inner[1] - _pad_y)
+            _fx1 = min(x1, _inner[2] + _pad_x)
+            _fy1 = min(y1, _inner[3] + _pad_y)
+            # 防退化：收缩后过小则放弃收缩
+            if _fx1 - _fx0 >= 60 and _fy1 - _fy0 >= 48:
+                x0, y0, x1, y1 = _fx0, _fy0, _fx1, _fy1
+        # 近重复边界跳过：异常模型里可能生成两个几乎重合的边界框，
+        # 叠画只会产生双重虚线框与互相覆盖的名称标签。与已画边界重叠
+        # 超过 0.9（按较小面积占比，双向收紧）视为重复；正常嵌套边界
+        # （外层包内层）重叠比远低于此，不受影响。
+        _rect_now = (x0, y0, x1, y1)
+        _dup = False
+        for _pr in _drawn_tb:
+            _ix0, _iy0 = max(_pr[0], _rect_now[0]), max(_pr[1], _rect_now[1])
+            _ix1, _iy1 = min(_pr[2], _rect_now[2]), min(_pr[3], _rect_now[3])
+            _inter = max(0.0, _ix1 - _ix0) * max(0.0, _iy1 - _iy0)
+            _a_now = (_rect_now[2] - _rect_now[0]) * (_rect_now[3] - _rect_now[1])
+            _a_prev = (_pr[2] - _pr[0]) * (_pr[3] - _pr[1])
+            if _a_now > 0 and _a_prev > 0 and _inter / min(_a_now, _a_prev) > 0.9:
+                _dup = True
+                break
+        if _dup:
+            continue
+        _drawn_tb.append(_rect_now)
         px0, py0 = P(x0, y0)
         px1, py1 = P(x1, y1)
-        # 容器底色
-        draw.rounded_rectangle([px0, py0, px1, py1], radius=S(6), fill=style["fill"])
-        # 名称标签（容器左上角）
+        # 容器底色：预混白减淡——多个边界矩形在异常模型里可能大面积
+        # 重叠（历史记录里两个边界几何几乎重合），原色叠两层会形成
+        # 明显灰色色块；45% 叠白后重叠也只剩极浅色差。
+        draw.rounded_rectangle([px0, py0, px1, py1], radius=S(6),
+                               fill=_blend_white(style["fill"], 0.45))
+        # 名称标签（容器左上角）——标签底色仍用原色，保证在浅底上可读
         name = (c.get("data") or {}).get("name") or ""
         if name and f_lane:
             try:
@@ -650,6 +685,42 @@ def _boundary_child_count(boundary: dict, cells: list[dict]) -> int:
         if bx0 <= cx <= bx1 and by0 <= cy <= by1:
             n += 1
     return n
+
+
+def _blend_white(hex_color: str, alpha: float) -> str:
+    """把颜色按透明度 alpha 叠到白底上（PIL 无真 alpha 合成，预先混色）。
+
+    信任边界底色用它减淡：异常模型里多个边界矩形可能大面积重叠（历史
+    记录里两个边界几何几乎重合），原色叠两层会形成明显的灰色色块；
+    预混白后即使重叠也只剩极浅的冷暖差。
+    """
+    h = (hex_color or "#ffffff").lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    mix = lambda c: int(round(c * alpha + 255 * (1 - alpha)))  # noqa: E731
+    return f"#{mix(r):02x}{mix(g):02x}{mix(b):02x}"
+
+
+def _boundary_children_bbox(boundary: dict, cells: list[dict]):
+    """边界内子节点的包围盒（中心点落在边界内即算包含），无子节点返回 None。
+
+    建模产物里边界框可能比实际内容大很多（布局兜底尺寸/推断偏差），
+    渲染时把边框收缩到真实内容范围，避免大片空白也被涂上底色。
+    """
+    bx0, by0, bx1, by1 = _rect_of(boundary)
+    x0 = y0 = x1 = y1 = None
+    for c in cells:
+        if c is boundary or c.get("shape") == "tm.BoundaryBox":
+            continue
+        if c.get("source") and c.get("target"):
+            continue
+        cx0, cy0, cx1, cy1 = _rect_of(c)
+        ccx, ccy = (cx0 + cx1) / 2, (cy0 + cy1) / 2
+        if bx0 <= ccx <= bx1 and by0 <= ccy <= by1:
+            x0 = cx0 if x0 is None else min(x0, cx0)
+            y0 = cy0 if y0 is None else min(y0, cy0)
+            x1 = cx1 if x1 is None else max(x1, cx1)
+            y1 = cy1 if y1 is None else max(y1, cy1)
+    return (x0, y0, x1, y1) if x0 is not None else None
 
 
 def _legend(draw, img, font, S) -> None:

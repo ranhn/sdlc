@@ -514,10 +514,14 @@ class ThreatModelBuilder:
         # 分配（实际场景几乎不会重叠，因为 _infer_boundary_children 走的是
         # 互斥的语义分组）。
         membership: dict[str, str] = {}
+        boundary_inner: dict[str, list[str]] = {}
         for bid in boundary_ids:
-            inner = self._infer_boundary_children(
+            boundary_inner[bid] = self._infer_boundary_children(
                 comp_by_id, comp_type, flows, bid, layer_of
             )
+        # 存储兜底：无存储关键词命中的边界名会把存储留在所有边界外
+        self._dispatch_orphan_stores(boundary_inner, comp_by_id)
+        for bid, inner in boundary_inner.items():
             for cid in inner:
                 membership[cid] = bid
         return membership
@@ -646,6 +650,33 @@ class ThreatModelBuilder:
                            str(comp_by_id.get(c, {}).get("name") or ""))
         )
         return selected
+
+    def _dispatch_orphan_stores(
+        self,
+        boundary_inner: dict[str, list[str]],
+        comp_by_id: dict[str, Any],
+    ) -> None:
+        """把未被任何信任边界认领的存储类组件并入「成员最多的边界」（就地修改）。
+
+        触发场景：LLM 产出的边界名是「服务侧内网边界」「客户端执行区」这类
+        不含存储关键词的名字——_infer_boundary_children 按关键词互斥分组时，
+        数据库/缓存/日志/消息队列等存储组件一个边界都进不去，几何上被留在
+        所有边界框之外：DFD 上存储裸奔在边界外，报告「所属边界」列整列为空。
+
+        存储几乎总是部署在内网服务侧，因此兜底目标取成员最多的边界
+        （成员最多 ≈ 服务侧主边界；并列取 id 最小者，保证确定性）。
+        必须在边界 bbox 计算之前调用，容器几何才会真正把存储包进去。
+        """
+        store_types = {"datastore", "vectorstore", "trainingdata", "store"}
+        claimed = {cid for inner in boundary_inner.values() for cid in inner}
+        orphans = [
+            cid for cid, c in comp_by_id.items()
+            if str(c.get("type", "")).lower() in store_types and cid not in claimed
+        ]
+        if not orphans or not boundary_inner:
+            return
+        target = max(sorted(boundary_inner), key=lambda b: len(boundary_inner[b]))
+        boundary_inner[target] = list(boundary_inner[target]) + orphans
 
     def _layout(
         self,
@@ -828,8 +859,15 @@ class ThreatModelBuilder:
                 comp_by_id, comp_type, flows, cid, layer_of
             )
             # 只包裹已被布局（有 position）且非 boundary 的组件
-            inner = [k for k in children_ids
-                     if k in positions and comp_type.get(k) != "trustboundary"]
+            boundary_inner[cid] = [
+                k for k in children_ids
+                if k in positions and comp_type.get(k) != "trustboundary"
+            ]
+        # 存储兜底：孤儿存储并入成员最多的边界（须在 bbox 计算前，
+        # 容器几何才会真正把存储包进去）
+        self._dispatch_orphan_stores(boundary_inner, comp_by_id)
+        for cid in boundary_ids:
+            inner = boundary_inner[cid]
             if not inner:
                 # 兜底：仍给一个可见的容器（与它数据流连通范围相关）
                 xs_all = [positions[k]["x"] for k in positions
@@ -1166,11 +1204,15 @@ class ThreatModelBuilder:
             children_ids = self._infer_boundary_children(
                 comp_by_id, comp_type, flows, cid, lane_of
             )
-            inner = [
+            boundary_inner[cid] = [
                 k
                 for k in children_ids
                 if k in positions and comp_type.get(k) != "trustboundary"
             ]
+        # 存储兜底：孤儿存储并入成员最多的边界（与 Kahn 布局口径一致）
+        self._dispatch_orphan_stores(boundary_inner, comp_by_id)
+        for cid in boundary_ids:
+            inner = boundary_inner[cid]
             if not inner:
                 xs_all = [
                     positions[k]["x"]
