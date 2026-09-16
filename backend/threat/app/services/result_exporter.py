@@ -2618,13 +2618,29 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
     # 编号解读：矩阵是全文唯一不展开威胁标题全文的地方，必须告诉读者
     # 编号怎么读、去哪里对照，否则格子内容无法独立理解。章节号是动态
     # 的（条件渲染会平移），因此说明里不写死「第 X 章」，用章名指代。
+    #
+    # 举例必须用「当前方法论下真实存在的代号」：早先这里写死 STRIDE 的
+    # 「DF3-T 即篡改类威胁」并附 STRIDE 六类代号表，在 CIA / LINDDUN /
+    # MAESTRO 报告里读者会去找一个根本不存在的 T 代号，反而看不懂矩阵。
+    # 改为按本报告实际用到的威胁类型动态生成对应表，且示例取该表首项。
+    _abbr_used: list[tuple[str, str]] = []
+    _seen_type: set[str] = set()
+    for _t in threats:
+        _tname = _as_text(_t.get("type"))
+        if not _tname or _tname in _seen_type:
+            continue
+        _seen_type.add(_tname)
+        _abbr_used.append((_threat_short_type(_tname), _tname))
+    _abbr_txt = "/".join(f"{a}={t}" for a, t in _abbr_used[:8])
+    _sample_abbr = _abbr_used[0][0] if _abbr_used else "S"
+    _sample_type = _abbr_used[0][1] if _abbr_used else "Spoofing"
     _pn = doc.add_paragraph()
     _rn = _pn.add_run(
-        "注：格内编号 =「元素编号-威胁类型代号」，如 DF3-T 即数据流 DF3 上的"
-        "篡改类威胁（P=处理过程、DS=数据存储、DF=数据流、EE=外部实体；"
-        "代号随方法论不同而变化，STRIDE 为 S 欺骗/T 篡改/R 抵赖/"
-        "I 信息泄露/D 拒绝服务/E 权限提升；后缀 -2 表示同元素同类型的"
-        "第二条）。威胁全称与完整描述见威胁分析章的分类明细及附录 B。"
+        f"注：格内编号 =「元素编号-威胁类型代号」，如 DF3-{_sample_abbr} 即数据流 "
+        f"DF3 上的「{_sample_type}」类威胁（P=处理过程、DS=数据存储、DF=数据流、"
+        f"EE=外部实体；代号随方法论不同而变化，本报告为 {_abbr_txt}；"
+        f"后缀 -2 表示同元素同类型的第二条）。威胁全称与完整描述见威胁分析章"
+        f"的分类明细及附录 B。"
     )
     _rn.font.size = Pt(9)
     _rn.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
