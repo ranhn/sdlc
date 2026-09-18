@@ -265,6 +265,13 @@
           <el-descriptions-item label="提交时间">{{ fmt(current.created_at) }}</el-descriptions-item>
         </el-descriptions>
 
+        <!-- 驳回原因：被驳回的漏洞最该先看到"为什么驳回"。
+             此前驳回原因只写进了 DB（rejection_reason + vuln_flow.comment），详情里没有任何地方显示。 -->
+        <div v-if="current.status === 'rejected' && current.rejection_reason" class="reject-banner">
+          <b>驳回原因</b>
+          <span>{{ current.rejection_reason }}</span>
+        </div>
+
         <div class="sec-title">漏洞描述</div>
         <pre class="pre">{{ current.description || '无' }}</pre>
 
@@ -307,11 +314,26 @@
           <el-button v-if="can('reject')" type="danger" size="small" plain @click="openReject">驳回</el-button>
         </div>
 
-        <!-- 流程图 -->
+        <!-- 流程图（当前处在哪一阶段）+ 真实流转记录。
+             流转记录里带着每次操作的意见，驳回原因就写在这里（后端一直有存、前端此前没取没显示）。 -->
         <div class="sec-title">状态流转</div>
         <el-steps :active="flowActive" simple class="flow-steps">
           <el-step title="提交" /><el-step title="确认" /><el-step title="修复" /><el-step title="复测" /><el-step title="关闭" />
         </el-steps>
+        <div v-if="flows.length" class="flow-list">
+          <div v-for="f in flows" :key="f.id" class="flow-item">
+            <div class="flow-head">
+              <span>{{ fmt(f.created_at) }}</span>
+              <span>{{ f.operator_name || '—' }}</span>
+              <span>
+                {{ statusNames[f.from_status] || f.from_status || '—' }} →
+                <b>{{ statusNames[f.to_status] || f.to_status }}</b>
+              </span>
+            </div>
+            <div v-if="f.comment" class="flow-comment">{{ f.comment }}</div>
+          </div>
+        </div>
+        <div v-else class="tip">暂无流转记录</div>
 
         <!-- 评论 -->
         <div class="sec-title">评论</div>
@@ -744,6 +766,8 @@ async function submitCreate() {
 const detailVisible = ref(false)
 const current = ref(null)
 const comments = ref([])
+// 流转记录（含各次操作的意见，如「驳回：xxx」）—— 详情里要展示，见 状态流转 区块
+const flows = ref([])
 const newComment = ref('')
 const assignVisible = ref(false)
 const assignTo = ref(null)
@@ -774,6 +798,15 @@ async function openDetail(row) {
   current.value = res.data
   detailVisible.value = true
   loadComments(row.id)
+  loadFlows(row.id)
+}
+async function loadFlows(id) {
+  try {
+    flows.value = (await vulnApi.flows(id)).data || []
+  } catch {
+    // 流转记录拉不到不影响详情主体（状态、描述、操作按钮都还在），静默降级
+    flows.value = []
+  }
 }
 async function loadComments(id) {
   const res = await vulnApi.comments(id)
@@ -909,10 +942,9 @@ onMounted(async () => {
   const qid = Number(route.query.id)
   if (qid && Number.isFinite(qid)) {
     try {
-      const res = await vulnApi.detail(qid)
-      current.value = res.data
-      detailVisible.value = true
-      loadComments(qid)
+      // 复用 openDetail：评论、状态流转记录一起加载
+      // （此前这里手写了一遍"取详情 + 开抽屉 + 拉评论"，漏了流转记录，导致 ?id= 进来时看不到驳回原因）
+      await openDetail({ id: qid })
     } catch (e) {
       // 静默失败：可能权限不足或漏洞已删
     }
@@ -938,6 +970,20 @@ onMounted(async () => {
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 驳回原因：贴在顶部信息区下面，红底一眼可见 */
+.reject-banner {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 10px; padding: 8px 12px;
+  background: #fef0f0; border: 1px solid #fbc4c4; border-radius: 8px;
+  font-size: 13px; line-height: 1.5; color: #b91c1c; word-break: break-word;
+}
+.reject-banner b { flex-shrink: 0; }
+/* 流转记录：时间 / 操作人 / 状态变化 + 意见（驳回原因就在这里） */
+.flow-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.flow-item { padding: 8px 10px; background: #f8fafc; border-radius: 8px; }
+.flow-head { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #64748b; }
+.flow-head b { color: #0f172a; }
+.flow-comment { margin-top: 4px; font-size: 13px; color: #0f172a; white-space: pre-wrap; word-break: break-word; }
 .steps-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }
 .step-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
 .step-no { width: 26px; height: 26px; line-height: 26px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; font-size: 13px; }
