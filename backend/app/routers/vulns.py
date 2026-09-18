@@ -84,6 +84,24 @@ def _record_flow(db: Session, vuln_id: int, from_status: str | None, to_status: 
     db.commit()
 
 
+def _apply_status_filter(query, status: str | None):
+    """按状态过滤（支持逗号分隔的多状态）。
+
+    背景：rejected（已驳回）与 ignored（已忽略）都是"不修的终态"，前端把两者
+    归成一个「已忽略 / 已驳回」选项，传 status=ignored,rejected —— 否则驳回的
+    漏洞在状态筛选里根本搜不到（此前下拉里也没有「已驳回」项）。
+    单值时行为与原来完全一致（精确匹配），历史调用方不受影响。
+    """
+    if not status:
+        return query
+    codes = [s.strip() for s in status.split(",") if s.strip()]
+    if not codes:
+        return query
+    if len(codes) == 1:
+        return query.filter(Vuln.status == codes[0])
+    return query.filter(Vuln.status.in_(codes))
+
+
 @router.get("", response_model=list[VulnOut])
 def list_vulns(
     status: str | None = Query(default=None),
@@ -98,8 +116,7 @@ def list_vulns(
     current: User = Depends(get_current_user),
 ):
     query = db.query(Vuln)
-    if status:
-        query = query.filter(Vuln.status == status)
+    query = _apply_status_filter(query, status)
     if severity:
         query = query.filter(Vuln.severity == severity)
     if system_id:
@@ -134,8 +151,8 @@ def export_vulns(
     if current.role is None or current.role.code not in ("admin", "secops"):
         raise HTTPException(status_code=403, detail="仅管理员/安全专家可导出漏洞")
     query = db.query(Vuln)
-    if status:
-        query = query.filter(Vuln.status == status)
+    # 与列表同一套状态过滤（含 ignored,rejected 这种"忽略组"），保证导出范围与列表所见一致
+    query = _apply_status_filter(query, status)
     if severity:
         query = query.filter(Vuln.severity == severity)
     if system_id:
@@ -329,11 +346,14 @@ def _export_docx(rows: list[VulnOut]):
             if r.step_screenshots:
                 _add_cn_paragraph(doc, f"【复现步骤截图】共 {len(r.step_screenshots)} 张", size=10, bold=True)
                 ok = 0
+                last_no = None
                 for shot in r.step_screenshots:
                     data_url = (shot or {}).get("data_url") if isinstance(shot, dict) else None
                     step_no = (shot or {}).get("step_no") if isinstance(shot, dict) else None
-                    if step_no is not None:
+                    # 一步可以有多张图（同一个 step_no 多条），标题只在换步时打一次
+                    if step_no is not None and step_no != last_no:
                         _add_cn_paragraph(doc, f"步骤 {step_no}:", size=10)
+                        last_no = step_no
                     if data_url and _add_image(doc, data_url):
                         ok += 1
                     else:

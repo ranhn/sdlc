@@ -26,14 +26,16 @@
     <el-card shadow="never" class="filter-card">
       <el-form inline>
         <el-form-item label="状态">
-          <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 140px" @change="load(true)">
+          <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 168px" @change="load(true)">
             <el-option label="待确认" value="pending" />
             <el-option label="已确认" value="confirmed" />
             <el-option label="修复中" value="fixing" />
             <el-option label="待复测" value="retest" />
             <el-option label="已修复" value="fixed" />
             <el-option label="已关闭" value="closed" />
-            <el-option label="已忽略" value="ignored" />
+            <!-- 已驳回与已忽略都是"不修的终态"，归在一个选项里（传多状态，后端支持）：
+                 此前只筛 ignored，被驳回的漏洞在状态筛选里搜不到 -->
+            <el-option label="已忽略 / 已驳回" value="ignored,rejected" />
           </el-select>
         </el-form-item>
         <el-form-item label="等级">
@@ -197,19 +199,24 @@
             <div v-for="(s, idx) in createForm.steps" :key="s.id" class="step-row" :data-step-idx="idx">
               <div class="step-no">{{ idx + 1 }}</div>
               <el-input v-model="s.desc" type="textarea" :rows="2" placeholder="这一步做了什么、观察到什么" class="step-desc" />
-              <div class="step-shot">
-                <el-image v-if="s.img" :src="s.img" :preview-src-list="stepImgList" :initial-index="stepImgList.indexOf(s.img)" fit="cover" class="step-thumb" hide-on-click-modal />
-                <el-upload v-if="!s.img" :auto-upload="false" :limit="1" list-type="picture-card" accept="image/*"
-                  :show-file-list="false" :on-change="(file) => onStepFile(idx, file)">
+              <div class="step-shots">
+                <div v-for="(im, ii) in s.imgs" :key="ii" class="step-thumb-wrap">
+                  <el-image :src="im" :preview-src-list="s.imgs" :initial-index="ii" fit="cover" class="step-thumb" hide-on-click-modal />
+                  <el-button link type="danger" size="small" class="step-shot-del" @click="removeStepImg(idx, ii)">移除</el-button>
+                </div>
+                <!-- 每步最多 3 张。上限由我们自己控（不是 el-upload 的 :limit）：
+                     它的计数按内部 fileList，我们用 on-change 自己收图、删图时不会同步，
+                     会出现"删了一张却再也加不上"的怪状态。满了就不渲染上传框。 -->
+                <el-upload v-if="s.imgs.length < MAX_STEP_IMGS" :auto-upload="false" multiple list-type="picture-card"
+                  accept="image/*" :show-file-list="false" :on-change="(file) => onStepFile(idx, file)">
                   <el-icon><Plus /></el-icon>
                 </el-upload>
-                <el-button v-if="s.img" link type="danger" size="small" class="step-shot-del" @click="removeStepImg(idx)">移除</el-button>
               </div>
               <el-button v-if="createForm.steps.length > 1" link type="danger" size="small" @click="removeStep(idx)">删步</el-button>
             </div>
           </div>
           <el-button link type="primary" size="small" @click="addStep" :disabled="createForm.steps.length >= 6">+ 添加步骤</el-button>
-          <div class="tip">每步可粘贴或选择截图，步骤 1-6 步</div>
+          <div class="tip">步骤框内可换行，换行仍算同一步；要新起一步请点「+ 添加步骤」（最多 6 步）。每步最多 3 张截图，可粘贴或选择</div>
         </el-form-item>
         <el-form-item label="影响范围">
           <el-input v-model="createForm.impact" type="textarea" :rows="2" placeholder="可能造成的影响" />
@@ -267,7 +274,9 @@
             <div class="detail-step-no">{{ s.step_no }}</div>
             <div class="detail-step-body">
               <div class="detail-step-desc">{{ s.desc }}</div>
-              <el-image v-if="s.img" :src="s.img" :preview-src-list="detailImgs" :initial-index="detailImgs.indexOf(s.img)" fit="cover" class="shot" hide-on-click-modal />
+              <div v-if="s.imgs.length" class="detail-shots">
+                <el-image v-for="(im, ii) in s.imgs" :key="ii" :src="im" :preview-src-list="s.imgs" :initial-index="ii" fit="cover" class="shot" hide-on-click-modal />
+              </div>
             </div>
           </div>
         </div>
@@ -530,7 +539,48 @@ const createRules = {
   vuln_path: [{ required: true, message: '请选择漏洞类型', trigger: 'change' }],
 }
 let _stepSeq = 1
-function newStep() { return { id: 's' + (++_stepSeq), desc: '', img: null } }
+function newStep() { return { id: 's' + (++_stepSeq), desc: '', imgs: [] } }
+/** 每步最多几张截图 */
+const MAX_STEP_IMGS = 3
+
+/* —— 复现步骤的存取格式 ——
+   后端只有 reproduce_steps 一个文本字段，历史格式是「一行一步」，于是**步骤内部
+   换行会被当成新步骤**（用户反馈：在步骤 1 的框里敲回车接着写，展示出来就变成步骤 2）。
+   现在存成「编号块」：
+
+     1. 打开登录页
+        输入用户名密码
+     2. 点击提交
+
+   即每步以 `1. ` 开头（行首），步骤内部的换行原样保留、续行缩进两格。
+   解析时只看行首的编号行来切块 —— 于是用户在步骤里自己写「1. xxx」也不会被切开。
+   老数据（没有任何编号行）仍按「一行一步」解析，历史记录不受影响。 */
+const STEP_HEAD_RE = /^\d+\s*[.、)）]\s*/
+/** 步骤数组 → 存档文本（见上方格式说明） */
+function stepsToText(steps) {
+  return steps
+    .map((s, i) => {
+      const body = String(s.desc || '').trim() || `步骤 ${i + 1}`
+      return `${i + 1}. ` + body.replace(/\n/g, '\n  ')
+    })
+    .join('\n')
+}
+/** 存档文本 → 步骤文案数组（新格式按编号块，老格式一行一步） */
+function parseStepsText(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n')
+  const heads = []
+  lines.forEach((l, i) => { if (STEP_HEAD_RE.test(l)) heads.push(i) })
+  if (!heads.length) return lines.map((l) => l.trim()).filter(Boolean)
+  return heads
+    .map((start, k) => {
+      const end = k + 1 < heads.length ? heads[k + 1] : lines.length
+      const body = [lines[start].replace(STEP_HEAD_RE, ''), ...lines.slice(start + 1, end)]
+        // 去掉续行的 2 格缩进；首行本身没缩进，替换无副作用
+        .map((l) => l.replace(/^ {1,2}/, ''))
+      return body.join('\n').trim()
+    })
+    .filter(Boolean)
+}
 function addStep() {
   if (createForm.steps.length >= 6) return ElMessage.warning('最多 6 步')
   createForm.steps.push(newStep())
@@ -539,17 +589,21 @@ function removeStep(idx) {
   if (createForm.steps.length <= 1) return
   createForm.steps.splice(idx, 1)
 }
-function removeStepImg(idx) {
-  if (createForm.steps[idx]) createForm.steps[idx].img = null
+function removeStepImg(idx, ii) {
+  createForm.steps[idx]?.imgs.splice(ii, 1)
 }
 function onStepFile(idx, file) {
+  const step = createForm.steps[idx]
+  if (!step) return
+  if (step.imgs.length >= MAX_STEP_IMGS) return ElMessage.warning(`每步最多 ${MAX_STEP_IMGS} 张截图`)
   const reader = new FileReader()
   reader.onload = (e) => {
-    if (createForm.steps[idx]) createForm.steps[idx].img = e.target.result
+    const s = createForm.steps[idx]
+    // 多选/连续选择时回调是并发的，落库前再判一次上限
+    if (s && s.imgs.length < MAX_STEP_IMGS) s.imgs.push(e.target.result)
   }
   reader.readAsDataURL(file.raw)
 }
-const stepImgList = computed(() => createForm.steps.map((s) => s.img).filter(Boolean))
 function openCreate() {
   editingId.value = null
   Object.assign(createForm, {
@@ -588,12 +642,16 @@ async function openEdit(row) {
     // 两级类型回填：优先用后端返回的大类；历史数据无大类时按子类反查所属大类
     const cat = v.vuln_category || categoryOfType(v.vuln_type)
     createForm.vuln_path = cat && v.vuln_type ? [cat, v.vuln_type] : []
-    // 反解步骤：按 reproduce_steps 的非空行数还原；按 step_no 匹配图片
-    const lines = (v.reproduce_steps || '').split('\n').map((l) => l.trim()).filter(Boolean)
+    // 反解步骤：走 parseStepsText（新格式按编号块切、老数据一行一步）；按 step_no 匹配图片
+    const descs = parseStepsText(v.reproduce_steps)
+    // 一步可能有多张图（step_screenshots 里同一个 step_no 会有多条），按序号收成数组
     const shotsByNo = {}
-    ;(v.step_screenshots || []).forEach((ss) => { shotsByNo[ss.step_no] = ss.data_url })
-    const restored = lines.length
-      ? lines.map((desc, i) => ({ id: 's' + (++_stepSeq), desc, img: shotsByNo[i + 1] || null }))
+    ;(v.step_screenshots || []).forEach((ss) => {
+      if (!ss || !ss.data_url) return
+      ;(shotsByNo[ss.step_no] = shotsByNo[ss.step_no] || []).push(ss.data_url)
+    })
+    const restored = descs.length
+      ? descs.map((desc, i) => ({ id: 's' + (++_stepSeq), desc, imgs: shotsByNo[i + 1] || [] }))
       : [newStep()]
     // 编辑时如果只有 1 个空步骤（用户原表单空），保留一个空白 step 便于编辑
     createForm.steps = restored.length ? restored : [newStep()]
@@ -611,14 +669,17 @@ function onPaste(e) {
   const idx = row ? Number(row.dataset.stepIdx) : createForm.steps.length - 1
   const step = createForm.steps[idx]
   if (!step) return
-  if (step.img) return ElMessage.warning(`第 ${idx + 1} 步已有截图，请先移除`)
+  if (step.imgs.length >= MAX_STEP_IMGS) {
+    return ElMessage.warning(`第 ${idx + 1} 步已有 ${MAX_STEP_IMGS} 张截图`)
+  }
   for (const it of items) {
     if (it.kind === 'file' && it.type.startsWith('image/')) {
       const blob = it.getAsFile()
       if (!blob) continue
       const reader = new FileReader()
       reader.onload = (ev) => {
-        if (createForm.steps[idx]) createForm.steps[idx].img = ev.target.result
+        const s = createForm.steps[idx]
+        if (s && s.imgs.length < MAX_STEP_IMGS) s.imgs.push(ev.target.result)
       }
       reader.readAsDataURL(blob)
       e.preventDefault()
@@ -628,13 +689,15 @@ function onPaste(e) {
 }
 async function submitCreate() {
   await createRef.value.validate()
-  const validSteps = createForm.steps.filter((s) => (s.desc || '').trim() || s.img)
+  const validSteps = createForm.steps.filter((s) => (s.desc || '').trim() || s.imgs.length)
   if (validSteps.length === 0) return ElMessage.warning('请至少填写一步复现步骤')
   submitting.value = true
-  const reproduce_steps = validSteps.map((s, i) => (s.desc || '').trim() || `步骤 ${i + 1}`).join('\n')
-  const step_screenshots = validSteps
-    .map((s, i) => s.img ? { step_no: i + 1, data_url: s.img } : null)
-    .filter(Boolean)
+  // 存档格式见 stepsToText：步骤内部换行保留，不再「一行一步」
+  const reproduce_steps = stepsToText(validSteps)
+  // 一步最多 3 张图：同一个 step_no 允许多条（后端 step_screenshots 就是列表）
+  const step_screenshots = validSteps.flatMap((s, i) =>
+    s.imgs.map((data_url) => ({ step_no: i + 1, data_url })),
+  )
   const screenshots = step_screenshots.map((s) => s.data_url)
   const payload = {
     title: createForm.title,
@@ -690,18 +753,21 @@ const flowActive = computed(() => (current.value ? flowMap[current.value.status]
 function renderSteps(v) {
   if (!v) return []
   // 改: 之前只遍历 v.step_screenshots,导致没截图的步骤直接丢失(用户反馈步骤 3 文字在但截图没有时就整步消失)。
-  // 现在按 reproduce_steps 的所有非空行遍历,按行号匹配 step_screenshots 里是否有截图;
-  // 没有截图的步骤也保留,只把 img 留空(template 里 <el-image v-if="s.img"> 自动隐藏)。
-  const lines = (v.reproduce_steps || '').split('\n').map((l) => l.trim()).filter(Boolean)
+  // 现在按 parseStepsText 解出的步骤逐条渲染，按序号匹配 step_screenshots 里的截图（一步可多张，
+  // 同一个 step_no 会有多条）；没有截图的步骤也保留，imgs 为空数组即可。
+  // 注意：**不能按行拆**了 —— 步骤内部的换行属于同一步（见 stepsToText/parseStepsText）。
+  const descs = parseStepsText(v.reproduce_steps)
   const shotsByNo = {}
-  ;(v.step_screenshots || []).forEach((ss) => { shotsByNo[ss.step_no] = ss.data_url })
-  return lines.map((desc, i) => ({
+  ;(v.step_screenshots || []).forEach((ss) => {
+    if (!ss || !ss.data_url) return
+    ;(shotsByNo[ss.step_no] = shotsByNo[ss.step_no] || []).push(ss.data_url)
+  })
+  return descs.map((desc, i) => ({
     step_no: i + 1,
     desc,
-    img: shotsByNo[i + 1] || null,
+    imgs: shotsByNo[i + 1] || [],
   }))
 }
-const detailImgs = computed(() => renderSteps(current.value).map((s) => s.img).filter(Boolean))
 
 async function openDetail(row) {
   const res = await vulnApi.detail(row.id)
@@ -876,7 +942,9 @@ onMounted(async () => {
 .step-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
 .step-no { width: 26px; height: 26px; line-height: 26px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; font-size: 13px; }
 .step-desc { flex: 1; }
-.step-shot { width: 92px; height: 92px; flex-shrink: 0; position: relative; }
+/* 每步最多 3 张截图：横向排开、放不下就换行（不再是一个固定 92px 的单图盒子） */
+.step-shots { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+.step-thumb-wrap { width: 90px; height: 90px; position: relative; flex-shrink: 0; }
 .step-thumb { width: 90px; height: 90px; border-radius: 6px; border: 1px solid #e2e8f0; }
 .step-shot-del { position: absolute; bottom: -6px; right: -6px; background: #fff; border-radius: 10px; padding: 0 6px; }
 .step-row :deep(.el-upload--picture-card) { width: 90px; height: 90px; }
@@ -886,6 +954,8 @@ onMounted(async () => {
 .detail-step-no { width: 28px; height: 28px; line-height: 28px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; }
 .detail-step-body { flex: 1; }
 .detail-step-desc { white-space: pre-wrap; margin-bottom: 6px; color: #0f172a; }
+/* 一步多张图：并排铺开 */
+.detail-shots { display: flex; flex-wrap: wrap; gap: 2px; }
 .comment { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; }
 .comment-input { display: flex; gap: 8px; }
 .drawer-title { font-weight: 600; font-size: 16px; color: #0f172a; word-break: break-all; }
