@@ -26,7 +26,7 @@
     <el-card shadow="never" class="filter-card">
       <el-form inline>
         <el-form-item label="状态">
-          <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 140px" @change="load">
+          <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 140px" @change="load(true)">
             <el-option label="待确认" value="pending" />
             <el-option label="已确认" value="confirmed" />
             <el-option label="修复中" value="fixing" />
@@ -37,40 +37,42 @@
           </el-select>
         </el-form-item>
         <el-form-item label="等级">
-          <el-select v-model="filters.severity" clearable placeholder="全部等级" style="width: 120px" @change="load">
+          <el-select v-model="filters.severity" clearable placeholder="全部等级" style="width: 120px" @change="load(true)">
             <el-option label="严重" value="critical" /><el-option label="高危" value="high" />
             <el-option label="中危" value="medium" /><el-option label="低危" value="low" />
           </el-select>
         </el-form-item>
         <el-form-item label="系统">
-          <el-select v-model="filters.system_id" clearable filterable placeholder="全部系统" style="width: 160px" @change="load">
+          <el-select v-model="filters.system_id" clearable filterable placeholder="全部系统" style="width: 160px" @change="load(true)">
             <el-option v-for="s in systems" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="来源">
-          <el-select v-model="filters.is_external" clearable placeholder="全部来源" style="width: 130px" @change="load">
+          <el-select v-model="filters.is_external" clearable placeholder="全部来源" style="width: 130px" @change="load(true)">
             <el-option label="内部提交" :value="false" />
             <el-option label="外部报告" :value="true" />
           </el-select>
         </el-form-item>
         <el-form-item>
-          <el-checkbox v-model="filters.mine" @change="load">只看我的</el-checkbox>
+          <el-checkbox v-model="filters.mine" @change="load(true)">只看我的</el-checkbox>
         </el-form-item>
       </el-form>
     </el-card>
 
-    <!-- 列表 -->
+    <!-- 列表（每页 12 条，分页见表格下方 .vuln-pager） -->
     <el-table
-      :data="list"
+      :data="pagedList"
       v-loading="loading"
       stripe
       class="vuln-table"
       :show-overflow-tooltip="true"
       ref="tableRef"
+      row-key="id"
       @selection-change="onSelectionChange"
     >
-      <el-table-column v-if="canExport" type="selection" width="44" align="center" />
-      <el-table-column type="index" :index="(idx) => list.length - idx" width="48" align="center" />
+      <!-- reserve-selection：翻页后已勾选的行仍然保留（批量导出跨页有效） -->
+      <el-table-column v-if="canExport" type="selection" width="44" align="center" :reserve-selection="true" />
+      <el-table-column type="index" :index="rowIndex" width="48" align="center" />
       <el-table-column label="标题" min-width="260" show-overflow-tooltip>
         <template #default="{ row }">
           <el-link type="primary" :underline="false" @click="openDetail(row)">{{ row.title }}</el-link>
@@ -123,6 +125,19 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- 分页：固定每页 12 条（列表全量已拉回，这里是纯前端切片） -->
+    <div class="vuln-pager">
+      <el-pagination
+        v-model:current-page="page"
+        :page-size="pageSize"
+        :total="list.length"
+        :pager-count="7"
+        layout="total, prev, pager, next, jumper"
+        background
+        @current-change="onPageChange"
+      />
+    </div>
 
     <!-- 新建/编辑漏洞弹窗（编辑时 title 改为"编辑漏洞"，submitCreate 按 editingId 走 PATCH） -->
     <el-dialog v-model="createVisible" :title="editingId ? '编辑漏洞' : '提交漏洞'" width="640px" :close-on-click-modal="false">
@@ -328,7 +343,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElImageViewer } from 'element-plus'
 import { vulnApi, systemApi, adminApi } from '../api'
@@ -347,6 +362,28 @@ const filters = reactive({ status: '', severity: '', system_id: null, is_externa
 // 表格多选状态:用于批量导出已选漏洞
 const tableRef = ref()
 const selectedIds = ref([])
+
+// ---- 分页：每页 12 条 ----
+// 列表接口一次返回全量（筛选与批量导出都作用在全量结果上），所以这里做的是
+// **视图切片**：只决定"这一屏显示哪 12 行"，不参与请求参数，也不会改变
+// 筛选/导出语义。配合 row-key + reserve-selection，跨页勾选的导出行不丢。
+const page = ref(1)
+const pageSize = ref(12)
+const pagedList = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return list.value.slice(start, start + pageSize.value)
+})
+const pageCount = computed(() => Math.max(1, Math.ceil(list.value.length / pageSize.value)))
+
+/** 序号跨页连续：列表按提交时间倒序（最新在最上），序号 = 全量倒序位次 */
+function rowIndex(idx) {
+  return list.value.length - ((page.value - 1) * pageSize.value + idx)
+}
+
+/** 翻页后把列表顶部滚回视口（表格 auto height、整页滚动，不是内部滚动） */
+function onPageChange() {
+  nextTick(() => tableRef.value?.$el?.scrollIntoView?.({ block: 'start' }))
+}
 
 function onSelectionChange(rows) {
   selectedIds.value = rows.map((r) => r.id)
@@ -774,7 +811,13 @@ async function doExport(fmt, idsOverride) {
   }
 }
 
-async function load() {
+/**
+ * 拉取漏洞列表。
+ * @param {boolean} resetPage 过滤条件变化时传 true（回到第 1 页）。
+ *   状态流转等"就地操作"后不传，停在原页；此时若列表变短会收敛到最后一个
+ *   有效页，避免停在一个空白页（看起来像数据丢了）。
+ */
+async function load(resetPage = false) {
   loading.value = true
   try {
     const params = {}
@@ -787,6 +830,8 @@ async function load() {
     if (filters.mine) params.mine = true
     const res = await vulnApi.list(params)
     list.value = res.data
+    if (resetPage) page.value = 1
+    else if (page.value > pageCount.value) page.value = pageCount.value
   } finally { loading.value = false }
 }
 
@@ -816,6 +861,8 @@ onMounted(async () => {
 .filter-card { margin-bottom: 12px; flex-shrink: 0; }
 .filter-card :deep(.el-card__body) { padding: 12px; }
 .vuln-table { background: #fff; border-radius: 10px; }
+/* 分页条：贴着表格下方、右对齐（Element 默认居中，跟表格右缘对齐更像后台列表） */
+.vuln-pager { display: flex; justify-content: flex-end; padding: 10px 4px 2px; flex-shrink: 0; }
 .vuln-table :deep(.el-table__cell) { padding: 6px 0 !important; }
 .vuln-table :deep(.el-table .cell) { padding-left: 8px; padding-right: 8px; word-break: keep-all; white-space: nowrap; }
 /* 操作列三个按钮(详情/编辑/导出)水平+垂直对齐,统一行高 */
