@@ -43,7 +43,7 @@
     <!-- Tab 2: 数据流图与威胁分析 -->
     <div v-show="activeTab === 'analysis'" class="threat-tab threat-analysis-tab">
       <div class="analysis-grid" :class="{ 'side-collapsed': sideCollapsed }">
-        <div class="analysis-col analysis-col-main">
+        <div ref="canvasCardRef" class="analysis-col analysis-col-main">
           <!-- 建模中：一体化「任务控制台」——横向流水线 + KPI 数字带 + 日志台，
                全部收纳在一屏内；不再左/中/右三块摊开，也不再与右栏重复展示指标。 -->
           <div v-if="analyzing" class="mid-progress">
@@ -63,7 +63,12 @@
                 </span>
               </div>
               <div class="head-r">
-                <span class="progress-pct">{{ analyzeProgress }}<i>%</i></span>
+                <!-- 进度徽标：与左侧「阶段 / 总耗时」同族的 pill（同高同圆角），
+                     数字单独用 <b> 承载等宽 + tabular-nums —— 每秒跳动时宽度不抖，
+                     "40%" 才是表头右侧稳定的视觉锚点（裸蓝字悬着会显得零散）。 -->
+                <span class="progress-pct" :class="{ done: (analyzeProgress || 0) >= 100 }">
+                  <b>{{ analyzeProgress }}</b><i>%</i>
+                </span>
                 <el-button class="cancel-btn" size="small" type="danger" plain @click="onCancelAnalyze">
                   <el-icon class="cancel-ico"><Close /></el-icon>
                   <span>取消建模</span>
@@ -211,19 +216,43 @@
                     <i class="gts-ico cover" />覆盖 {{ graphStats.coverage }}%
                   </span>
                 </span>
-                <label class="gt-toggle" :title="canvasEditable ? '退出编辑，恢复只读浏览' : '进入编辑：可拖拽节点、双击改名、Delete 删除'">
-                  <input v-model="canvasEditable" type="checkbox" />
-                  <span class="gt-toggle-text">
-                    {{ canvasEditable ? '编辑模式' : '只读模式' }}
-                  </span>
-                </label>
+                <!-- 模式切换：用 button + 图标（锁 / 铅笔）替代裸 <input type=checkbox>。
+                     原生复选框的尺寸、圆角、颜色都不受控，夹在一排自定义图标按钮里
+                     是这块最刺眼的"杂"；换成同款 24px 胶囊后整行形状语言统一。 -->
+                <button
+                  type="button"
+                  class="gt-toggle"
+                  role="switch"
+                  :aria-checked="canvasEditable"
+                  :title="canvasEditable ? '退出编辑，恢复只读浏览' : '进入编辑：可拖拽节点、双击改名、Delete 删除'"
+                  @click="canvasEditable = !canvasEditable"
+                >
+                  <!-- 只读：锁；编辑：铅笔（与右侧图标按钮同一套 13px 线性图标） -->
+                  <svg v-if="!canvasEditable" width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <rect x="4.2" y="8.6" width="11.6" height="8.4" rx="1.8" stroke="currentColor" stroke-width="1.4" />
+                    <path d="M6.9 8.6V6.4a3.1 3.1 0 0 1 6.2 0v2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                  </svg>
+                  <svg v-else width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M13.4 3.6l3 3-8.3 8.3-3.5.6.6-3.5 8.2-8.4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+                  </svg>
+                  <span class="gt-toggle-text">{{ canvasEditable ? '编辑模式' : '只读模式' }}</span>
+                </button>
                 <span v-if="canvasEditable" class="gt-hint">
                   拖拽 · 双击改名 · Delete 删除
                 </span>
               </div>
               <div class="gt-right">
                 <span v-if="layoutSaving" class="gt-saving">保存中…</span>
-                <button class="gt-btn" :disabled="!canvasEditable || !layoutDirty" @click="saveLayout">保存布局</button>
+                <!-- 保存只在编辑模式下有意义：只读时它永远是 disabled 的灰字，
+                     常驻只会让右组多一个"用不了"的控件（截图里那行浅灰文字就是它）。 -->
+                <button
+                  v-if="canvasEditable"
+                  class="gt-btn"
+                  :disabled="!layoutDirty"
+                  @click="saveLayout"
+                >
+                  保存布局
+                </button>
                 <!-- 适配视图：缩放到整图可见。两种模式同一行为、同一画布 -->
                 <button
                   class="gt-icon-btn"
@@ -232,6 +261,26 @@
                 >
                   <svg width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     <path d="M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <!-- 全屏展示：把**整张 DFD 卡片**（工具条 + 图例 + 画布）投到全屏，
+                     右栏「威胁分析」自然离屏，等于画布独占整宽 + 整高。
+                     进全屏后滚轮缩放 / 拖拽平移照旧生效（X6 的 mousewheel
+                     zoomAtMousePosition 与 panning 都开着），Esc 或本按钮退出。 -->
+                <button
+                  class="gt-icon-btn"
+                  :title="isFullscreen ? '退出全屏（Esc）' : '全屏展示：整屏看 DFD，滚轮可缩放'"
+                  @click="toggleFullscreen"
+                >
+                  <!-- 进入全屏：对角向外 -->
+                  <svg v-if="!isFullscreen" width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M8 3H3v5M12 17h5v-5"
+                          fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                  </svg>
+                  <!-- 退出全屏：对角向内 -->
+                  <svg v-else width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M3 8h5V3M17 12h-5v5"
+                          fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
                   </svg>
                 </button>
                 <!-- 折叠右栏：给画布腾出 360px 宽度，专注看大图 -->
@@ -414,7 +463,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Download, DataAnalysis, Close } from '@element-plus/icons-vue'
 
 import InputPanel from '../components/threat/InputPanel.vue'
@@ -556,6 +605,38 @@ watch(sideCollapsed, async () => {
     try { dfdGraphRef.value?.fitView?.() } catch (_) {}
   }, 260)
 })
+
+// ---- 全屏展示 ----
+// 全屏的元素是**整张 DFD 卡片**（工具条 + 图例 + X6 画布），不是裸 canvas：
+//   · 图例、适配视图、退出按钮都还在，用户不用先退出全屏才能操作；
+//   · 右栏「威胁分析」在卡片之外，进全屏后自然离屏 —— 等于画布独占整宽 + 整高。
+// 滚轮缩放/拖拽平移在全屏下无需额外处理：X6 的 mousewheel（zoomAtMousePosition）
+// 与 panning 一直开着，且画布容器尺寸变化会被 DfdGraph 的 ResizeObserver 捕获。
+const canvasCardRef = ref(null)
+const isFullscreen = ref(false)
+
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen()
+    else await canvasCardRef.value?.requestFullscreen?.()
+  } catch (e) {
+    // 常见于 iframe 未开 allowfullscreen / 浏览器策略拒绝：给出可读提示而不是静默失败
+    ElMessage.error('全屏切换失败：' + (e?.message || e))
+  }
+}
+
+/** 全屏状态同步：用户按 Esc 或浏览器 UI 退出时，按钮图标也要跟着回到"进入全屏" */
+function onFullscreenChange() {
+  isFullscreen.value = !!document.fullscreenElement
+  // 尺寸变化有过渡动画，等布局稳定后再适配一次，
+  // 否则 X6 会按旧 viewport 缩放 → 图缩在左上角
+  setTimeout(() => {
+    try { dfdGraphRef.value?.fitView?.() } catch (_) {}
+  }, 280)
+}
+
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
 const graphStats = computed(() => {
   // 字段名对齐后端 stats：componentCount / flowCount / threatCount（与右栏 KPI 同源）。
   const s = lastSummary.value?.stats || {}
@@ -957,6 +1038,8 @@ async function exportJson() {
 // ---- 轮询逻辑（操作 store，组件销毁后仍可后台运行）----
 // 成功收尾的延时句柄：100% 完成态短暂停留后再跳结果页（见轮询 success 分支）
 let finishTimer = null
+// 连续 404 计数（见下方 catch 分支）：刷新/网络抖动不要一次就判「任务已中断」
+let poll404Count = 0
 const resultsPanelRef = ref(null)
 function startTaskPolling(taskId) {
   // 新一轮轮询前清掉可能残留的收尾定时器（快速重发任务时防串扰）
@@ -964,9 +1047,11 @@ function startTaskPolling(taskId) {
     clearTimeout(finishTimer)
     finishTimer = null
   }
+  poll404Count = 0
   store.startPolling(async () => {
     try {
       const t = await getTask(taskId)
+      poll404Count = 0
       const status = t?.status
       // 合并后端日志（保留 level 与真实时间戳，前端据此分级降噪）
       store.mergeLogs(Array.isArray(t?.log) ? t.log : [])
@@ -1044,8 +1129,18 @@ function startTaskPolling(taskId) {
     } catch (err) {
       // P2-X-2：不要静默吞错误。404 = 后端 task 已不存在（reload / 过期清理 / 后端
       // 内存被清），给用户清晰提示而不是让进度条永远卡在 0%。
+      // 但要先容错：刷新页面、网络抖动、后端滚动重启的**那一瞬间**都有可能 404，
+      // 一次就判「任务已中断」会把后端其实还在正常跑的任务在前端判死
+      // （面板消失、稍后结果又冒出来 —— 用户感受就是"刷新把任务弄断了"）。
+      // 因此连续 3 次 404（≈4.5s）才认定任务真的不存在。
       const status = err?.response?.status
       if (status === 404) {
+        poll404Count += 1
+        if (poll404Count < 3) {
+          console.warn(`[poll] 第 ${poll404Count} 次 404，继续重试（视作刷新/重启瞬间的抖动）`)
+          return
+        }
+        poll404Count = 0
         store.interruptAnalysis('后端已无此任务（可能被清理或后端重启）')
         ElMessage.error({
           message: '任务已中断：后端找不到此任务（可能后端已重启）。请回到「建模输入」重新发起。',
@@ -1057,6 +1152,7 @@ function startTaskPolling(taskId) {
       } else {
         // 其他错误（网络抖动 / 5xx / 后端未启动）—— 静默 + console 即可，
         // 下一次轮询会再试
+        poll404Count = 0
         console.warn('[poll]', err)
       }
     }
@@ -1228,6 +1324,23 @@ watch(
 
 async function onCancelAnalyze() {
   const tid = store.currentTaskId
+  // 二次确认：一轮建模要跑若干次 LLM 调用（1~3 分钟），误触一下整轮就白跑。
+  // 历史上出现过"点到取消后任务直接没了"的反馈 —— 取消是**不可逆**的破坏性
+  // 操作，必须让用户明确确认（而不是点了立即生效）。
+  try {
+    await ElMessageBox.confirm(
+      '取消后本轮建模会立即终止，已经跑过的阶段不会保留，需要重新发起。确定取消吗？',
+      '取消建模',
+      {
+        type: 'warning',
+        confirmButtonText: '确定取消',
+        cancelButtonText: '继续建模',
+        distinguishCancelAndClose: true,
+      },
+    )
+  } catch (e) {
+    return // 用户点了「继续建模」或关闭弹窗：什么都不做
+  }
   if (tid) {
     try { await cancelTask(tid) } catch (e) { /* ignore */ }
   }
@@ -1314,6 +1427,10 @@ onMounted(() => {
     // 这一步必须在 push /analysis 之前，否则首屏看不到进度面板。
     store.analyzing = true
     if (activeTab.value !== 'analysis') router.push('/threat-modeling/analysis')
+    // 让用户在控制台里**直接看到**"刷新不影响任务"：建模跑在后端协程里，
+    // 刷新/关标签页只是前端断开轮询，后端照常推进；恢复轮询即可无缝接上。
+    // （appendLog 按内容去重，反复刷新不会刷屏。）
+    store.appendLog('已恢复上次任务，后端仍在继续运行（刷新 / 关闭页面都不会中断建模）')
     startTaskPolling(store.currentTaskId)
   }
 })
@@ -1465,6 +1582,14 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
 }
+/* 全屏态：卡片去掉圆角与描边、铺满整屏。内部已是 flex 链
+   （工具条 / 图例 / .mid-graph flex:1），画布自然撑满整屏，无需额外高度规则。 */
+.analysis-col-main:fullscreen,
+.analysis-col-main:-webkit-full-screen {
+  border: none;
+  border-radius: 0;
+  background: #fff;
+}
 .cache-meta-banner {
   display: flex;
   align-items: center;
@@ -1615,20 +1740,44 @@ onUnmounted(() => {
   gap: 12px;
   flex-shrink: 0;
 }
+/* 进度徽标：与「阶段 / 总耗时」同族的 pill。
+   数字走等宽 + tabular-nums（每秒跳动宽度不抖），% 比数字小一档、
+   亮一档并贴住基线，读起来是"40 个百分点"而不是"40 加一个角标"。 */
 .progress-pct {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  padding: 2px 11px 3px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  line-height: 1.1;
+  transition: background 0.25s, border-color 0.25s, color 0.25s;
+}
+.progress-pct b {
   font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
-  font-size: 24px;
+  font-size: 21px;
   font-weight: 700;
-  line-height: 1;
-  color: var(--primary, #2563eb);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
 }
 .progress-pct i {
   font-style: normal;
+  font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
   font-size: 12px;
   font-weight: 600;
   margin-left: 1px;
   color: #60a5fa;
+}
+/* 走完 100%：与流水线里的"已完成"同色（emerald），给最后一步一个收尾信号 */
+.progress-pct.done {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+.progress-pct.done i {
+  color: #34d399;
 }
 /* ── 全局进度条已并入流水线（不再是"行 1.5"） ──
    这里原本是一条独立的全宽细进度条，而流水线内部还有"步骤连接线"和
@@ -2001,33 +2150,39 @@ onUnmounted(() => {
 /* 只读 / 编辑共用 X6 画布，无需额外样式 */
 /* 画布编辑工具条 —— 与下方 DfdGraph 的 .graph-head 共享同一基线，
    两行视觉上是连续的"工具栏 + 筛选 chip"组合，避免错位。 */
+/* 画布头部 = 工具条（本文件）+ 图例（DfdGraph 的 .legend），两块拼成
+   **一整条**头部带：这里不再画自己的横线、也不单独铺渐变，改成与图例同族的
+   略深一档底色，靠"色调台阶"分区 —— 避免"三条同色带 + 两条横线"叠在一起发碎。
+   左右内缩统一 14px，与图例左右对齐。 */
 .graph-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 5px 14px;
+  padding: 4px 14px;
   min-height: 32px;
-  border-bottom: 1px solid var(--border-light, #e2e8f0);
-  background: linear-gradient(180deg, #f8fafc, #f1f5f9);
+  background: #f1f5f9;
   flex-shrink: 0;
   font-size: 11.5px;
 }
-/* 左组：标题 + 模式切换 + 提示；右组：保存状态 + 保存按钮 */
+/* 左组：标题 + 规模总览 + 模式切换；右组：保存状态 + 保存按钮 + 视图操作组 */
 .gt-left, .gt-right {
   display: flex;
   align-items: center;
   gap: 10px;
 }
+/* 标题 / 模式开关 / 保存按钮 / 图标按钮：统一 24px 高 + 同一套边框色与 6px 圆角，
+   整行才有"一条基线、一套形状"的秩序感（此前 22/23/24px 与两三种边框色混排）。 */
 .gt-title {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 24px;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text, #334155);
-  padding: 3px 9px 3px 8px;
-  border-radius: 5px;
+  padding: 0 9px 0 8px;
+  border-radius: 6px;
   background: #fff;
   border: 1px solid var(--border-light, #e2e8f0);
   letter-spacing: 0.2px;
@@ -2043,26 +2198,37 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  cursor: pointer;
-  color: #475569;
-  font-weight: 500;
-  user-select: none;
-  padding: 3px 9px;
-  border-radius: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
   background: #fff;
   border: 1px solid var(--border-light, #e2e8f0);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #475569;
+  cursor: pointer;
+  user-select: none;
   transition: all 0.15s;
 }
 .gt-toggle:hover {
   border-color: #7c3aed;
   color: #5b21b6;
 }
-.gt-toggle input {
-  cursor: pointer;
-  accent-color: #7c3aed;
-  width: 14px;
-  height: 14px;
-  margin: 0;
+/* 编辑模式（role=switch 打开）：紫调高亮，跟"正在改布局"的状态对齐 */
+.gt-toggle[aria-checked='true'] {
+  border-color: #7c3aed;
+  color: #5b21b6;
+  background: rgba(124, 58, 237, 0.07);
+}
+/* 去掉鼠标点击后的默认黑色描边（截图里图例首项那圈黑框就是浏览器 focus ring），
+   只在键盘 Tab 聚焦时给品牌色光圈 —— 鼠标用户不该看到"选中框"。 */
+.gt-toggle:focus {
+  outline: none;
+}
+.gt-toggle:focus-visible {
+  outline: 2px solid rgba(124, 58, 237, 0.45);
+  outline-offset: 1px;
 }
 .gt-toggle-text {
   font-size: 11.5px;
@@ -2087,8 +2253,9 @@ onUnmounted(() => {
 .gt-btn {
   font-family: inherit;
   font-size: 11.5px;
-  padding: 3px 12px;
-  border-radius: 5px;
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 6px;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #475569;
@@ -2108,13 +2275,20 @@ onUnmounted(() => {
 }
 
 /* —— 工具条上的画布规模总览 —— */
+/* 4 个散点指标收进一个"信息胶囊"：左组于是变成
+   「标题｜信息条｜模式开关」三段式，而不是一排等权重的浮字。 */
 .gt-stats {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
+  height: 24px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
   font-size: 11px;
-  color: #64748b;
+  color: #475569;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .gts-item {
   display: inline-flex;
@@ -2137,20 +2311,23 @@ onUnmounted(() => {
 .gts-sep {
   width: 1px;
   height: 11px;
-  background: #cbd5e1;
+  background: rgba(148, 163, 184, 0.55);
 }
+/* 指标点统一成同尺寸圆点：此前是"方块 + 短横线 + 两个圆"三种形状混排，
+   形状不齐比颜色不齐更显乱；颜色仍一一对应节点 / 数据流 / 威胁 / 覆盖。 */
 .gts-ico {
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   display: inline-block;
+  flex-shrink: 0;
 }
 .gts-ico.node { background: #2563eb; }
-.gts-ico.flow { background: #0891b2; height: 2px; border-radius: 1px; }
-.gts-ico.threat { background: #dc2626; border-radius: 50%; }
-.gts-ico.cover { background: #16a34a; border-radius: 50%; }
+.gts-ico.flow { background: #0891b2; }
+.gts-ico.threat { background: #dc2626; }
+.gts-ico.cover { background: #16a34a; }
 
-/* —— 工具条图标按钮（折叠右栏） —— */
+/* —— 工具条图标按钮（适配视图 / 全屏 / 折叠右栏） —— */
 .gt-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -2158,7 +2335,7 @@ onUnmounted(() => {
   width: 24px;
   height: 24px;
   padding: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #475569;
@@ -2169,6 +2346,11 @@ onUnmounted(() => {
   border-color: #7c3aed;
   color: #7c3aed;
   background: rgba(124, 58, 237, 0.05);
+}
+/* 三个视图操作按钮彼此收拢（10px → 5px），读起来是一"组"；
+   与左侧信息区仍保留 10px，右组不再是一排等距散落的方块。 */
+.gt-icon-btn + .gt-icon-btn {
+  margin-left: -5px;
 }
 
 /* —— 右栏折叠后的召回把手 —— */

@@ -10,7 +10,10 @@
          折行：窗口一窄，数据流这一族就被拆到第三排、和筛选按钮各占一行。
          现在固定成两排成组（.legend-row），第 2 排专放数据流家族 + 数据流筛选。 -->
     <div v-if="model" class="legend">
-      <!-- 第 1 排：节点类型（可点击高亮） -->
+      <!-- 第 1 排：节点类型 —— 四类都是高亮开关（可点性一致，此前 AI 组件是
+           唯一一个只读项，一排里 3 个能点 1 个不能点最容易被当成"乱"）。
+           造型统一画在 36px 宽的图框里（preserveAspectRatio=meet 只居中不拉伸），
+           于是与第 2 排 36px 的线型图例左右同宽、圆心对齐成同一列。 -->
       <div class="legend-row">
         <button
           type="button"
@@ -19,11 +22,11 @@
           title="点击高亮所有外部实体"
           @click="toggleHighlight('actor')"
         >
-          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="5.25"
                   :fill="specOf('tm.Actor').fill" :stroke="specOf('tm.Actor').stroke" stroke-width="1.5" />
           </svg>
-          外部实体
+          <span class="lg-label">外部实体</span>
         </button>
         <button
           type="button"
@@ -32,11 +35,11 @@
           title="点击高亮所有处理节点"
           @click="toggleHighlight('process')"
         >
-          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
                   :fill="specOf('tm.Process').fill" :stroke="specOf('tm.Process').stroke" stroke-width="1.5" />
           </svg>
-          处理
+          <span class="lg-label">处理</span>
         </button>
         <button
           type="button"
@@ -48,34 +51,32 @@
           <!-- 图例里的造型必须与实际节点同形状：圆柱走与节点同一份
                cylinderBodyD（dfd_spec 比例），否则又回到"图例说矩形、
                图上画圆柱"的历史不一致。 -->
-          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
             <path :d="cylinderBodyD(24, 12)" :fill="specOf('tm.Store').fill"
                   :stroke="specOf('tm.Store').stroke" stroke-width="1.1" />
           </svg>
-          数据存储
+          <span class="lg-label">数据存储</span>
         </button>
-        <span class="lg-item">
-          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
-            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
-                  :fill="specOf('tm.Model').fill" :stroke="specOf('tm.Model').stroke" stroke-width="1.5" />
-          </svg>
-          AI 组件
-        </span>
-      </div>
-      <!-- 第 2 排：数据流家族（线型图例）+ 数据流筛选 -->
-      <div class="legend-row">
         <button
           type="button"
           class="lg-item lg-toggle"
-          :class="{ active: activeHighlight === 'flow' }"
-          title="点击高亮所有数据流"
-          @click="toggleHighlight('flow')"
+          :class="{ active: activeHighlight === 'model' }"
+          title="点击高亮所有 AI 组件"
+          @click="toggleHighlight('model')"
         >
-          <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="18" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
+                  :fill="specOf('tm.Model').fill" :stroke="specOf('tm.Model').stroke" stroke-width="1.5" />
           </svg>
-          数据流
+          <span class="lg-label">AI 组件</span>
         </button>
+      </div>
+      <!-- 第 2 排：数据流家族（线型图例）+ 数据流筛选。
+           注：原先首项是「数据流」高亮开关（点击把非数据流元素压暗），
+           与紧邻的「全部数据流 x/y」筛选 chip 语义相近、易被当成同一功能，
+           且四档线型图例本身已说明"什么线是数据流"，故按反馈移除；
+           第 1 排的节点高亮开关保留。 -->
+      <div class="legend-row">
         <span class="lg-item">
           <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
             <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" />
@@ -462,10 +463,14 @@ function clearHighlight() {
 function applyHighlight(type) {
   if (!graph) return
   // X6 节点 shape 统一是 'rect'，原始类型存在 data.tdCell.shape 中
+  // （type='flow' 目前无 UI 入口——图例里的「数据流」高亮 chip 已按反馈移除；
+  //   分支保留，语义仍是"只亮数据流、把节点压暗"，便于以后重新挂入口。）
   const shapeMap = {
     process: 'tm.Process',
     store: 'tm.Store',
     actor: 'tm.Actor',
+    // AI 组件也可高亮：第一排四类节点是全套开关，不能有一个点不动
+    model: 'tm.Model',
   }
   const targetShape = shapeMap[type]
   graph.getNodes().forEach((n) => {
@@ -2458,21 +2463,24 @@ defineExpose({ fitView })
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  padding: 7px 16px 7px 22px;
+  /* 左右内缩与上方 .graph-toolbar 统一 14px：两块的左缘落在同一条竖线上 */
+  padding: 6px 14px 7px;
   font-size: 11px;
   color: var(--c-text-3, #64748b);
+  /* 整条头部带只在图例下沿收一条线（工具条自己不再画线），
+     让"工具条 + 图例"读成一块，而不是三条同色带叠着两条横线。 */
   border-bottom: 1px solid var(--c-line, #e2e8f0);
   background: var(--c-bg-soft, #f8fafc);
-  gap: 3px;
+  gap: 4px;
 }
-/* 单排：两排共用同一个左内缩，于是"排首造型/圆点圆心"落在同一竖线上
-   （第 1 排 .gt-title-dot 圆心 = 14(.graph-toolbar) + 8(.gt-title) + 3(半径) = 25
-     ≈ 第 2 排 .lg-item 造型圆心 = pad-left(.legend) 22 + 5）。 */
+/* 单排：两排共用同一个左内缩与间距，于是"造型圆心"落在同一竖线上
+   （36px 图框的几何中心 = 14(pad) + 18 = 32px）。 */
 .legend-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  /* 16px：与 .lg-toggle 的 -6px 负边距相抵后，可点胶囊之间仍有 4px 视觉间隙 */
+  gap: 16px;
   min-width: 0;
 }
 /* 浮在画布右上角的纠错提示按钮：绝对定位，不占任何行高度；
@@ -2539,7 +2547,10 @@ defineExpose({ fitView })
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  /* 统一行高：两排 chip 的基线、造型中心因此完全对齐（此前 12px 字号 + 不同
+     造型高度，两排是"各自居中"的松排） */
+  height: 22px;
+  font-size: 11.5px;
   color: var(--text);
 }
 .lg-item .lg-label {
@@ -2576,23 +2587,44 @@ defineExpose({ fitView })
 }
 /* 可点击的图例项（节点类型高亮开关）：
    默认与只读图例同款式，靠 hover/active 反馈表明可点，不额外加边框以免图例变噪。 */
+/* 可点图例项：左右各 6px 内衬 + 等量负外边距 —— 内衬让 hover/active 的
+   胶囊底有呼吸感，负 margin 把这份内衬"还"给行布局，于是**文字/造型**仍与
+   只读图例项落在同一条竖线上（左右内缩不变）。行间距 16px 与 -6px 相抵后，
+   两个胶囊之间仍有 4px 视觉间隙，不会互相压边。 */
 .lg-toggle {
-  padding: 2px 6px;
-  margin: -2px -6px;
+  padding: 0 6px;
+  margin: 0 -6px;
   border: none;
-  border-radius: 4px;
+  border-radius: 999px;
   background: transparent;
   font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+/* 鼠标点击后不要留浏览器默认焦点框（用户点一下图例就出现黑框，观感很脏），
+   键盘 Tab 聚焦才给品牌色光圈。 */
+.lg-toggle:focus {
+  outline: none;
+}
+.lg-toggle:focus-visible {
+  outline: 2px solid var(--primary-border, rgba(37, 99, 235, 0.28));
+  outline-offset: 1px;
 }
 .lg-toggle:hover {
   background: var(--bg-active);
   color: var(--primary);
 }
+/* 高亮打开：浅色底 + 内描边（原来整块填 --primary 深色，在图例里像贴了块
+   黑膏药，和旁边只读图例的轻盈感不搭）。 */
 .lg-toggle.active {
-  background: var(--primary);
-  color: #fff;
+  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary-border, rgba(37, 99, 235, 0.28));
+}
+/* .lg-label 自带深色，active 时要一起变主题色，否则文字仍是深灰 */
+.lg-toggle:hover .lg-label,
+.lg-toggle.active .lg-label {
+  color: inherit;
 }
 /* active 时色块需在白底上仍可辨：加深描边 */
 .lg-toggle.active i.dot {
@@ -2763,9 +2795,10 @@ defineExpose({ fitView })
 /* —— 图例分隔与提示 —— */
 .lg-sep {
   width: 1px;
-  height: 14px;
+  height: 13px;
   background: var(--border);
-  margin: 0 4px;
+  /* 排间距已由 .legend-row 的 gap 提供，这里只做"语义分隔"的窄留白 */
+  margin: 0 2px;
 }
 
 /* —— 数据流详情浮层（点击边后浮现） —— */
