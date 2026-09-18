@@ -22,6 +22,31 @@
       </div>
     </header>
 
+    <!-- 画布规模总览：原在 DFD 画布工具条上，按反馈移到「威胁分析」标题下 ——
+         这 4 个数字讲的正是本面板要分析的那张图（多大 / 多少流 / 多少威胁 /
+         覆盖到什么程度），放在这里比挂在画布工具条上更贴近阅读路径。
+         数据源与留在工具条时完全一致（ThreatModeling 的 graphStats：优先取
+         lastSummary.stats，缺字段时按模型 cells 兜底）。 -->
+    <div v-if="graphStats && model" class="tp-stats" :title="statsTitle">
+      <span class="tps-item">
+        <i class="tps-dot node" />{{ graphStats.nodes }} 节点
+      </span>
+      <span class="tps-sep" />
+      <span class="tps-item">
+        <i class="tps-dot flow" />{{ graphStats.flows }} 数据流
+      </span>
+      <span class="tps-sep" />
+      <span class="tps-item threat" :class="{ zero: !graphStats.threats }">
+        <i class="tps-dot threat" />{{ graphStats.threats }} 威胁
+      </span>
+      <template v-if="graphStats.coverage != null">
+        <span class="tps-sep" />
+        <span class="tps-item cover">
+          <i class="tps-dot cover" />覆盖 {{ graphStats.coverage }}%
+        </span>
+      </template>
+    </div>
+
     
     
 
@@ -386,6 +411,9 @@ const toast = (msg, type = 'info') => toastRef.value?.toast(msg, type)
 const props = defineProps({
   model: { type: Object, default: null },
   stats: { type: Object, default: null },
+  // 画布规模总览（节点 / 数据流 / 威胁 / 覆盖）：原在 DFD 工具条上，
+  // 按反馈移到本面板标题下，由 ThreatModeling 计算后传下来（口径不变）
+  graphStats: { type: Object, default: null },
   selectedCellId: { type: String, default: null },
   selectedThreats: { type: Object, default: null },
   resultId: { type: String, default: null },
@@ -393,6 +421,15 @@ const props = defineProps({
   currentUser: { type: Object, default: null },
 })
 const emit = defineEmits(['clear-selection', 'threat-updated', 'locate-cell'])
+
+/** 规模总览的 tooltip 文案（原来挂在工具条的 .gt-stats 上，随这组数字一起搬来） */
+const statsTitle = computed(() => {
+  const s = props.graphStats || {}
+  return (
+    `本图共 ${s.nodes} 个元素、${s.flows} 条数据流，已识别 ${s.threats} 条威胁` +
+    (s.coverage != null ? `，威胁覆盖度 ${s.coverage}%` : '')
+  )
+})
 
 const expanded = ref(new Set())
 const listRef = ref(null)
@@ -1050,6 +1087,60 @@ function kindLabel(kind) {
   color: var(--text-faint);
   margin-top: 2px;
 }
+
+/* —— 画布规模总览（原在 DFD 工具条上，按反馈移到本面板标题下） ——
+   贴在头部下沿：靠底色台阶（bg-panel-2）与头部区分，不再多画一条横线
+   （头部已经有 border-bottom），避免"两条同色带 + 两条横线"叠着发碎。 */
+.tp-stats {
+  display: flex;
+  align-items: center;
+  /* 面板只有 ~300px 宽：允许折行，宁可换行也不要压成一条挤在一起的浮字 */
+  flex-wrap: wrap;
+  gap: 4px 9px;
+  flex: none;
+  padding: 7px 14px 8px;
+  background: var(--bg-panel-2);
+  font-size: 11px;
+  color: var(--text-dim);
+  /* 数字等宽：威胁数从 111 → 999 时不会把后面的指标推来推去 */
+  font-variant-numeric: tabular-nums;
+}
+.tps-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.tps-item.threat {
+  color: var(--danger, #b91c1c);
+  font-weight: 600;
+}
+.tps-item.threat.zero {
+  color: var(--text-faint, #94a3b8);
+  font-weight: 500;
+}
+.tps-item.cover {
+  color: #15803d;
+  font-weight: 600;
+}
+.tps-sep {
+  width: 1px;
+  height: 11px;
+  background: var(--border, #cbd5e1);
+  flex-shrink: 0;
+}
+/* 指标点统一成同尺寸圆点：颜色一一对应节点 / 数据流 / 威胁 / 覆盖 */
+.tps-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.tps-dot.node { background: #2563eb; }
+.tps-dot.flow { background: #0891b2; }
+.tps-dot.threat { background: #dc2626; }
+.tps-dot.cover { background: #16a34a; }
 
 /* —— 关键提醒条 —— 取代原 KPI 卡片：
    原来 4 格 KPI（组件/数据流/威胁/高危）与工具条重复 3 格，

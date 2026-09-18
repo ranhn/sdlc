@@ -10,67 +10,11 @@
          折行：窗口一窄，数据流这一族就被拆到第三排、和筛选按钮各占一行。
          现在固定成两排成组（.legend-row），第 2 排专放数据流家族 + 数据流筛选。 -->
     <div v-if="model" class="legend">
-      <!-- 第 1 排：节点类型 —— 四类都是高亮开关（可点性一致，此前 AI 组件是
-           唯一一个只读项，一排里 3 个能点 1 个不能点最容易被当成"乱"）。
-           造型统一画在 36px 宽的图框里（preserveAspectRatio=meet 只居中不拉伸），
-           于是与第 2 排 36px 的线型图例左右同宽、圆心对齐成同一列。 -->
-      <div class="legend-row">
-        <button
-          type="button"
-          class="lg-item lg-toggle"
-          :class="{ active: activeHighlight === 'actor' }"
-          title="点击高亮所有外部实体"
-          @click="toggleHighlight('actor')"
-        >
-          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="5.25"
-                  :fill="specOf('tm.Actor').fill" :stroke="specOf('tm.Actor').stroke" stroke-width="1.5" />
-          </svg>
-          <span class="lg-label">外部实体</span>
-        </button>
-        <button
-          type="button"
-          class="lg-item lg-toggle"
-          :class="{ active: activeHighlight === 'process' }"
-          title="点击高亮所有处理节点"
-          @click="toggleHighlight('process')"
-        >
-          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
-                  :fill="specOf('tm.Process').fill" :stroke="specOf('tm.Process').stroke" stroke-width="1.5" />
-          </svg>
-          <span class="lg-label">处理</span>
-        </button>
-        <button
-          type="button"
-          class="lg-item lg-toggle"
-          :class="{ active: activeHighlight === 'store' }"
-          title="点击高亮所有数据存储"
-          @click="toggleHighlight('store')"
-        >
-          <!-- 图例里的造型必须与实际节点同形状：圆柱走与节点同一份
-               cylinderBodyD（dfd_spec 比例），否则又回到"图例说矩形、
-               图上画圆柱"的历史不一致。 -->
-          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-            <path :d="cylinderBodyD(24, 12)" :fill="specOf('tm.Store').fill"
-                  :stroke="specOf('tm.Store').stroke" stroke-width="1.1" />
-          </svg>
-          <span class="lg-label">数据存储</span>
-        </button>
-        <button
-          type="button"
-          class="lg-item lg-toggle"
-          :class="{ active: activeHighlight === 'model' }"
-          title="点击高亮所有 AI 组件"
-          @click="toggleHighlight('model')"
-        >
-          <svg class="lg-fig" width="36" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
-                  :fill="specOf('tm.Model').fill" :stroke="specOf('tm.Model').stroke" stroke-width="1.5" />
-          </svg>
-          <span class="lg-label">AI 组件</span>
-        </button>
-      </div>
+      <!-- 节点类型图例（外部实体 / 处理 / 数据存储 / AI 组件）已按反馈移到
+           DFD 工具条那一排（ThreatModeling 的 .gt-legend）：它和「DFD 画布」标题、
+           模式开关同属"操作画布"的一类控件，占一整行只在窄屏下显空。
+           造型与配色仍由本组件提供（nodeLegend，见 defineExpose），
+           工具条不复制第二套规格，避免"图例颜色和节点对不上"的历史问题。 -->
       <!-- 第 2 排：数据流家族（线型图例）+ 数据流筛选。
            注：原先首项是「数据流」高亮开关（点击把非数据流元素压暗），
            与紧邻的「全部数据流 x/y」筛选 chip 语义相近、易被当成同一功能，
@@ -108,23 +52,30 @@
           <span class="lg-label">跨边界+公网</span>
         </span>
         <span class="lg-sep"></span>
-        <!-- 数据流精简：视图层过滤，不删模型数据。删除数据流会连带影响
-             威胁归属与报告口径（STRIDE 按交互路径分析），所以做成可逆的
-             显示过滤。三档循环：全部 → 仅跨边界(9/18) → 跨边界∩高危(7/18)。 -->
-        <button
-          type="button"
-          class="lg-item lg-toggle"
-          :class="{ active: securityFlowFilter }"
-          :title="`当前：${filterLabel}。点击切换到下一档（全部 → 仅跨边界 → 跨边界∩高危）`"
-          @click="toggleSecurityFilter"
-        >
-          <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="18" y2="5" stroke="currentColor" stroke-width="2"
-                  stroke-dasharray="3 2.4" stroke-linecap="round" />
-          </svg>
-          {{ filterLabel }}
-          <span class="lg-count">{{ flowStats.relevant }}/{{ flowStats.total }}</span>
-        </button>
+        <!-- 数据流分层（视图层，不改模型数据）：主图 = 重要流（跨边界 / 加密 /
+             公网 / 挂高危威胁），次要流（服务间内部调用编排）默认收起；
+             切到「全部」时次要流以淡线画出，颜色与线型语义完全不变。
+             用两段式而不是原来的三档循环：当前档一眼可见，也不用连点猜档位。 -->
+        <span class="lg-seg" role="group" aria-label="数据流显示范围">
+          <button
+            type="button"
+            class="lg-seg-btn"
+            :class="{ active: flowViewMode === 'important' }"
+            :title="`主图：只画重要数据流（跨边界 / 加密 / 公网 / 挂高危威胁），当前收起 ${flowHiddenCount} 条内部调用流`"
+            @click="setFlowViewMode('important')"
+          >
+            主图<span class="lg-count">{{ flowStats.important }}</span>
+          </button>
+          <button
+            type="button"
+            class="lg-seg-btn"
+            :class="{ active: flowViewMode === 'all' }"
+            title="全部：显示所有数据流，次要流以淡线画出（便于对照导出图）"
+            @click="setFlowViewMode('all')"
+          >
+            全部<span class="lg-count">{{ flowStats.total }}</span>
+          </button>
+        </span>
       </div>
     </div>
 
@@ -388,61 +339,84 @@ function toggleHighlight(type) {
   applyHighlight(type)
 }
 
-// —— 只看跨边界的数据流（视图过滤，不改模型） ——
-// 判定：只保留 crossesTrustBoundary 的流。实测依据（健康手环模型 18 条流）���
-//   - 18/18 全部挂有威胁 → "挂威胁保留"会让过滤完全失效（上一版踩的坑）；
-//   - AI 对 enc/pub 标注偏松（15 条加密、13 条公网）→ 以此为条件也滤不掉几条；
-//   - 跨信任边界是 STRIDE 威胁的核心发生地，9/18 保留恰好砍半。
-// 删除数据流属于改模型的高风险操作（威胁归属、覆盖度、报告口径都会变），
-// 所以这里只做可逆的显示过滤。
-function flowSecurityRelevant(cell) {
-  if (!cell) return true
-  const mode = flowFilterMode.value
-  if (!mode) return true
-  const cross = (cell.data || {}).crossesTrustBoundary === true
-  if (mode === 'cross') return cross
-  const high = flowHasHighThreat(cell)
-  if (mode === 'crossHigh') return cross && high
-  return cross || high
-}
-
-const flowFilterMode = ref('')
-const securityFlowFilter = computed(() => flowFilterMode.value !== '')
+// —— 数据流分层：视图层「主图 / 全部」，不改模型数据 ——
+//
+// 为什么不从源头删流：威胁是**按交互路径**挂上去的，每条流都承载威胁
+// （实测电商模型：16 组件 / 26 条流 / 52 条威胁，且同向重复流 0 组，没有
+//  可合并的冗余）—— 删一条流就少两条威胁，报告覆盖度直接掉。所以源头只做
+//  "防造垃圾"，收敛动作全部留在可逆的显示层。
+//
+// 「重要」的确定性判定（三选一，都能对用户解释清楚）：
+//   · 跨信任边界 —— STRIDE 威胁的核心发生地；
+//   · 加密 / 公网 —— 敏感数据与暴露面；
+//   · 挂 high|critical 威胁 —— 已被证实的高风险路径。
+// 实测收益（同一模型）：26 条 → 主图 15 条（-42%），
+// high|critical 威胁覆盖 15/15 = 100%；被收起的 11 条全是"服务→服务内部
+// 调用"（订单↔库存/促销/风控、履约状态、退款编排）—— 正是画布上那堆交叉细线。
+const FLOW_VIEW_LABEL = { important: '主图', all: '全部' }
+const flowViewMode = ref('important') // 默认主图：先给可读的骨架，需要时一键展开
 
 function flowHasHighThreat(cell) {
-  return (cell?.threats || []).some(
-    (t) => String(t.severity || t.level || '').toLowerCase() === 'high',
-  )
+  return (cell?.threats || []).some((t) => {
+    const s = String(t?.severity || t?.level || '').toLowerCase()
+    return s === 'high' || s === 'critical'
+  })
 }
 
-/** 图例徽标：安全相关流数 / 总流数（开不开都显示，让用户预知过滤效果） */
+/** 单条流是否属于「重要」（主图默认只画这些） */
+function flowIsImportant(cell) {
+  const d = cell?.data || {}
+  return d.crossesTrustBoundary === true
+    || d.isEncrypted === true
+    || d.isPublicNetwork === true
+    || flowHasHighThreat(cell)
+}
+
+/** 当前档位下这条流是否该显示 */
+function flowVisible(cell) {
+  return flowViewMode.value === 'all' || flowIsImportant(cell)
+}
+
+/**
+ * 边的**基准**透明度：次要流即使在「全部」档下也画淡（0.32），
+ * 让骨架（重要流）先跳出来，次要流退到背景里。
+ * hover / 选中 / 高亮等临时态都从这里恢复，所以这是"静息值"的唯一来源。
+ */
+function baseEdgeOpacity(cell) {
+  if (!flowIsImportant(cell)) return 0.32
+  const d = cell?.data || {}
+  return d.isEncrypted || d.isPublicNetwork ? 0.95 : 0.9
+}
+
+/** 图例徽标：重要流数 / 总流数（让用户预知"收起了多少"） */
 const flowStats = computed(() => {
   const cells = props.model?.detail?.diagrams?.[0]?.cells || []
   const flows = cells.filter((c) => c.shape === 'tm.Flow')
   return {
     total: flows.length,
-    cross: flows.filter((c) => (c.data || {}).crossesTrustBoundary === true).length,
-    relevant: flows.filter(flowSecurityRelevant).length,
+    important: flows.filter(flowIsImportant).length,
   }
 })
+/** 主图档位下被收起（不在画布上）的流数 */
+const flowHiddenCount = computed(() => flowStats.value.total - flowStats.value.important)
 
-const FILTER_LABEL = { '': '全部数据流', cross: '仅跨边界', crossHigh: '跨边界∩高危' }
-const filterLabel = computed(() => FILTER_LABEL[flowFilterMode.value] || '')
-
-function toggleSecurityFilter() {
-  const cycle = ['', 'cross', 'crossHigh']
-  const i = cycle.indexOf(flowFilterMode.value)
-  flowFilterMode.value = cycle[(i + 1) % cycle.length]
+function setFlowViewMode(mode) {
+  if (flowViewMode.value === mode) return
+  flowViewMode.value = mode
   applyFlowFilter()
 }
 
-/** 把当前档位的可见性写到所有边上 */
+/** 把当前档位的可见性与基准透明度写到所有边上 */
 function applyFlowFilter() {
   if (!graph) return
   for (const e of graph.getEdges()) {
     const cell = e.getData()?.tdCell
     if (!cell) continue
-    e.setVisible(!securityFlowFilter.value || flowSecurityRelevant(cell))
+    e.setVisible(flowVisible(cell))
+    // 基准透明度同步刷新：展开次要流时它一出现就是"淡线"，不会先亮后淡
+    const op = baseEdgeOpacity(cell)
+    e.getData()._baseOpacity = op
+    e.attr('line/opacity', op)
   }
 }
 
@@ -631,6 +605,31 @@ function specOf(shape) {
   return nodeSpec(shape)
 }
 
+/**
+ * 节点类型图例（外部实体 / 处理 / 数据存储 / AI 组件）的数据源。
+ *
+ * 这组 chip 按反馈从画布图例搬到了 DFD 工具条那一排（渲染在 ThreatModeling 的
+ * .gt-legend），但**造型与配色依旧由本组件给**：颜色读同一份 nodeSpec，
+ * 存储的圆柱走同一份 cylinderBodyD —— 工具条只渲染，不维护第二套规格，
+ * 否则又会回到"图例色块和图上节点对不上"的老问题。
+ *
+ * 四类都是高亮开关（可点性一致）：点一下只亮该类节点、其余压暗，再点恢复。
+ */
+const nodeLegend = computed(() =>
+  [
+    { type: 'actor', label: '外部实体', shape: 'tm.Actor', rx: 5.25, sw: 1.5, title: '点击高亮所有外部实体' },
+    { type: 'process', label: '处理', shape: 'tm.Process', rx: 3, sw: 1.5, title: '点击高亮所有处理节点' },
+    { type: 'store', label: '数据存储', shape: 'tm.Store', kind: 'cylinder', title: '点击高亮所有数据存储' },
+    { type: 'model', label: 'AI 组件', shape: 'tm.Model', rx: 3, sw: 1.5, title: '点击高亮所有 AI 组件' },
+  ].map((it) => ({
+    ...it,
+    fill: specOf(it.shape).fill,
+    stroke: specOf(it.shape).stroke,
+    // 圆柱与节点同形状、同几何（dfd_spec 比例）：否则又是"图例说矩形、图上画圆柱"
+    path: it.kind === 'cylinder' ? cylinderBodyD(24, 12) : null,
+  })),
+)
+
 // —— FlowDetailPanel 的派生属性 ——
 const flowDetailType = computed(() => {
   if (!flowDetail.value) return ''
@@ -771,6 +770,12 @@ function initGraph() {
   // 也避免"只读时拖了节点没保存"导致页面与后端/导出图不一致。
   graph = new Graph({
     container: c,
+    // X6 的**内部尺寸**（options.width/height）只在构造时抓一次容器 clientWidth，
+    // 之后 zoomTo/centerPoint 都按它算（见 fitView 里的说明）。开了 autoResize，
+    // X6 会自己把 SizeSensor 绑到容器父级（.graph-body）上，容器一变就同步内部
+    // 尺寸 —— 进全屏 / 折叠右栏 / 笔记本窗口缩放这类"纯 CSS 尺寸变化"不会再让
+    // 内部尺寸停在旧值上导致内容偏移。
+    autoResize: true,
     grid: { visible: true, size: 20, type: 'dot' },
     background: { color: 'transparent' },
     // 平移与缩放两种模式都保留：只读浏览同样需要挪动/放大看细节
@@ -1208,8 +1213,15 @@ function focusCell(id) {
   // 抛 TypeError(graph.resetSelection is not a function),整条 watcher 链路都被
   // Vue 吞掉,导致 emphasisCell/centerCell 全部不执行,体感"点了没反应"。
   // emphasisCell 已经提供视觉反馈,不需要内置选中。
-  // 「只看跨边界」开启时，被过滤隐藏的数据流也要能被定位到：
-  // 威胁列表的"定位"可能指向隐藏的流，此时临时恢复显示该边，
+  //
+  // 定位目标若是被「主图」档收起的次要流：直接把档位切到「全部」
+  // （分段控件随之显示为"全部"，用户看得见发生了什么），而不是给单条边
+  // 偷偷开个口子 —— 后者会让「主图」这个档位的语义变得不可信。
+  const targetTd = cell.getData?.()?.tdCell
+  if (cell.isEdge?.() && targetTd && flowViewMode.value !== 'all' && !flowVisible(targetTd)) {
+    setFlowViewMode('all')
+  }
+  // 兜底：档位之外的隐藏原因（如后续新增的其它分层规则）仍临时恢复该边，
   // 否则高亮/居中都作用在不可见元素上，等于"点了没反应"。
   if (cell.isEdge?.() && !cell.isVisible()) {
     cell.setVisible(true)
@@ -2011,13 +2023,16 @@ function addEdge(cell) {
     ? flowHint.route.map((p) => ({ x: p[0], y: p[1] }))
     : null
 
+  // 基准透明度：重要流保持原观感，次要流（内部调用编排）淡到 0.32；
+  // hover / 选中 / 高亮等临时态都恢复到它，定义见 baseEdgeOpacity。
+  const baseOpacity = baseEdgeOpacity(cell)
   const edge = graph.addEdge({
     id: cell.id,
     source: { cell: cell.source.cell },
     target: { cell: cell.target.cell },
-    // 数据流精简档位开启时隐藏不匹配的流（判定见 flowSecurityRelevant）；
-    // 重渲染走同一分支，过滤状态在渲染间保持一致
-    visible: !securityFlowFilter.value || flowSecurityRelevant(cell),
+    // 可见性由视图档位决定（判定见 flowVisible）：主图只画重要流，
+    // 「全部」档把次要流也画出来（淡线）。重渲染走同一分支，档位在渲染间保持一致。
+    visible: flowVisible(cell),
     // 边保持在 lane 之上、节点之下，避免遮挡组件标签但不被虚线边界覆盖
     zIndex: cell.zIndex ?? 50,
     data: {
@@ -2025,6 +2040,7 @@ function addEdge(cell) {
       _baseStroke: stroke,
       _baseStrokeWidth: baseStrokeWidth,
       _baseStrokeDasharray: strokeDasharray,
+      _baseOpacity: baseOpacity,
       _backendRoute: !!backendRoute,
       // 后端下发的**原始** route（模型坐标），作为拖动重建的不可变基准：
       // 反复拖动时都从它出发，避免累积插入的过渡折点；
@@ -2107,9 +2123,10 @@ function addEdge(cell) {
         stroke,
         strokeWidth: baseStrokeWidth,
         strokeDasharray,
-        // 普通流 0.9：对齐后端 PNG 的实线观感（此前 0.75，缩小后灰线发虚）；
-        // hover 时仍统一压到 0.18，对比度不受影响。
-        opacity: isEncrypted ? 0.95 : isPublicNetwork ? 0.95 : 0.9,
+        // 基准透明度来自 baseEdgeOpacity：普通流 0.9（对齐后端 PNG 的实线观感，
+        // 此前 0.75 缩小后灰线发虚）、加密/公网 0.95、次要流 0.32；
+        // hover / 选中时统一压到 0.18，对比度不受影响。
+        opacity: baseOpacity,
         targetMarker: {
           name: 'block',
           size: 7,
@@ -2188,6 +2205,9 @@ function avoidEdgeLabels() {
       + (d.crossesTrustBoundary ? 1 : 0)
   }
   const edges = graph.getEdges()
+    // 被视图档位隐藏的边不参与占位：它们不渲染，却仍会占用标签 bbox，
+    // 把可见标签推离理想位置（隐藏边的 bbox 本身也不可靠）。
+    .filter((e) => e.isVisible())
     .filter((e) => e.getLabelAt(0)?.attrs?.label?.text)
     .sort((a, b) => rank(b) - rank(a))
 
@@ -2274,7 +2294,9 @@ function restoreAllEdgeStyles() {
     e.attr('line/stroke', d._baseStroke || STYLE.Flow.stroke)
     e.attr('line/strokeWidth', d._baseStrokeWidth || 1.5)
     e.attr('line/strokeDasharray', d._baseStrokeDasharray || null)
-    e.attr('line/opacity', 0.9)
+    // 基准透明度：次要流是 0.32，不能写死 0.9（否则一次 hover 就把
+    // 视图层的"淡化"抹掉，次要流又和主干一样亮）
+    e.attr('line/opacity', d._baseOpacity ?? 0.9)
     e.attr('line/filter', null)
   }
 }
@@ -2355,14 +2377,23 @@ function fitView(retry = 10) {
     }
     return
   }
-  // 容器从 display:none 变为可见后，X6 内部 viewport 尺寸可能仍为 0，
-  // 需要先同步画布尺寸再缩放，否则 zoomToFit 计算出的 scale 为 0/NaN 导致图不可见
+  // 容器从 display:none 变为可见后，X6 内部尺寸可能仍是 0 / 旧值，必须先同步再缩放。
+  //
+  // ⚠️ 同步的判据必须是 **X6 自己缓存的尺寸**（graph.options.width/height：
+  //    构造时抓一次容器 clientWidth，之后只有显式 graph.resize() 才会更新），
+  //    而不是"DOM 尺寸跟 rect 比" —— 本组件的 .graph-container 被 CSS 强制
+  //    `width/height:100% !important`，容器 CSS 一变 DOM 立刻就是新尺寸，那个
+  //    条件恒为假、resize 永不执行，而 centerPoint() 恰恰是按缓存里的**旧尺寸**
+  //    算居中偏移（cx = options.width / 2）：
+  //      · 进全屏（笔记本屏宽变化大）→ 内容偏在左半边、右侧一大片空白；
+  //      · 折叠右栏 + 窗口缩放同理，只是偏移量小、不容易被察觉。
+  //    这是"全屏后没自动居中"的根因，不是动画时序问题。
+  const targetW = Math.round(rect.width)
+  const targetH = Math.round(rect.height)
   try {
-    const viewport = graph.getGraphContainer?.()
-    const curW = viewport?.clientWidth ?? graph.container?.clientWidth ?? 0
-    const curH = viewport?.clientHeight ?? graph.container?.clientHeight ?? 0
-    if (curW !== rect.width || curH !== rect.height) {
-      graph.resize(rect.width, rect.height)
+    const cached = graph.options || {}
+    if (Math.round(cached.width) !== targetW || Math.round(cached.height) !== targetH) {
+      graph.resize(targetW, targetH)
     }
   } catch (e) {
     // 忽略 resize 异常
@@ -2431,7 +2462,10 @@ function fitView(retry = 10) {
   syncLaneBandWidth()
 }
 
-defineExpose({ fitView })
+// 对外暴露：fitView（工具条「适配视图」）+
+// nodeLegend / activeHighlight / toggleHighlight（工具条那排节点类型图例，
+// 渲染在 ThreatModeling 里，但造型、配色、高亮状态都由本组件负责）
+defineExpose({ fitView, nodeLegend, activeHighlight, toggleHighlight })
 </script>
 
 <style scoped>
@@ -2473,14 +2507,14 @@ defineExpose({ fitView })
   background: var(--c-bg-soft, #f8fafc);
   gap: 4px;
 }
-/* 单排：两排共用同一个左内缩与间距，于是"造型圆心"落在同一竖线上
-   （36px 图框的几何中心 = 14(pad) + 18 = 32px）。 */
+/* 现在只剩这一排（节点类型那排已并到工具条，见 nodeLegend / .gt-legend）：
+   全是只读图例项，间距回到 12px —— 此前的 16px 是为了给"可点胶囊 + 负边距"
+   留呼吸位，节点芯片搬走后不需要了。 */
 .legend-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  /* 16px：与 .lg-toggle 的 -6px 负边距相抵后，可点胶囊之间仍有 4px 视觉间隙 */
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
 }
 /* 浮在画布右上角的纠错提示按钮：绝对定位，不占任何行高度；
@@ -2566,71 +2600,72 @@ defineExpose({ fitView })
   color: var(--text-dim);
   line-height: 15px;
 }
-.lg-toggle.active .lg-count {
-  background: var(--primary, #2563eb);
-  color: #fff;
-}
-.lg-item .lg-fig {
-  display: inline-block;
-  flex-shrink: 0;
-  overflow: visible;
-}
-/* active（高亮打开）时白底上要仍可辨：给造型加一圈描边阴影。
-   造型本身已有 stroke，这里只补底色衬托，避免圆柱顶盖与白底糊在一起。 */
-.lg-toggle.active .lg-fig {
-  filter: drop-shadow(0 0 0.5px rgba(255, 255, 255, 0.9));
-}
 .lg-item .dash {
   width: 22px;
   height: 0;
   border-top: 2px dashed var(--text-dim);
 }
-/* 可点击的图例项（节点类型高亮开关）：
-   默认与只读图例同款式，靠 hover/active 反馈表明可点，不额外加边框以免图例变噪。 */
-/* 可点图例项：左右各 6px 内衬 + 等量负外边距 —— 内衬让 hover/active 的
-   胶囊底有呼吸感，负 margin 把这份内衬"还"给行布局，于是**文字/造型**仍与
-   只读图例项落在同一条竖线上（左右内缩不变）。行间距 16px 与 -6px 相抵后，
-   两个胶囊之间仍有 4px 视觉间隙，不会互相压边。 */
-.lg-toggle {
-  padding: 0 6px;
-  margin: 0 -6px;
+/* 可点击的节点类型图例项（.lg-toggle / .lg-fig / active 的胶囊底）随这组芯片
+   一起搬到了 DFD 工具条：样式改在 ThreatModeling.vue 的 .gtl-item，
+   造型数据仍由本组件的 nodeLegend 提供。 */
+
+/* —— 「主图 / 全部」两段式切换 —— */
+/* 比原来的三档循环更直观：当前档位一眼可见（白底滑块 + 主题色），
+   两个档位各自带流数徽标，不用连点去猜自己在哪一档。 */
+.lg-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+}
+.lg-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 8px;
   border: none;
   border-radius: 999px;
   background: transparent;
   font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 }
-/* 鼠标点击后不要留浏览器默认焦点框（用户点一下图例就出现黑框，观感很脏），
-   键盘 Tab 聚焦才给品牌色光圈。 */
-.lg-toggle:focus {
+.lg-seg-btn:hover {
+  color: var(--primary);
+}
+.lg-seg-btn:focus {
   outline: none;
 }
-.lg-toggle:focus-visible {
+.lg-seg-btn:focus-visible {
   outline: 2px solid var(--primary-border, rgba(37, 99, 235, 0.28));
   outline-offset: 1px;
 }
-.lg-toggle:hover {
-  background: var(--bg-active);
+.lg-seg-btn.active {
+  background: #fff;
   color: var(--primary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
 }
-/* 高亮打开：浅色底 + 内描边（原来整块填 --primary 深色，在图例里像贴了块
-   黑膏药，和旁边只读图例的轻盈感不搭）。 */
-.lg-toggle.active {
-  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
-  color: var(--primary);
-  box-shadow: inset 0 0 0 1px var(--primary-border, rgba(37, 99, 235, 0.28));
+/* 徽标在浅色滑块里要有自己的对比（.lg-count 的默认底色只适配图例项） */
+.lg-seg .lg-count {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.28);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: #475569;
+  line-height: 14px;
 }
-/* .lg-label 自带深色，active 时要一起变主题色，否则文字仍是深灰 */
-.lg-toggle:hover .lg-label,
-.lg-toggle.active .lg-label {
-  color: inherit;
+.lg-seg-btn.active .lg-count {
+  background: var(--primary);
+  color: #fff;
 }
-/* active 时色块需在白底上仍可辨：加深描边 */
-.lg-toggle.active i.dot {
-  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85);
-}
-
 /* —— 主图区 —— */
 .graph-body {
   flex: 1;

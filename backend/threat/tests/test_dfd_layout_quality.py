@@ -7,7 +7,7 @@
 为什么要有它：
     数据流图的"好看"以前只能靠人眼看截图判断，改一处布局经常在别处
     悄悄劣化（历史上边穿节点一度达到 191 处也无人察觉）。这里把商业级
-    标准固化成断言，任何布局改动都能立刻看到六个维度的数字变化。
+    标准固化成断言，任何布局改动都能立刻看到各维度的数字变化。
 
 阈值取自「商业级 DFD 工具」（draw.io / Lucidchart / IriusRisk）的
 共同特征：
@@ -47,6 +47,15 @@ _RESULTS_DIR = os.path.join(_BACKEND, "data", "results")
 MAX_SPAN_RATIO = 3.0
 MIN_FILL_RATIO = 0.75
 MAX_ASPECT = 2.6
+
+# 交叉数（edge_crossing）：每条流平均允许的交叉处数。
+# 实测参考（16 组件 / 26 条流的真实模型）：
+#   · 单调局部重路由上线前：62 处 = 2.38/条流
+#   · 上线后：51 处 = 1.96/条流（-18%）
+#   · 只保留重要流（视图层默认档）：11 处 = 0.73/条流
+# 阈值取 1.5/条流：比"全量真实图"紧、比"重要流子图"松，
+# 只用来拦住"某次布线改动让交叉暴涨"，不要求合成场景为零。
+MAX_CROSSINGS_PER_EDGE = 1.5
 
 
 def _records():
@@ -179,6 +188,7 @@ def test_historical_results_report(capsys=None):
     agg = {"member_outside": 0, "node_overlap": 0, "boundary_overlap": 0,
            "edge_through_node": 0, "edge_overlap": 0}
     ratios, fills = [], []
+    cross_total, cross_edges = 0, 0
     for name, rec in records:
         m = M.evaluate(rec)
         if not m:
@@ -188,10 +198,15 @@ def test_historical_results_report(capsys=None):
             agg[k] += len(m[k])
         ratios.append(m["span_ratio"])
         fills.append(m["fill_ratio"])
+        cross_total += int(m.get("edge_crossing") or 0)
+        cross_edges += int(m.get("n_edges") or 0)
     lines.append("")
     lines.append("--- 汇总 ---")
     for k, v in agg.items():
         lines.append(f"  {k}: {v}")
+    if cross_edges:
+        lines.append(f"  edge_crossing: {cross_total} 处 / {cross_edges} 条流 "
+                     f"= {cross_total / cross_edges:.2f}/条流 (阈值 {MAX_CROSSINGS_PER_EDGE})")
     if ratios:
         lines.append(f"  平均 span_ratio: {sum(ratios) / len(ratios):.2f}")
         lines.append(f"  平均 fill_ratio: {sum(fills) / len(fills):.1%}")
@@ -308,11 +323,68 @@ def test_candidate_channel_pruning_keeps_zero_defects():
         )
 
 
+# ----------------------------------------------------------------------
+# 交叉数（edge_crossing）：口径正确性 + 预算
+# ----------------------------------------------------------------------
+
+def test_seg_crosses_geometry():
+    """真交叉判定：内部相交算；端点相接、共线贴合、平行都不算。
+
+    这三条是「误报防线」：DFD 里同一组件的多条边常汇聚到边界上的同一点，
+    若端点相接被判成交叉，指标会常年虚高到没人再信它。
+    """
+    def p(x, y):
+        return (float(x), float(y))
+
+    # 十字交叉：两条线段内部相交
+    assert M._seg_crosses(p(0, 0), p(10, 0), p(5, -5), p(5, 5))
+    # 端点相接（共享端点 / T 形）：不算
+    assert not M._seg_crosses(p(0, 0), p(10, 0), p(10, 0), p(10, 10))
+    assert not M._seg_crosses(p(0, 0), p(10, 0), p(5, 0), p(0, 5))
+    # 共线贴合：不算（归 edge_overlap 管）
+    assert not M._seg_crosses(p(0, 0), p(10, 0), p(2, 0), p(8, 0))
+    # 平行不相交：不算
+    assert not M._seg_crosses(p(0, 0), p(10, 0), p(0, 5), p(10, 5))
+
+
+def test_edge_crossing_total_matches_detail():
+    """总数必须等于明细处数之和：两者同源，否则报告自相矛盾。"""
+    for name, diagram in _synthetic_scenarios():
+        m = M.evaluate({"model": {"detail": {"diagrams": [diagram]}}})
+        assert m is not None
+        total, detail = M._edge_crossing_index(diagram)
+        assert total == m["edge_crossing"], f"{name}: 总数与 evaluate 不一致"
+        assert total == sum(c for _, _, c in detail), f"{name}: 总数与明细之和不一致"
+        assert all(c > 0 for _, _, c in detail), f"{name}: 明细里出现 0 处的条目"
+
+
+def test_edge_crossing_budget_on_synthetic():
+    """合成场景：每条流平均交叉数不得超预算（拦「某次改动让交叉暴涨」）。"""
+    failures: list[str] = []
+    for name, diagram in _synthetic_scenarios():
+        m = M.evaluate({"model": {"detail": {"diagrams": [diagram]}}})
+        assert m is not None
+        n = max(1, m["n_edges"])
+        per = m["edge_crossing"] / n
+        print(f"  交叉: {name:16s} {m['edge_crossing']:3d} 处 / {n:2d} 条流 = {per:.2f}")
+        if per > MAX_CROSSINGS_PER_EDGE:
+            failures.append(f"{name}: {m['edge_crossing']} 处 / {n} 条流 = {per:.2f}")
+    assert not failures, (
+        f"合成场景交叉数超预算（{MAX_CROSSINGS_PER_EDGE}/条流）：\n" + "\n".join(failures)
+    )
+
+
 if __name__ == "__main__":
     print("=== 合成场景严格断言 ===")
     test_synthetic_scenarios_strict()
     test_synthetic_scenarios_edge_through_node_zero()
     print("合成场景：全部通过\n")
+
+    print("=== 交叉数（edge_crossing）口径与预算 ===")
+    test_seg_crosses_geometry()
+    test_edge_crossing_total_matches_detail()
+    test_edge_crossing_budget_on_synthetic()
+    print("交叉数：通过\n")
 
     print("=== 性能预算 ===")
     test_routing_performance_budget()

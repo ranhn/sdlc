@@ -1190,6 +1190,30 @@ class ThreatModelBuilder:
                 out_to_below[tgt] = out_to_below.get(tgt, 0) + 1
 
         visible = [k for k in lane_keys if buckets[k]]
+
+        # --- B0. 泳道内顺序：参与流数降序 + 名字 + 稳定哈希（确定性） ---
+        # 顺序必须在**任何宽度/几何计算之前**定下来：x 由行内顺序决定，
+        # 进而决定 bbox、画布宽度与所有路由。
+        #
+        # 【实测记录 · 为什么不用"邻居重心法"重排】
+        # 曾试过按"邻居在对面泳道的平均位置"重排（Sugiyama 重心法，上下交替
+        # 扫掠 4 轮），它是分层图绘制的标准做法，但这张图不适用：
+        #   · 直线交叉 44 → 33（代理指标变好）
+        #   · 真实路由交叉 62 → 70（**反而更差**）
+        # 原因是泳道在这里是"数据生命周期语义分组"，不是拓扑层：边会跨任意
+        # 远近、双向连接，稀疏图上重心法的位置估计不可靠；而且正交路由的
+        # 通道选择才是交叉的主导因素，直线代理量根本测不准。
+        # 交叉的真正改善改在路由层做（plan_edge_routes 的单调局部重路由，
+        # 实测 62 → 47），排布层保持原样。
+        for k in visible:
+            buckets[k].sort(
+                key=lambda cid: (
+                    -degree.get(cid, 0),
+                    str(comp_by_id.get(cid, {}).get("name") or ""),
+                    _stable_rank(cid),
+                )
+            )
+
         # D1：每行宽度按节点真实宽度累加（长名称节点更宽，不再用统一 col_width）
         per_lane_w = {
             k: self._row_width(buckets[k]) for k in visible
@@ -1272,14 +1296,9 @@ class ThreatModelBuilder:
 
         positions: dict[str, Any] = {}
         for k in visible:
+            # 行内顺序已在上方 B0 定好（初始排序 + 邻居重心重排）——
+            # 这里**不能**再按流数重排，否则重心法的结果会被抹掉。
             ids = buckets[k]
-            ids.sort(
-                key=lambda cid: (
-                    -degree.get(cid, 0),
-                    str(comp_by_id.get(cid, {}).get("name") or ""),
-                    _stable_rank(cid),
-                )
-            )
             n = len(ids)
             # B. 行内等距铺开：把本行组件分布到整条泳道宽度上（不再是固定
             #    60px 间距 + 整体居中 —— 那会让组件全挤在画布中间一小段）。

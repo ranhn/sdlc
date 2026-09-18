@@ -197,25 +197,33 @@
                   <span class="gt-title-dot" />
                   DFD 画布
                 </span>
-                <!-- 画布规模总览：让用户一眼知道图有多大、威胁覆盖到什么程度，
-                     不必先去右侧列表数一遍。数字全部来自 lastSummary.stats。 -->
-                <span class="gt-stats" :title="graphStatTitle">
-                  <span class="gts-item">
-                    <i class="gts-ico node" />{{ graphStats.nodes }} 节点
-                  </span>
-                  <span class="gts-sep" />
-                  <span class="gts-item">
-                    <i class="gts-ico flow" />{{ graphStats.flows }} 数据流
-                  </span>
-                  <span class="gts-sep" />
-                  <span class="gts-item threat" :class="{ zero: !graphStats.threats }">
-                    <i class="gts-ico threat" />{{ graphStats.threats }} 威胁
-                  </span>
-                  <span v-if="graphStats.coverage != null" class="gts-sep" />
-                  <span v-if="graphStats.coverage != null" class="gts-item cover">
-                    <i class="gts-ico cover" />覆盖 {{ graphStats.coverage }}%
-                  </span>
+                <!-- 节点类型图例（外部实体 / 处理 / 数据存储 / AI 组件）：
+                     原在画布图例的第 1 排，按反馈并入工具条这一排。
+                     四类都是高亮开关（点一下只亮该类节点、再点恢复）；
+                     造型与配色由 DfdGraph 的 nodeLegend 提供 —— 仍是同一份
+                     dfd_spec，这里只渲染，不复制第二套色点。 -->
+                <span class="gt-legend" role="group" aria-label="节点类型高亮">
+                  <button
+                    v-for="it in nodeLegend"
+                    :key="it.type"
+                    type="button"
+                    class="gtl-item"
+                    :class="{ active: activeHighlight === it.type }"
+                    :title="it.title"
+                    @click="onLegendToggle(it.type)"
+                  >
+                    <svg width="20" height="12" viewBox="0 0 24 12" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                      <path v-if="it.kind === 'cylinder'" :d="it.path" :fill="it.fill"
+                            :stroke="it.stroke" stroke-width="1.1" />
+                      <rect v-else x="0.75" y="0.75" width="22.5" height="10.5" :rx="it.rx"
+                            :fill="it.fill" :stroke="it.stroke" :stroke-width="it.sw" />
+                    </svg>
+                    <span class="gtl-label">{{ it.label }}</span>
+                  </button>
                 </span>
+                <!-- 画布规模总览（节点 / 数据流 / 威胁 / 覆盖）已按反馈移到右栏
+                     「威胁分析」标题下 —— 这些数字讲的是"威胁分析"的结果，
+                     放回它归属的面板里；工具条只留与画布直接相关的控件。 -->
                 <!-- 模式切换：用 button + 图标（锁 / 铅笔）替代裸 <input type=checkbox>。
                      原生复选框的尺寸、圆角、颜色都不受控，夹在一排自定义图标按钮里
                      是这块最刺眼的"杂"；换成同款 24px 胶囊后整行形状语言统一。 -->
@@ -346,6 +354,7 @@
             :model="model"
             :result-id="lastResultId"
             :stats="lastSummary?.stats"
+            :graph-stats="graphStats"
             :selected-threats="selectedThreatsPayload"
             :selected-cell-id="selectedCellId"
             :current-user="currentUser"
@@ -670,12 +679,19 @@ const graphStats = computed(() => {
     coverage,
   }
 })
-const graphStatTitle = computed(
-  () =>
-    `本图共 ${graphStats.value.nodes} 个元素、${graphStats.value.flows} 条数据流，` +
-    `已识别 ${graphStats.value.threats} 条威胁` +
-    (graphStats.value.coverage != null ? `，威胁覆盖度 ${graphStats.value.coverage}%` : ''),
-)
+// 概要文案（tooltip）随这组数字一起搬到了 ThreatPanel 里（statsTitle），
+// 这里只负责算数：nodes / flows / threats / coverage 四个值。
+
+// ---- 工具条上的节点类型图例（原在画布图例第 1 排）----
+// 规格仍只有一份：DfdGraph 用 defineExpose 给出 nodeLegend（含造型 / 配色）
+// 与高亮开关，这里只做渲染 + 点击转发。图还没挂载时返回空数组 → 工具条自然
+// 少这一组，不会渲染出 4 个没有颜色的空壳。
+const nodeLegend = computed(() => dfdGraphRef.value?.nodeLegend || [])
+const activeHighlight = computed(() => dfdGraphRef.value?.activeHighlight || null)
+function onLegendToggle(type) {
+  dfdGraphRef.value?.toggleHighlight?.(type)
+}
+
 
 // ---- 当前登录用户（威胁评审需要记录评审人）----
 const userStore = useUserStore()
@@ -2158,19 +2174,26 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  /* 折行发生在**组之间**：内容装不下时整个右组（保存 + 视图操作）整体挪到第二行，
+     而不是把 3 个图标按钮拆成 2+1 这种没有语义的断点（实测窄卡片下就是这样断的）。 */
+  flex-wrap: wrap;
+  gap: 4px 10px;
   padding: 4px 14px;
   min-height: 32px;
   background: #f1f5f9;
   flex-shrink: 0;
   font-size: 11.5px;
 }
-/* 左组：标题 + 规模总览 + 模式切换；右组：保存状态 + 保存按钮 + 视图操作组 */
+/* 左组：标题 + 节点类型图例 + 模式切换；右组：保存状态 + 保存按钮 + 视图操作组。
+   左组允许内部折行（图例真的放不下时自己换行）；右组保持整体不拆。 */
 .gt-left, .gt-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
+  min-width: 0;
 }
+.gt-left { flex-wrap: wrap; }
+.gt-right { flex-wrap: nowrap; }
 /* 标题 / 模式开关 / 保存按钮 / 图标按钮：统一 24px 高 + 同一套边框色与 6px 圆角，
    整行才有"一条基线、一套形状"的秩序感（此前 22/23/24px 与两三种边框色混排）。 */
 .gt-title {
@@ -2274,58 +2297,75 @@ onUnmounted(() => {
   border-color: #e2e8f0;
 }
 
-/* —— 工具条上的画布规模总览 —— */
-/* 4 个散点指标收进一个"信息胶囊"：左组于是变成
-   「标题｜信息条｜模式开关」三段式，而不是一排等权重的浮字。 */
-.gt-stats {
+/* 画布规模总览（.gt-stats / .gts-*）已随这组指标一起搬到
+   ThreatPanel.vue（那里的 .tp-stats / .tps-*），工具条不再保留对应样式。 */
+
+/* —— 工具条上的节点类型图例（原在画布图例第 1 排） —— */
+/* 4 个 chip 与「DFD 画布」标题、模式开关同排。做成**无边框 + 品牌色胶囊反馈**：
+   这一排已经有 3 个带边框的控件，再给 4 个边框会糊成一片；
+   hover / active 的浅底 + 内描边与图例时代完全一致，用户不需要重新学。 */
+.gt-legend {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  height: 24px;
-  padding: 0 11px;
+  /* 9px：4 个 chip 加上标题、模式开关、右侧图标组要在笔记本宽度（卡片 ~600px）
+     里排成一排；实测 10px 以上会把工具条挤成两排（且图标组被拆成 2+1） */
+  gap: 9px;
+  row-gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.gtl-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  /* 左右 5px 内衬 + 等量负外边距：胶囊底有呼吸感，但排版占位仍按内容算 */
+  padding: 0 5px;
+  margin: 0 -5px;
+  border: none;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.15);
-  font-size: 11px;
-  color: #475569;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.gts-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.gts-item.threat {
-  color: #b91c1c;
+  background: transparent;
+  font-family: inherit;
+  /* 10.5px（比图例时代小 1px）：4 个芯片进工具条的宽度预算里，字号是最后一项可省的开销 */
+  font-size: 10.5px;
   font-weight: 600;
+  color: var(--text, #334155);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
 }
-.gts-item.threat.zero {
-  color: #94a3b8;
-  font-weight: 500;
-}
-.gts-item.cover {
-  color: #15803d;
-  font-weight: 600;
-}
-.gts-sep {
-  width: 1px;
-  height: 11px;
-  background: rgba(148, 163, 184, 0.55);
-}
-/* 指标点统一成同尺寸圆点：此前是"方块 + 短横线 + 两个圆"三种形状混排，
-   形状不齐比颜色不齐更显乱；颜色仍一一对应节点 / 数据流 / 威胁 / 覆盖。 */
-.gts-ico {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+.gtl-item svg {
   display: inline-block;
   flex-shrink: 0;
+  /* 圆柱顶盖的弧线略超出 viewBox，overflow 必须放开，否则顶盖被切平 */
+  overflow: visible;
 }
-.gts-ico.node { background: #2563eb; }
-.gts-ico.flow { background: #0891b2; }
-.gts-ico.threat { background: #dc2626; }
-.gts-ico.cover { background: #16a34a; }
+/* 鼠标点击不留浏览器默认黑框（focus ring 在工具条上格外显脏），
+   键盘 Tab 聚焦才给品牌色光圈。 */
+.gtl-item:focus {
+  outline: none;
+}
+.gtl-item:focus-visible {
+  outline: 2px solid rgba(124, 58, 237, 0.45);
+  outline-offset: 1px;
+}
+.gtl-item:hover {
+  background: var(--bg-active, rgba(37, 99, 235, 0.06));
+  color: var(--primary, #2563eb);
+}
+/* 高亮打开：浅色底 + 1px 内描边（不用整块深色填充，避免像贴了块膏药） */
+.gtl-item.active {
+  background: var(--primary-soft, rgba(37, 99, 235, 0.08));
+  color: var(--primary, #2563eb);
+  box-shadow: inset 0 0 0 1px var(--primary-border, rgba(37, 99, 235, 0.28));
+}
+/* 标签自带深色，hover / active 时要一起跟着变主题色 */
+.gtl-item:hover .gtl-label,
+.gtl-item.active .gtl-label {
+  color: inherit;
+}
+/* 注：一度在标题与图例之间加过一条 1px 竖线做分组，实测宽度预算太紧
+   （笔记本卡片 ~590px 时整条工具条会被挤成两排）——标题本身是白底描边胶囊，
+   与后面的扁平 chip 已有形态差异，竖线属于可省的开销，故移除。 */
 
 /* —— 工具条图标按钮（适配视图 / 全屏 / 折叠右栏） —— */
 .gt-icon-btn {
