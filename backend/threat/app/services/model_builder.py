@@ -79,6 +79,103 @@ LIFECYCLE_LABELS = {
 }
 
 
+def recompute_layout_hints(diagram: dict) -> None:
+    """重算 diagram.layoutHints 里的 route 与 labelX/labelY（**原地更新**）。
+
+    这是 layoutHints 几何的**唯一重算入口**：建模（ThreatModelBuilder.build）
+    与用户编辑后（result_store.update_layout / rename_element）都必须走
+    这里。为什么必须存在：布局提示是按「节点坐标」计算的派生数据——
+    坐标一动，route 与标签落点即全部失效。历史上 update_layout 只写
+    坐标不重算 route，刷新页面后节点在新位置、折线还是老坐标的，
+    X6 在「新锚点 → 老折线」之间画出斜线段，整图连线乱成一团。
+
+    实现说明：
+    - route：dfd_layout_metrics.plan_edge_routes（与导出/度量同源）；
+    - 标签落点：dfd_spec.place_edge_labels（与导出 PNG 同源），
+      labelT/labelOffset 沿用 hints 里的既有值（它们由布局期
+      _label_hints 生成，只与节点对关系有关，坐标变化不影响）；
+    - crossOffset/labelT/labelOffset 等布局期提示原样保留，只覆盖
+      route/labelX/labelY 三个几何字段。
+    """
+    cells = diagram.get("cells") or []
+    if not cells:
+        return
+    from . import dfd_layout_metrics as _lm
+    from . import dfd_spec as _spec
+
+    flow_cell_ids = {
+        c["id"]: str((c.get("data") or {}).get("flowId"))
+        for c in cells
+        if c.get("source") and c.get("target") and (c.get("data") or {}).get("flowId")
+    }
+    if not flow_cell_ids:
+        return
+
+    hints = diagram.get("layoutHints")
+    if not isinstance(hints, dict):
+        hints = {}
+        diagram["layoutHints"] = hints
+
+    # 1) 重算全部边的正交路由
+    routes_by_cell = _lm.plan_edge_routes({"cells": cells})
+
+    # 2) 重算边标签最终落点（避让障碍 = 所有可见节点矩形，含边界容器）
+    node_boxes: list[tuple[float, float, float, float]] = []
+    for c in cells:
+        if c.get("source") and c.get("target"):
+            continue
+        if c.get("visible") is False:
+            continue
+        p = c.get("position") or {}
+        s = c.get("size") or {}
+        x, y = float(p.get("x", 0.0)), float(p.get("y", 0.0))
+        node_boxes.append((
+            x, y,
+            x + float(s.get("width", 180.0)),
+            y + float(s.get("height", 60.0)),
+        ))
+
+    cell_by_id = {c.get("id"): c for c in cells}
+    items: list[dict[str, Any]] = []
+    for cell_id, pts in routes_by_cell.items():
+        fid = flow_cell_ids.get(cell_id)
+        if not fid or len(pts) < 2:
+            continue
+        cell = cell_by_id.get(cell_id)
+        if cell is None:
+            continue
+        name = str(((cell.get("data") or {}).get("name")) or "").strip()
+        if not name:
+            continue
+        old = hints.get(str(fid)) or {}
+        t = float(old.get("labelT", 0.5))
+        off = float(old.get("labelOffset", 0.0))
+        ax, ay = _spec.point_on_polyline(pts, t, off)
+        items.append({
+            "key": str(fid), "text": name,
+            "x": ax, "y": ay - _spec.LABEL_FONT_SIZE / 2.0,
+        })
+    # 彩色/语义边先占位（与两端「先灰后彩」绘制顺序一致）
+    order = {str((c.get("data") or {}).get("flowId")): i for i, c in enumerate(cells)}
+    items.sort(key=lambda it: order.get(it["key"], 0))
+    try:
+        label_xy = _spec.place_edge_labels(items, node_boxes)
+    except Exception:
+        label_xy = {}
+
+    # 3) 写回：plan_edge_routes 的键是 cell id，hints 的键是 flowId
+    for cell_id, pts in routes_by_cell.items():
+        fid = flow_cell_ids.get(cell_id)
+        if not fid or len(pts) < 2:
+            continue
+        h = hints.setdefault(str(fid), {})
+        h["route"] = [[int(round(p[0])), int(round(p[1]))] for p in pts]
+    for fid, xy in label_xy.items():
+        h = hints.setdefault(str(fid), {})
+        h["labelX"] = round(float(xy[0]), 1)
+        h["labelY"] = round(float(xy[1]), 1)
+
+
 class ThreatModelBuilder:
     """将分析结果整合为 Threat Dragon v2 兼容的威胁模型 JSON。"""
 
@@ -88,6 +185,16 @@ class ThreatModelBuilder:
     H_GAP = 60              # 节点水平间距（基准，实际按宽度动态放大）
     V_GAP = 40
     MARGIN = 40
+
+    # ---- 画布横向铺开（对齐 dfd_layout_metrics 的"商业级长宽比"口径） ----
+    # 泳道布局天然是纵向堆叠，画布容易"瘦高"（实测 6 泳道 ≈ 1130×1420）。
+    # 前端按**内容**等比适配后（缩放比由高度决定），左右两侧会各剩一大块
+    # 空白，观感是"组件全挤在画布中间一条窄带里"。
+    # 因此在内容允许的范围内把画布横向撑到目标长宽比，并让每行节点
+    # **等距铺开**（不再是死居中 + 固定 60px 间距），把组件、实体、连线
+    # 分布到整块画布上。
+    CANVAS_ASPECT_TARGET = 1.45   # 目标宽高比（横版，落在 4:3 ~ 16:9 之间）
+    H_GAP_SPREAD_MAX = 4.5        # 同行节点最大间距 = H_GAP × 该系数
 
     # ---- D1: 动态节点宽度参数 ----
     # 节点标签由前端按 12px 字号渲染在节点内，宽度不足时文字会溢出/被裁切；
@@ -105,7 +212,6 @@ class ThreatModelBuilder:
 
     def __init__(self) -> None:
         self._counter = 1  # 威胁编号计数器
-        self._arch_heights: dict[str, float] = {}  # 同泳道横向流的拱高堆叠（由 _layout_lifecycle_lanes 计算）
         # D1: cell_id -> 布局宽度。由 _layout* 在分桶后统一计算，供后续
         # bbox/画布宽度/间距计算复用，避免各处重复估算导致不一致。
         self._node_w: dict[str, float] = {}
@@ -212,6 +318,35 @@ class ThreatModelBuilder:
             cur += self._w_of(cid) + g
         return xs
 
+    def _spread_row_positions(self, ids: list[str], canvas_width: float) -> list[float]:
+        """一行节点在泳道内**等距铺开**后的 x 坐标。
+
+        与 _row_positions（固定 H_GAP + 整体居中）的区别：把「泳道可用宽度 −
+        节点总宽」按 n-1 等分当成间距，让同一行的组件分布到整条泳道上，而不是
+        挤在画布中间一小段里。
+
+        两个约束：
+          · 间距不小于 H_GAP（保证不重叠、不挤在一起）；
+          · 间距不超过 H_GAP × H_GAP_SPREAD_MAX —— 节点稀疏到看不出相互关系
+            反而更难读，宁可让这一行短一点、由泳道底色把它托住；
+          · 单节点行保持居中（只有一个元素时"铺开"没有语义）。
+        """
+        if not ids:
+            return []
+        n = len(ids)
+        span = max(0.0, canvas_width - self.MARGIN * 2)
+        total = sum(self._w_of(cid) for cid in ids)
+        if n == 1:
+            return [self.MARGIN + max(0.0, (span - total) / 2.0)]
+        gap = min(
+            self.H_GAP * self.H_GAP_SPREAD_MAX,
+            max(self.H_GAP, (span - total) / (n - 1)),
+        )
+        row_w = total + gap * (n - 1)
+        start = self.MARGIN + max(0.0, (span - row_w) / 2.0)
+        return self._row_positions(ids, start, gap)
+
+
     def build(
         self,
         summary: dict[str, Any],
@@ -308,6 +443,12 @@ class ThreatModelBuilder:
                     ]
                     break
 
+        # 3.5/3.6 layoutHints 几何（route + 标签落点）统一由模块级
+        # recompute_layout_hints 在 diagram 组装后重算——用户编辑
+        # （update_layout / rename_element）也走同一入口，保证
+        # 「坐标一动、线与标签同步重算」，不再出现老 route 画在新坐标上的
+        # 斜线乱图（历史事故见 recompute_layout_hints 文档串）。
+
         # 4. 组装模型
         title = summary.get("title", "AI 生成的威胁模型")
         model = {
@@ -335,7 +476,7 @@ class ThreatModelBuilder:
                         "cells": cells,
                         **({"lanes": lanes_meta} if lanes_meta else {}),
                         # D2/D5：布局期算出的「跨泳道过道错位」与「边标签锚点」提示。
-                        # 前端据此分散并行跨道流与标签位置；不消费时无副作用。
+                        # route/labelX/labelY 随后由 recompute_layout_hints 统一补齐；
                         # 键为 flow 的原始业务 id（与 cell.data.flowId 对应），
                         # 而非随机生成的 cell.id，避免前端需要额外反查映射。
                         **({"layoutHints": self._layout_hints_payload(flows)}),
@@ -343,26 +484,32 @@ class ThreatModelBuilder:
                 ],
             },
         }
+        # 统一几何重算入口：补 route 与 labelX/labelY（唯一真源）
+        recompute_layout_hints(model["detail"]["diagrams"][0])
         return model
 
     def _layout_hints_payload(
-        self, flows: list[dict[str, Any]]
-    ) -> dict[str, dict[str, float]]:
-        """D2/D5: 汇总每条流的路由/标签提示，键为 flow 原始业务 id。
+        self,
+        flows: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """D2/D5: 布局期的「过道错位/标签参数」提示，键为 flow 原始业务 id。
+
+        只生成与**节点关系**相关的提示（crossOffset/labelT/labelOffset）；
+        几何字段（route/labelX/labelY）由模块级 recompute_layout_hints
+        统一计算并写回——建模与用户编辑后重算走同一条路径。
 
         前端在 cell.data.flowId 上能拿到同一个 id，因此可直接查表：
-            hints[cell.data.flowId] -> {crossOffset, labelT, labelOffset}
-
-        仅包含真正有提示的流（避免输出大量无意义空对象）。
-        labelT==0.5 且 labelOffset==0 且 crossOffset 缺失的流不需要提示，
-        前端会走默认值，故此处跳过以减小 JSON 体积。
+            hints[cell.data.flowId] -> {
+                route, labelX, labelY,          ← recompute_layout_hints 填
+                crossOffset, labelT, labelOffset, ← 这里填
+            }
         """
-        payload: dict[str, dict[str, float]] = {}
+        payload: dict[str, dict[str, Any]] = {}
         for f in flows:
             fid = f.get("id")
             if not fid:
                 continue
-            hint: dict[str, float] = {}
+            hint: dict[str, Any] = {}
             cross = self._cross_hints.get(fid)
             if cross and abs(cross.get("crossOffset", 0.0)) > 0.1:
                 hint["crossOffset"] = cross["crossOffset"]
@@ -1048,15 +1195,27 @@ class ThreatModelBuilder:
             k: self._row_width(buckets[k]) for k in visible
         }
         per_lane_max = max(per_lane_w.values(), default=self.NODE_WIDTH)
-        # P1-2：跨多个 swimlane 的 trustboundary 容器实际宽度可达 1200px+，
-        # 原来固定 +480 横向余量在 5 lane 场景下不够，fitView 后节点看起来散在
-        # 一侧又超出右边界。改为：boundary 数量 * 240 + 240 给容器留 240 边距。
-        # （容器本身在 _infer_boundary_children 里基于内含组件 bbox 包裹，
-        # 此处不重算 bbox，只做粗略上限预算，节点仍按 swimlane 铺开）
-        boundary_reserve = len(boundary_ids) * 240 + 240
-        canvas_width = max(
-            per_lane_max, self.NODE_WIDTH * 3
-        ) + self.MARGIN * 2 + boundary_reserve
+        # 画布宽度 = 最宽泳道的节点内容宽 + 两侧 margin + 少量余量。
+        #
+        # 历史实现是 `+ boundary_reserve`（boundary 数量 * 240 + 240），按边界
+        # **数量**线性预留，与边界实际宽度无关。后果是泳道被撑到远超内容：
+        # 实测 10 节点图泳道宽 1530px 而内容只占 810px（53%），4 节点最小
+        # 反例内容仅占 15% —— 前端 fitView 按泳道（当时未正确排除）适配时
+        # 整图被压成小点，观感与后端 PNG 差一大截。
+        #
+        # 边界容器自身宽度由 _recompute_boundary_bboxes() 按成员包围盒 + padding
+        # 算出，不依赖这里的预留；若边界比泳道宽，下方 D7 溢出修正会把画布
+        # 扩张到覆盖它，因此这里不必提前预留。
+        #
+        # SCROLL 余量 24px：单节点泳道会有锯齿偏移（_row_zig），节点 x 可能
+        # 比 start_x 略偏右，留一点避免贴边。
+        #
+        # 注意：这里只是**下限**（不漏内容）。最终画布宽度在 canvas_h 算出后
+        # 再按目标长宽比横向撑开，见下方「画布横向铺开」一段。
+        content_w_min = max(
+            per_lane_max + self.MARGIN * 2 + 24.0,
+            self.NODE_WIDTH * 2 + self.MARGIN * 2,
+        )
 
         # D3: 泳道间距按"跨相邻泳道的流条数"动态伸缩。
         # 原值 V_GAP*2.5=100px 要同时容纳：跨道流的水平过道段 + 边标签（10px
@@ -1084,6 +1243,28 @@ class ThreatModelBuilder:
             y += lane_h + lane_gap
         canvas_h = y - lane_gap + self.MARGIN
 
+        # --- 画布横向铺开：把"瘦高"的泳道带撑成横版，让组件分布到整块画布 ---
+        # 泳道数量决定画布高度（lane_h + lane_gap 逐道累加），宽度若只按最宽
+        # 一行内容取，画布长宽比会明显偏"瘦高"：前端适配时缩放比由高度决定，
+        # 于是左右各空一大片（截图里的"泳道左右两片空白"）。
+        # 做法：在**内容能承受**的范围内把画布拉宽到目标长宽比 ——
+        #   · 下限 content_w_min：绝不能小于最宽一行 + margin（否则内容溢出）；
+        #   · 上限 content_w_max：最宽一行按 H_GAP_SPREAD_MAX 摊开的宽度
+        #     （再多就是无意义的空白，观感反而更散）。
+        # 行内节点随后由 _spread_row_positions 等距铺开填满这段宽度。
+        _widest_row = max((buckets[k] for k in visible), key=len, default=[])
+        _widest_sum = sum(self._w_of(cid) for cid in _widest_row)
+        content_w_max = (
+            _widest_sum
+            + max(0, len(_widest_row) - 1) * self.H_GAP * self.H_GAP_SPREAD_MAX
+            + self.MARGIN * 2 + 24.0
+        )
+        canvas_width = max(
+            content_w_min,
+            min(canvas_h * self.CANVAS_ASPECT_TARGET,
+                max(content_w_min, content_w_max)),
+        )
+
         # y 错位最大幅度 = (lane_h - NODE_HEIGHT) / 2 * 0.65
         # 留 35% 缓冲，确保节点 y 始终落在所属 swimlane 矩形内，
         # 既让线明显分散、又不会被 _layout_sanity_check 报警。
@@ -1100,9 +1281,9 @@ class ThreatModelBuilder:
                 )
             )
             n = len(ids)
-            total_w = self._row_width(ids)
-            start_x = (canvas_width - total_w) / 2
-            xs = self._row_positions(ids, start_x)
+            # B. 行内等距铺开：把本行组件分布到整条泳道宽度上（不再是固定
+            #    60px 间距 + 整体居中 —— 那会让组件全挤在画布中间一小段）。
+            xs = self._spread_row_positions(ids, canvas_width)
             center_y = lane_top[k] + (lane_h - self.NODE_HEIGHT) / 2
             # D4: 同泳道内 Y 交错。原实现只用「入流/出流」方向决定单一偏移，
             # 相邻节点常拿到相同偏移值 → 同一水平线；且标签行高固定，视觉呆板。
@@ -1132,46 +1313,6 @@ class ThreatModelBuilder:
                     "layer": lane_index[k],
                     "lifecycle": k,
                 }
-
-        # --- B+. 同泳道横向流的拱高预分配 ---
-        # 当同一泳道内 ≥2 条同向流时，需要在不同高度堆叠拱顶，避免
-        # 多条流叠在同一水平线造成视觉混乱。每个泳道按方向（左→右、
-        # 右→左）分桶后，依次叠加 0*step、1*step、2*step …
-        arch_heights: dict[str, float] = {}
-        step = self.NODE_HEIGHT * 0.55 + self.V_GAP * 0.5
-        flows_by_lane: dict[str, list[tuple[str, int, int]]] = {}
-        for f in flows:
-            sid = f.get("sourceId") or ""
-            tid = f.get("targetId") or ""
-            ps_f, pt_f = positions.get(sid), positions.get(tid)
-            if not ps_f or not pt_f or sid == tid:
-                continue
-            if ps_f.get("layer") != pt_f.get("layer"):
-                continue
-            # D1: 节点中心按各自真实宽度计算
-            sx_c = ps_f["x"] + self._w_of(sid) / 2
-            tx_c = pt_f["x"] + self._w_of(tid) / 2
-            if abs(sx_c - tx_c) < 1:
-                continue
-            lane = ps_f.get("lifecycle") or ""
-            flows_by_lane.setdefault(lane, []).append(
-                (f.get("id") or "", int(sx_c), int(tx_c))
-            )
-        for _lane, flist in flows_by_lane.items():
-            flist.sort(key=lambda t: (t[1], t[2], t[0]))
-            # 把同方向（左→右、右→左）的流集中，分别在 lane 上下两侧堆叠
-            above: list[tuple[str, int, int]] = [
-                t for t in flist if t[2] > t[1]
-            ]
-            below: list[tuple[str, int, int]] = [
-                t for t in flist if t[2] <= t[1]
-            ]
-            for grp_sign, grp in ((-1, above), (1, below)):
-                for i, (fid, _a, _b) in enumerate(grp):
-                    # 每 2 条流共享同一高度，错位堆叠
-                    level = i // 2
-                    arch_heights[fid] = grp_sign * level * step
-        self._arch_heights = arch_heights
 
         # --- B++（D2）. 跨泳道流的「过道 x」错位预分配 ---
         # 跨泳道流（相邻两道之间）原先完全不做错位：多条流都从源节点中心
@@ -1296,6 +1437,28 @@ class ThreatModelBuilder:
                 if cc:
                     cp["containerCenter"] = (cc[0], cc[1] + bounded_delta)
 
+                # —— 容器下沿不得越过最后一条泳道 ——
+                # children 被 clamp 在各自泳道内，但**容器的 y 没有被 clamp**：
+                # 当 children 分属多个泳道（容器跨道）时，delta 可能把容器整体
+                # 推到泳道带下方；而 canvas_h 只按泳道数量算，于是容器底部溢出
+                # 泳道之外（实测 "云服务内网信任边界" bot=1108 而泳道只到 900，
+                # 越界 208px —— 观感是"框掉出了灰色泳道带"）。
+                # 把容器上移回泳道带内；children 不动（它们本来就合法），
+                # 容器只是"略微收紧包裹"，不影响成员归属。
+                c_h = cp.get("containerSize", {}).get("height", 0)
+                lane_band_bottom = 0.0
+                for lk in visible:
+                    lane_band_bottom = max(lane_band_bottom, lane_top[lk] + lane_h)
+                if lane_band_bottom and cp["y"] + c_h > lane_band_bottom:
+                    shift_up = (cp["y"] + c_h) - lane_band_bottom
+                    cp["y"] -= shift_up
+                    cc2 = cp.get("containerCenter")
+                    if cc2:
+                        cp["containerCenter"] = (cc2[0], cc2[1] - shift_up)
+                    logger.info(
+                        "DFD 边界容器回收进泳道带：%s 上移 %.0fpx", cur, shift_up
+                    )
+
         # --- C2（D7）. 同泳道节点重叠消解 ---
         # D1 已按真实宽度排布，但以下两种情况仍会残留重叠：
         #   1) NODE_WIDTH_MAX 截断：名称超长节点宽度被 clamp 到 280，
@@ -1394,6 +1557,31 @@ class ThreatModelBuilder:
                     },
                     containerCenter=(cx, cy),
                 )
+
+        # --- D7b. 泳道必须覆盖所有内容 ---
+        # 画布宽度改为「按内容收紧」后，边界容器（bbox 包住成员，可跨多泳道）
+        # 或锯齿偏移后的节点可能仍比泳道宽。历史上只在 overlap_fixed>0 时扩张
+        # 画布，覆盖不到"节点没重叠但容器超宽"的情况 → 容器右沿露到泳道外，
+        # 观感上"框跑出底色带"。
+        # 这里独立做一道兜底：只要任一非泳道内容超出 swimlane 右边界，就扩宽画布。
+        lane_right = self.MARGIN + max(0.0, canvas_width - self.MARGIN * 2)
+        content_right = max(
+            (
+                (positions[cid]["x"] + (positions[cid].get("containerSize") or {}).get(
+                    "width", self._w_of(cid)))
+                if comp_type.get(cid) == "trustboundary"
+                else (positions[cid]["x"] + self._w_of(cid))
+                for cid in positions
+                if isinstance(positions[cid], dict) and "x" in positions[cid]
+            ),
+            default=lane_right,
+        )
+        if content_right > lane_right:
+            canvas_width += content_right - lane_right + self.MARGIN
+            logger.info(
+                "DFD 泳道宽度按内容扩张：+%.0fpx（容器/节点超出泳道右沿）",
+                content_right - lane_right + self.MARGIN,
+            )
 
         # --- C3（D5）. 边标签锚点预分配 ---
         # 前端原来把所有边标签钉在 distance=0.5, offset=0 → 同一区域多条边的
@@ -1608,90 +1796,15 @@ class ThreatModelBuilder:
                 }
             },
         }
-        # 数据流交叉感：为跨层 / 横向长边生成斜向折点（vertices）
-        #  X6 默认正交路由会把这些顶点当作必经折点，形成斜线 + 折角 + 横向穿越。
-        vertices = self._make_flow_vertices(flow, layout, self._arch_heights)
-        if vertices:
-            cell["vertices"] = vertices
+        # 边的折线几何**不再**在此处生成：由 dfd_layout_metrics.plan_edge_routes
+        # 统一布线，经 recompute_layout_hints 写入 layoutHints[flowId].route，
+        # 前端 X6 与后端 PNG 共用同一份（见 recompute_layout_hints 的说明）。
+        #
+        # 历史遗留：这里曾下发 cell["vertices"]（基于 sha1 哈希的斜向拱点），
+        # 但前端从不读取 cell.vertices（只消费 layoutHints.route），属只写不读
+        # 的死数据；且其"斜线拱起"语义与正交路由体系直接对立，会误导后来者
+        # 以为存在第二套路由。已删除。
         return cell
-
-    def _make_flow_vertices(
-        self,
-        flow: dict[str, Any],
-        layout: dict[str, dict],
-        arch_heights: dict[str, float] | None = None,
-    ) -> list[dict[str, float]]:
-        """为数据流生成斜向 / 折角路由点，制造"交叉穿越"视觉效果。
-
-        规则：
-        - 源/目标同一层（横向流）：中点向上/下垂直拱起，让横向流彼此交错穿越；
-        - 源/目标不同层：在中点处把路径拉向一侧（斜向），使跨层流呈现斜线折角，
-          并尽量避让中间层节点。
-        所有偏移基于 stable_id 哈希，确定性可复现。
-        """
-        import hashlib as _hashlib
-
-        src, tgt = flow.get("sourceId"), flow.get("targetId")
-        if not src or not tgt:
-            return []
-        ps, pt = layout.get(src), layout.get(tgt)
-        if not ps or not pt:
-            return []
-        # 节点中心（D1: 宽度按各节点真实布局宽度取）
-        sx = ps["x"] + self._w_of(str(flow.get("sourceId") or "")) / 2
-        sy = ps["y"] + self.NODE_HEIGHT / 2
-        tx = pt["x"] + self._w_of(str(flow.get("targetId") or "")) / 2
-        ty = pt["y"] + self.NODE_HEIGHT / 2
-
-        h = int(_hashlib.sha1(("flow:" + str(flow.get("id", ""))).encode("utf-8")).hexdigest()[:4], 16)
-        sign = 1.0 if (h % 2) == 0 else -1.0
-        # 归一化随机 0.15~0.85，用于控制拱起/斜拉方向与幅度
-        r = 0.25 + (h % 1000) / 1000.0 * 0.5
-
-        midx = (sx + tx) / 2
-        midy = (sy + ty) / 2
-
-        src_layer = ps.get("layer", 0)
-        tgt_layer = pt.get("layer", 0)
-
-        # 水平距离 / 垂直距离
-        dx = tx - sx
-        dy = ty - sy
-
-        if src_layer == tgt_layer:
-            # 同泳道横向流：『单向扁平拱』+ 反向流分到上下两侧天然不交叉。
-            # 拱高按同泳道堆叠预分配（arch_heights[flow_id]），同向多流错位
-            # 堆叠避免相互重叠；未分配时回落默认拱高。
-            side = -1.0 if dx > 0 else 1.0  # 左→右上方拱，右→左下方拱
-            base_arch = self.NODE_HEIGHT * 0.7 + self.V_GAP * 0.6
-            stacked = (arch_heights or {}).get(flow.get("id"))
-            if stacked is None:
-                arch = base_arch
-            else:
-                arch = base_arch + abs(stacked)
-            arch_y = sy + side * arch
-            return [
-                {"x": sx + dx * 0.30, "y": arch_y},
-                {"x": sx + dx * 0.70, "y": arch_y},
-            ]
-
-        # 跨泳道纵向流：源在源泳道内的横向序号决定偏移方向，避免多源-多
-        # 目的发散/汇聚时所有线汇聚到同一中点区域。
-        src_lane_nodes = sorted(
-            [cid for cid, pos in layout.items()
-             if isinstance(pos, dict) and pos.get("layer") == src_layer and "x" in pos],
-            key=lambda cid: layout[cid]["x"],
-        )
-        try:
-            src_idx = src_lane_nodes.index(src)
-        except ValueError:
-            src_idx = 0
-        sign = 1.0 if src_idx % 2 == 0 else -1.0
-        pull = sign * min(self._w_of(str(flow.get("sourceId") or "")) * 0.45, max(self.V_GAP * 0.8, abs(dy) * 0.16))
-        return [
-            {"x": midx + pull, "y": midy - abs(dy) * 0.18},
-            {"x": midx + pull * 0.6, "y": midy + abs(dy) * 0.05},
-        ]
 
     def _normalize_properties(self, props: dict[str, Any]) -> dict[str, Any]:
         """规范化组件属性到 Threat Dragon 兼容字段。"""

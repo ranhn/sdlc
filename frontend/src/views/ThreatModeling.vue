@@ -71,14 +71,15 @@
               </div>
             </header>
 
-            <!-- 行 1.5：全宽细进度条。大数字是「读」的，这条是「看」的——
-                 持续平滑位移给页面连续的生命感，也是 % 数字的视觉锚点 -->
-            <div class="progress-track" aria-hidden="true">
-              <i class="progress-fill" :style="{ width: (analyzeProgress || 0) + '%' }" />
-            </div>
-
-            <!-- 行 2：横向流水线（4 阶段卡片 + 连接线），卡片内直接给产出摘要 -->
-            <ol class="stepper">
+            <!-- 行 2：横向流水线。历史形态是三排横线叠在一起：
+                 ① 顶部独立全宽进度条 ② 步骤之间的连接线 ③ 每张卡片内的阶段进度条
+                 —— 三条线粗细/颜色都相近、y 只差十几像素，看着很乱。
+                 现在收敛成一条体系：
+                   · 全局进度 = 贴着卡片**顶边**的一条全宽线（.stepper::before/::after
+                     消费 --pipe-pct），不再单独占一行；
+                   · 阶段进度 = 连接线自身的填充（.step-line 里的 .step-line-fill），
+                     也不再另起一行。 -->
+            <ol class="stepper" :style="{ '--pipe-pct': (analyzeProgress || 0) + '%' }">
               <li
                 v-for="(s, i) in pipeline"
                 :key="i"
@@ -93,14 +94,13 @@
                     </svg>
                     <i v-else-if="s.state === 'active'" class="step-node-dot" />
                   </span>
-                  <span v-if="i < pipeline.length - 1" class="step-line" />
+                  <!-- 连接线同时是阶段进度条：done=满、active=按 sub_progress 填充 -->
+                  <span v-if="i < pipeline.length - 1" class="step-line" aria-hidden="true">
+                    <i class="step-line-fill" :style="{ width: (s.pct || 0) + '%' }" />
+                  </span>
                   <span v-if="s.duration != null" class="step-time">{{ fmtDuration(s.duration) }}</span>
                 </div>
                 <span class="step-label">{{ s.short }}</span>
-                <!-- 阶段内进度条：done=100%，active 由后端 sub_progress 反推，todo=0 -->
-                <div class="step-bar" aria-hidden="true">
-                  <i class="step-bar-fill" :style="{ width: (s.pct || 0) + '%' }" />
-                </div>
                 <span v-if="s.summary && s.state !== 'active'" class="step-summary">{{ s.summary }}</span>
                 <span v-else-if="s.state === 'active'" class="step-summary doing">
                   <span class="pipe-ellipsis"><i /><i /><i /></span>
@@ -224,12 +224,11 @@
               <div class="gt-right">
                 <span v-if="layoutSaving" class="gt-saving">保存中…</span>
                 <button class="gt-btn" :disabled="!canvasEditable || !layoutDirty" @click="saveLayout">保存布局</button>
-                <!-- 适配视图：从 DfdGraph 暴露的 fitView 触发；
-                按钮迁到这里是为了不单独占一行（避免与下方工具栏连层），给画布腾出 32px 高度 -->
+                <!-- 适配视图：缩放到整图可见。两种模式同一行为、同一画布 -->
                 <button
                   class="gt-icon-btn"
-                  title="适配视图：缩放到当前可见的所有节点"
-                  @click="dfdGraphRef?.fitView?.()"
+                  title="适配视图：缩放到整图可见"
+                  @click="onFitViewClick"
                 >
                   <svg width="13" height="13" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     <path d="M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
@@ -265,6 +264,11 @@
               </div>
             </div>
 
+            <!-- DFD 画布：只读与编辑**共用同一套 X6 矢量画布**，切模式零跳变。
+                 历史版本只读时改铺后端 PNG——那是静态位图，虽然与报告导出
+                 像素一致，却让"只读看到什么"和"编辑看到什么"变成两套渲染，
+                 且丢失点选联动/定位/悬停（位图没有命中层）。现在样式常量已
+                 收敛到 dfd_spec（含线型），两种模式观感一致，交互完整保留。 -->
             <DfdGraph
               v-if="activeTab === 'analysis'"
               ref="dfdGraphRef"
@@ -637,6 +641,27 @@ const layoutDirty = ref(false)
 // cellId -> {x, y}，累积待保存的坐标
 const pendingPositions = ref({})
 
+// ---- 只读 / 编辑共用同一套 X6 画布 ----
+// 两种模式只差"能不能改"（editable），渲染器是同一个，切模式零跳变。
+// 观感一致由样式常量单一来源（dfd_spec → /api/dfd/spec → DfdGraph）保证。
+// 只读下仍完整保留平移、滚轮缩放、点选联动、威胁定位、悬停详情。
+
+/** 适配视图：缩放到整图可见（两种模式同一行为） */
+function onFitViewClick() {
+  dfdGraphRef.value?.fitView?.()
+}
+
+// 结果切换 / 切回画布 tab 后重新适配一次，避免换模型后停留在旧视口
+watch(
+  [activeTab, resultKey],
+  async () => {
+    if (activeTab.value !== 'analysis') return
+    await nextTick()
+    // DfdGraph 首次渲染是异步的，稍等一拍再适配
+    setTimeout(() => dfdGraphRef.value?.fitView?.(), 120)
+  }
+)
+
 function onSelectCell(cellId) {
   selectedCellId.value = cellId || null
 }
@@ -687,6 +712,17 @@ async function saveLayout() {
     await updateLayout(rid, pendingPositions.value)
     pendingPositions.value = {}
     layoutDirty.value = false
+    // 落库后后端会用新坐标重算全部 route / 标签落点（result_store.update_layout
+    // → recompute_layout_hints）。必须把这份**重算结果**取回来重新渲染：
+    // 拖动期间前端只是就地平移折点（保持与后端同构的近似），
+    // 若不回填，页面会停留在近似值上，与导出 PNG 再次分叉。
+    try {
+      const detail = await getResultDetail(rid)
+      store.setResult(detail)
+    } catch (e) {
+      // 回填失败不影响保存本身：坐标已落库，刷新页面即可拿到新 route
+      console.warn('[saveLayout] 重新拉取模型失败', e)
+    }
     ElMessage.success('布局已保存')
   } catch (e) {
     ElMessage.error('保存布局失败：' + (e?.response?.data?.detail || e?.message))
@@ -1594,37 +1630,23 @@ onUnmounted(() => {
   margin-left: 1px;
   color: #60a5fa;
 }
-/* ── 行 1.5：全宽细进度条 ── 持续平滑位移，给「正在推进」的连续反馈 */
-.progress-track {
-  position: relative;
-  height: 4px;
-  border-radius: 999px;
-  background: #eef2f7;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-.progress-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #60a5fa, #2563eb);
-  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
-}
-/* 流动高光：未到 100% 时一直有光带掠过 */
-.progress-fill::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
-  animation: fill-sheen 1.8s ease-in-out infinite;
-}
+/* ── 全局进度条已并入流水线（不再是"行 1.5"） ──
+   这里原本是一条独立的全宽细进度条，而流水线内部还有"步骤连接线"和
+   每张卡片下的"阶段进度条"——三条横线 y 只差十几像素、粗细颜色又相近，
+   叠在一起很乱。现在：
+     · 全局进度 → .stepper::before/::after 画在卡片**顶边**（仍是一条全宽线，
+       只是归属流水线本体，不再单独占一行）；
+     · 阶段进度 → 连接线自身的填充（.step-line-fill）。
+   fill-sheen 保留：给"进行中"的连接线一段掠过的高光。 */
 @keyframes fill-sheen {
   from { transform: translateX(-100%); }
   to   { transform: translateX(100%); }
 }
 
-/* ── 行 2：横向流水线（步进条） ── */
+/* ── 行 2：横向流水线（步进条 + 顶边全局进度） ── */
 .stepper {
+  position: relative;
+  overflow: hidden;              /* 顶边进度条随卡片圆角裁切 */
   list-style: none;
   margin: 0;
   padding: 14px 16px 12px;
@@ -1635,6 +1657,26 @@ onUnmounted(() => {
   border-radius: 10px;
   background: linear-gradient(180deg, #fbfdff, #f6f9fd);
   flex-shrink: 0;
+}
+/* 全局进度：贴在卡片顶边的一条 3px 线（轨道 ::before + 填充 ::after），
+   宽度由模板绑定的 --pipe-pct（= analyzeProgress%）驱动。 */
+.stepper::before,
+.stepper::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+}
+.stepper::before {
+  right: 0;
+  background: #eef2f7;
+}
+.stepper::after {
+  width: var(--pipe-pct, 0%);
+  max-width: 100%;
+  background: linear-gradient(90deg, #60a5fa, #2563eb);
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .step {
   display: flex;
@@ -1685,15 +1727,38 @@ onUnmounted(() => {
   70%  { box-shadow: 0 0 0 7px rgba(37, 99, 235, 0); }
   100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
 }
-/* 连接线：从本节点延伸到下一张卡片 */
+/* 连接线：从本节点延伸到下一张卡片，**同时**是该阶段的进度条
+   （填充比例 = 该阶段完成度，见 .step-line-fill）。
+   这样"阶段走到哪"就长在流水线本体上，不需要卡片里再横一条线。 */
 .step-line {
+  position: relative;
   flex: 1;
-  height: 2px;
-  border-radius: 1px;
+  height: 4px;
+  border-radius: 2px;
   background: #e2e8f0;
+  overflow: hidden;
 }
-.step-done .step-line {
-  background: #86efac;
+.step-line-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #cbd5e1;
+  transition: width 0.6s ease;
+}
+.step-done .step-line-fill {
+  background: #34d399;
+}
+.step-active .step-line-fill {
+  position: relative;
+  background: linear-gradient(90deg, #60a5fa, var(--primary, #2563eb));
+}
+/* 进行中：沿填充段掠过高光，给"正在推进"的连续反馈 */
+.step-active .step-line-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: fill-sheen 1.8s ease-in-out infinite;
 }
 .step-time {
   font-family: var(--font-mono, 'JetBrains Mono', Consolas, monospace);
@@ -1701,40 +1766,6 @@ onUnmounted(() => {
   color: #94a3b8;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-/* 阶段内进度条：done=满绿、active=蓝色流光、todo=空轨道。
-   与顶部全局细进度条呼应——每一步自己走到哪，一眼可读。 */
-.step-bar {
-  margin-top: 6px;
-  height: 3px;
-  border-radius: 2px;
-  background: #eef2f7;
-  overflow: hidden;
-}
-.step-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: #cbd5e1;
-  transition: width 0.6s ease;
-}
-.step-done .step-bar-fill {
-  background: #10b981;
-}
-.step-active .step-bar-fill {
-  position: relative;
-  background: linear-gradient(90deg, #60a5fa, var(--primary, #2563eb));
-}
-.step-active .step-bar-fill::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
-  animation: step-bar-sheen 1.6s ease-in-out infinite;
-}
-@keyframes step-bar-sheen {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
 }
 .step-label {
   font-size: 12.5px;
@@ -1967,6 +1998,7 @@ onUnmounted(() => {
     min-width: 200px;
   }
 }
+/* 只读 / 编辑共用 X6 画布，无需额外样式 */
 /* 画布编辑工具条 —— 与下方 DfdGraph 的 .graph-head 共享同一基线，
    两行视觉上是连续的"工具栏 + 筛选 chip"组合，避免错位。 */
 .graph-toolbar {
@@ -2218,7 +2250,7 @@ onUnmounted(() => {
   .log-row,
   .step-summary,
   .step-node,
-  .progress-fill::after,
+  .step-line-fill::after,
   .chrome-badge::before,
   .kpi b.pending { animation: none; }
 }

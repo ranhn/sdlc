@@ -284,6 +284,21 @@ export async function getResultDetail(resultId) {
 }
 
 /**
+ * 获取后端渲染的 DFD PNG（与报告导出走同一渲染器 render_dfd_png）
+ * 供只读模式直接展示，保证「页面所见 = 报告所得」。
+ * @param {string} resultId
+ * @returns {Promise<Blob>} PNG blob
+ */
+export async function fetchDfdPng(resultId) {
+  const { data } = await http.get(`/results/${resultId}/dfd.png`, {
+    responseType: 'blob',
+    // 首次渲染含统一布线计算，放宽超时
+    timeout: 30000,
+  })
+  return data
+}
+
+/**
  * 对比两次建模结果，返回威胁的新增 / 消失 / 变化。
  * 用于回答「架构改了一版之后，威胁有什么变化」。
  * @param {string} resultId 当前（较新）结果 ID

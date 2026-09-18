@@ -699,6 +699,7 @@ class ResultStore:
             model = record.get("model") or {}
             diagrams = ((model.get("detail") or {}).get("diagrams")) or []
             updated = 0
+            touched = []
             for diagram in diagrams:
                 for cell in diagram.get("cells") or []:
                     pos = positions.get(str(cell.get("id") or ""))
@@ -707,9 +708,22 @@ class ResultStore:
                     try:
                         cell["position"] = {"x": float(pos["x"]), "y": float(pos["y"])}
                         updated += 1
+                        touched.append(cell)
                     except (KeyError, TypeError, ValueError):
                         continue
             if updated:
+                # 关键：坐标变了，layoutHints 的几何派生数据（route/labelX/labelY）
+                # 必须同步重算。历史上只写坐标不重算，刷新页面后节点在新位置、
+                # 折线还是老坐标的，X6 在「新锚点 → 老折线」间画出斜线段，
+                # 整图连线乱成一团（用户截图事故的直接根因）。
+                try:
+                    from .model_builder import recompute_layout_hints
+
+                    for diagram in diagrams:
+                        if any(str(c.get("id")) in positions for c in diagram.get("cells") or []):
+                            recompute_layout_hints(diagram)
+                except Exception:
+                    logger.exception("layoutHints 重算失败（结果 %s）", result_id)
                 self._write(record)
                 logger.info("已更新结果 %s 的 %d 个元素坐标", result_id, updated)
             return updated
@@ -743,6 +757,15 @@ class ResultStore:
             if cell is None:
                 return False
             cell.setdefault("data", {})["name"] = new_name
+            # 名字宽度影响标签避让结果：重算 labelX/labelY（route 不受影响，
+            # plan_edge_routes 有指纹缓存，代价可忽略）。
+            try:
+                from .model_builder import recompute_layout_hints
+
+                for diagram in ((model.get("detail") or {}).get("diagrams")) or []:
+                    recompute_layout_hints(diagram)
+            except Exception:
+                logger.exception("重命名后 layoutHints 重算失败（结果 %s）", result_id)
             self._write(record)
             logger.info("已重命名结果 %s 的元素 %s 为「%s」", result_id, element_id, new_name)
             return True

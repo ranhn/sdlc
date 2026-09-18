@@ -6,79 +6,125 @@
 
     <!-- 图例：节点类型项同时是高亮开关（点击切换），
          与只读的线条图例区分 —— 前者是可点按钮，后者是纯展示。
-         这样原来独立的 .filter-chip 行与之合并，消除重复。 -->
+         历史实现是"一个 flex-wrap 容器装全部"，于是节点项和数据流项混排自动
+         折行：窗口一窄，数据流这一族就被拆到第三排、和筛选按钮各占一行。
+         现在固定成两排成组（.legend-row），第 2 排专放数据流家族 + 数据流筛选。 -->
     <div v-if="model" class="legend">
-      <button
-        type="button"
-        class="lg-item lg-toggle"
-        :class="{ active: activeHighlight === 'actor' }"
-        title="点击高亮所有外部实体"
-        @click="toggleHighlight('actor')"
-      >
-        <i class="dot actor" /> 外部实体
-      </button>
-      <button
-        type="button"
-        class="lg-item lg-toggle"
-        :class="{ active: activeHighlight === 'process' }"
-        title="点击高亮所有处理节点"
-        @click="toggleHighlight('process')"
-      >
-        <i class="dot process" /> 处理
-      </button>
-      <button
-        type="button"
-        class="lg-item lg-toggle"
-        :class="{ active: activeHighlight === 'store' }"
-        title="点击高亮所有数据存储"
-        @click="toggleHighlight('store')"
-      >
-        <i class="dot store" /> 数据存储
-      </button>
-      <span class="lg-item"><i class="dot ai" /> AI 组件</span>
-      <button
-        type="button"
-        class="lg-item lg-toggle"
-        :class="{ active: activeHighlight === 'flow' }"
-        title="点击高亮所有数据流"
-        @click="toggleHighlight('flow')"
-      >
-        <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
-          <line x1="0" y1="5" x2="18" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-        </svg>
-        数据流
-      </button>
-      <span class="lg-sep"></span>
-      <span class="lg-item">
-        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-          <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" />
-        </svg>
-        <span class="lg-label">加密流</span>
-      </span>
-      <span class="lg-item">
-        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-          <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" />
-        </svg>
-        <span class="lg-label">公网流</span>
-      </span>
-      <span class="lg-item">
-        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-          <line x1="0" y1="5" x2="36" y2="5" stroke="#475569" stroke-width="2" stroke-dasharray="6 4" />
-        </svg>
-        <span class="lg-label">跨边界</span>
-      </span>
-      <span class="lg-item">
-        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-          <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" stroke-dasharray="6 4" />
-        </svg>
-        <span class="lg-label">跨边界+加密</span>
-      </span>
-      <span class="lg-item">
-        <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-          <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" stroke-dasharray="6 4" />
-        </svg>
-        <span class="lg-label">跨边界+公网</span>
-      </span>
+      <!-- 第 1 排：节点类型（可点击高亮） -->
+      <div class="legend-row">
+        <button
+          type="button"
+          class="lg-item lg-toggle"
+          :class="{ active: activeHighlight === 'actor' }"
+          title="点击高亮所有外部实体"
+          @click="toggleHighlight('actor')"
+        >
+          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="5.25"
+                  :fill="specOf('tm.Actor').fill" :stroke="specOf('tm.Actor').stroke" stroke-width="1.5" />
+          </svg>
+          外部实体
+        </button>
+        <button
+          type="button"
+          class="lg-item lg-toggle"
+          :class="{ active: activeHighlight === 'process' }"
+          title="点击高亮所有处理节点"
+          @click="toggleHighlight('process')"
+        >
+          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
+                  :fill="specOf('tm.Process').fill" :stroke="specOf('tm.Process').stroke" stroke-width="1.5" />
+          </svg>
+          处理
+        </button>
+        <button
+          type="button"
+          class="lg-item lg-toggle"
+          :class="{ active: activeHighlight === 'store' }"
+          title="点击高亮所有数据存储"
+          @click="toggleHighlight('store')"
+        >
+          <!-- 图例里的造型必须与实际节点同形状：圆柱走与节点同一份
+               cylinderBodyD（dfd_spec 比例），否则又回到"图例说矩形、
+               图上画圆柱"的历史不一致。 -->
+          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+            <path :d="cylinderBodyD(24, 12)" :fill="specOf('tm.Store').fill"
+                  :stroke="specOf('tm.Store').stroke" stroke-width="1.1" />
+          </svg>
+          数据存储
+        </button>
+        <span class="lg-item">
+          <svg class="lg-fig" width="24" height="12" viewBox="0 0 24 12" aria-hidden="true">
+            <rect x="0.75" y="0.75" width="22.5" height="10.5" rx="3"
+                  :fill="specOf('tm.Model').fill" :stroke="specOf('tm.Model').stroke" stroke-width="1.5" />
+          </svg>
+          AI 组件
+        </span>
+      </div>
+      <!-- 第 2 排：数据流家族（线型图例）+ 数据流筛选 -->
+      <div class="legend-row">
+        <button
+          type="button"
+          class="lg-item lg-toggle"
+          :class="{ active: activeHighlight === 'flow' }"
+          title="点击高亮所有数据流"
+          @click="toggleHighlight('flow')"
+        >
+          <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="18" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+          数据流
+        </button>
+        <span class="lg-item">
+          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" />
+          </svg>
+          <span class="lg-label">加密流</span>
+        </span>
+        <span class="lg-item">
+          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" />
+          </svg>
+          <span class="lg-label">公网流</span>
+        </span>
+        <span class="lg-item">
+          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="36" y2="5" stroke="#475569" stroke-width="2" stroke-dasharray="6 4" />
+          </svg>
+          <span class="lg-label">跨边界</span>
+        </span>
+        <span class="lg-item">
+          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" stroke-dasharray="6 4" />
+          </svg>
+          <span class="lg-label">跨边界+加密</span>
+        </span>
+        <span class="lg-item">
+          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" stroke-dasharray="6 4" />
+          </svg>
+          <span class="lg-label">跨边界+公网</span>
+        </span>
+        <span class="lg-sep"></span>
+        <!-- 数据流精简：视图层过滤，不删模型数据。删除数据流会连带影响
+             威胁归属与报告口径（STRIDE 按交互路径分析），所以做成可逆的
+             显示过滤。三档循环：全部 → 仅跨边界(9/18) → 跨边界∩高危(7/18)。 -->
+        <button
+          type="button"
+          class="lg-item lg-toggle"
+          :class="{ active: securityFlowFilter }"
+          :title="`当前：${filterLabel}。点击切换到下一档（全部 → 仅跨边界 → 跨边界∩高危）`"
+          @click="toggleSecurityFilter"
+        >
+          <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="18" y2="5" stroke="currentColor" stroke-width="2"
+                  stroke-dasharray="3 2.4" stroke-linecap="round" />
+          </svg>
+          {{ filterLabel }}
+          <span class="lg-count">{{ flowStats.relevant }}/{{ flowStats.total }}</span>
+        </button>
+      </div>
     </div>
 
     <!-- 自动纠错明细（仅在有纠正项时显示） -->
@@ -304,6 +350,14 @@ const containerRef = ref(null)
 let graph = null
 let allCellsRef = []  // 当前 DFD 全量 cells，供 addNode 内做"空 trust boundary 隐藏"判定
 
+// 泳道背景带的**后端下发几何**（原始宽度）。
+// 泳道只是"分区底色"：视口比内容宽时把它的矩形左右拉宽铺满画布，
+// 但原始宽度必须留存——拉宽只增不减，且泳道标题锚点要按偏移量补偿。
+let laneBands = []
+// 拉宽动作挂在画布 scale/translate 上（滚轮缩放/拖拽平移都是高频事件），
+// 用 rAF 合帧，避免一帧里重复算同一份视口范围。
+let laneSyncRaf = 0
+
 // D2/D5: 后端布局期算出的路由/标签提示表 { flowId: {labelT, labelOffset, crossOffset} }。
 // 由 render() 从 diagram.layoutHints 提取；addEdge 渲染时需要读它。
 // 用普通变量（非 ref）即可——只在 render 期间被消费，不参与响应式渲染。
@@ -331,6 +385,64 @@ function toggleHighlight(type) {
   }
   activeHighlight.value = type
   applyHighlight(type)
+}
+
+// —— 只看跨边界的数据流（视图过滤，不改模型） ——
+// 判定：只保留 crossesTrustBoundary 的流。实测依据（健康手环模型 18 条流）���
+//   - 18/18 全部挂有威胁 → "挂威胁保留"会让过滤完全失效（上一版踩的坑）；
+//   - AI 对 enc/pub 标注偏松（15 条加密、13 条公网）→ 以此为条件也滤不掉几条；
+//   - 跨信任边界是 STRIDE 威胁的核心发生地，9/18 保留恰好砍半。
+// 删除数据流属于改模型的高风险操作（威胁归属、覆盖度、报告口径都会变），
+// 所以这里只做可逆的显示过滤。
+function flowSecurityRelevant(cell) {
+  if (!cell) return true
+  const mode = flowFilterMode.value
+  if (!mode) return true
+  const cross = (cell.data || {}).crossesTrustBoundary === true
+  if (mode === 'cross') return cross
+  const high = flowHasHighThreat(cell)
+  if (mode === 'crossHigh') return cross && high
+  return cross || high
+}
+
+const flowFilterMode = ref('')
+const securityFlowFilter = computed(() => flowFilterMode.value !== '')
+
+function flowHasHighThreat(cell) {
+  return (cell?.threats || []).some(
+    (t) => String(t.severity || t.level || '').toLowerCase() === 'high',
+  )
+}
+
+/** 图例徽标：安全相关流数 / 总流数（开不开都显示，让用户预知过滤效果） */
+const flowStats = computed(() => {
+  const cells = props.model?.detail?.diagrams?.[0]?.cells || []
+  const flows = cells.filter((c) => c.shape === 'tm.Flow')
+  return {
+    total: flows.length,
+    cross: flows.filter((c) => (c.data || {}).crossesTrustBoundary === true).length,
+    relevant: flows.filter(flowSecurityRelevant).length,
+  }
+})
+
+const FILTER_LABEL = { '': '全部数据流', cross: '仅跨边界', crossHigh: '跨边界∩高危' }
+const filterLabel = computed(() => FILTER_LABEL[flowFilterMode.value] || '')
+
+function toggleSecurityFilter() {
+  const cycle = ['', 'cross', 'crossHigh']
+  const i = cycle.indexOf(flowFilterMode.value)
+  flowFilterMode.value = cycle[(i + 1) % cycle.length]
+  applyFlowFilter()
+}
+
+/** 把当前档位的可见性写到所有边上 */
+function applyFlowFilter() {
+  if (!graph) return
+  for (const e of graph.getEdges()) {
+    const cell = e.getData()?.tdCell
+    if (!cell) continue
+    e.setVisible(!securityFlowFilter.value || flowSecurityRelevant(cell))
+  }
 }
 
 function clearHighlight() {
@@ -381,34 +493,138 @@ function sevKey(sev) {
   return 'unknown'
 }
 
-// 节点视觉风格
+// —— 节点视觉规格 ——
+// 唯一事实来源是后端 dfd_spec.NODE_STYLE（figure / radius / 配色 / 图标）。
+// 这里保留一份**内置兜底**：首屏或接口不可用时仍能画出正确造型，
+// 拿到 /threat/api/dfd/spec 后用 applySpec() 覆盖，保证"改一处、两端同时生效"。
+const SPEC = {
+  nodes: {
+    'tm.Actor': { fill: '#e0f2fe', stroke: '#0284c7', text: '#075985', radius: 26, figure: 'capsule', icon: '' },
+    'tm.Process': { fill: '#dcfce7', stroke: '#16a34a', text: '#14532d', radius: 8, figure: 'rounded', icon: '' },
+    'tm.Store': { fill: '#fef3c7', stroke: '#d97706', text: '#92400e', radius: 0, figure: 'cylinder', icon: '' },
+    'tm.BoundaryBox': { fill: '#f1f5f9', stroke: '#64748b', text: '#475569', radius: 6, figure: 'rounded', icon: '' },
+    'tm.Model': { fill: '#ede9fe', stroke: '#7c3aed', text: '#4c1d95', radius: 8, figure: 'rounded', icon: '🧠' },
+    'tm.Prompt': { fill: '#fae8ff', stroke: '#c026d3', text: '#86198f', radius: 8, figure: 'rounded', icon: '📝' },
+    'tm.VectorStore': { fill: '#f5d0fe', stroke: '#a21caf', text: '#701a75', radius: 0, figure: 'cylinder', icon: '📚' },
+    'tm.Tool': { fill: '#e0e7ff', stroke: '#4f46e5', text: '#3730a3', radius: 8, figure: 'rounded', icon: '🔧' },
+    'tm.TrainingData': { fill: '#e0f2fe', stroke: '#0891b2', text: '#155e75', radius: 8, figure: 'rounded', icon: '🗂️' },
+    'tm.AgentConfig': { fill: '#cffafe', stroke: '#0e7490', text: '#164e63', radius: 8, figure: 'rounded', icon: '⚙️' },
+  },
+  fallbackShape: 'tm.Process',
+  cylinder: { capRatio: 0.20, bottomBulge: 0.20, labelCenterRatio: 0.56 },
+  // —— 线型规格：权威值在 dfd_spec（flow_stroke_and_dash）。
+  // 这里是与之一致的内置兜底，拿到 /api/dfd/spec 后由 applySpec 覆盖。
+  // 历史问题：dash '4 3'/'6 4' 与四档线宽在节点样式之外各写一份，
+  // 改动时极易只改一端（"图例说虚线、实际画实线"就源于此）。
+  flow: {
+    defaultStroke: '#475569',
+    encrypted: '#16a34a',
+    public: '#ea580c',
+    dashOutOfScope: [4, 3],
+    dashCrossBoundary: [6, 4],
+    widthBoth: 2.0,
+    widthSingleMark: 1.8,
+    widthCross: 1.6,
+    widthPlain: 1.4,
+    arrowSize: 7.0,
+  },
+}
+
+// 泳道 / 文本 / 流默认色（不进 NODE_STYLE，单独一项，语义上不是"节点"）
 const STYLE = {
-  Actor: { fill: '#e0f2fe', stroke: '#0284c7', text: '#075985' },
-  Process: { fill: '#dcfce7', stroke: '#16a34a', text: '#14532d' },
-  Store: { fill: '#fef3c7', stroke: '#d97706', text: '#92400e' },
-  BoundaryBox: { fill: '#f1f5f9', stroke: '#64748b', text: '#475569' },
   Lane: { fill: '#f4f7fb', stroke: '#cbd5e1', text: '#64748b' },
   Text: { fill: 'transparent', stroke: 'transparent', text: '#334155' },
   Flow: { stroke: '#475569', text: '#475569' },
-  Model: { fill: '#ede9fe', stroke: '#7c3aed', text: '#4c1d95' },
-  Prompt: { fill: '#fae8ff', stroke: '#c026d3', text: '#86198f' },
-  VectorStore: { fill: '#f5d0fe', stroke: '#a21caf', text: '#701a75' },
-  Tool: { fill: '#e0e7ff', stroke: '#4f46e5', text: '#3730a3' },
-  TrainingData: { fill: '#e0f2fe', stroke: '#0891b2', text: '#155e75' },
-  AgentConfig: { fill: '#cffafe', stroke: '#0e7490', text: '#164e63' },
 }
 
-const AI_ICON = {
-  Model: '🧠',
-  Prompt: '📝',
-  VectorStore: '📚',
-  Tool: '🔧',
-  TrainingData: '🗂️',
-  AgentConfig: '⚙️',
+/** 取某 shape 的视觉规格（未知 shape 退回处理过程，与后端 node_spec 同规则）。 */
+function nodeSpec(shape) {
+  return SPEC.nodes[shape] || SPEC.nodes[SPEC.fallbackShape] || SPEC.nodes['tm.Process']
 }
-const AI_TYPES = new Set([
-  'tm.Model', 'tm.Prompt', 'tm.VectorStore', 'tm.Tool', 'tm.TrainingData', 'tm.AgentConfig',
-])
+
+/**
+ * 按语义标记算出 (描边色, dash 数组, 线宽)。
+ *
+ * 与后端 dfd_spec.flow_stroke_and_dash **逐条同规则**，取值全部来自
+ * SPEC.flow（由后端下发）。前端不再自带一套硬编码数值，否则改线型
+ * 要改两处、且只读/编辑/报告三处观感漂移。
+ *   - 颜色：公网 > 加密 > 默认（跨边界不覆盖颜色，只用虚线表达）
+ *   - dash：outOfScope > crossBoundary > 实线
+ *   - 线宽：加密&公网 > 单标记 > 跨边界 > 普通
+ */
+function flowStrokeAndDash(enc, pub, cross, oos) {
+  const F = SPEC.flow
+  const toArr = (v) => (Array.isArray(v) ? v.join(' ') : v)
+
+  const stroke = pub ? F.public : enc ? F.encrypted : F.defaultStroke
+  const dash = oos
+    ? toArr(F.dashOutOfScope)
+    : cross
+    ? toArr(F.dashCrossBoundary)
+    : null
+  let width = F.widthPlain
+  if (enc && pub) width = F.widthBoth
+  else if (enc || pub) width = F.widthSingleMark
+  else if (cross) width = F.widthCross
+  return { stroke, dash, width }
+}
+
+/** 消费后端 /api/dfd/spec 下发的权威规格（失败静默，用内置兜底继续）。 */
+function applySpec(payload) {
+  if (!payload) return
+  if (payload.nodes && typeof payload.nodes === 'object') {
+    for (const [shape, s] of Object.entries(payload.nodes)) {
+      SPEC.nodes[shape] = { ...(SPEC.nodes[shape] || {}), ...s }
+    }
+  }
+  if (payload.fallbackShape) SPEC.fallbackShape = payload.fallbackShape
+  if (payload.cylinder) {
+    if (typeof payload.cylinder.capRatio === 'number') SPEC.cylinder.capRatio = payload.cylinder.capRatio
+    if (typeof payload.cylinder.bottomBulge === 'number') SPEC.cylinder.bottomBulge = payload.cylinder.bottomBulge
+    if (typeof payload.cylinder.labelCenterRatio === 'number') {
+      SPEC.cylinder.labelCenterRatio = payload.cylinder.labelCenterRatio
+    }
+  }
+  // 线型规格：逐字段覆盖，缺字段保持兜底（后端增删字段不会打崩渲染）
+  if (payload.flow && typeof payload.flow === 'object') {
+    for (const [k, v] of Object.entries(payload.flow)) {
+      if (v !== null && v !== undefined) SPEC.flow[k] = v
+    }
+  }
+}
+
+/**
+ * 圆柱轮廓 path——**按实际节点尺寸生成绝对坐标**（本地坐标系 0..w / 0..h），
+ * 几何与后端 _cylinder() 完全同源：左右直边 + 底部下凸弧（ry=顶盖半高）
+ * + 顶盖上凸弧 + 顶盖弦线（capLine 单独画）。
+ *
+ * 历史版本用 0..100 归一化 path + X6 refD 拉伸到节点 bbox——X6 的 refD
+ * 对含圆弧 path 的形状 bbox 计算不可靠（capLine 的注释里踩过一次零高
+ * bbox 的坑），弧线被错误缩放后宽扁的存储节点变成"透镜/贝壳"状。
+ * 绝对坐标 + 普通 d 属性彻底绕开 refD，圆柱与后端 PNG 同形。
+ */
+function cylinderBodyD(w, h) {
+  const cap = h * (SPEC.cylinder.capRatio || 0.2)
+  const bulge = h * (SPEC.cylinder.bottomBulge || 0.2)
+  return `M 0 ${cap} L 0 ${h - bulge} `
+    + `A ${w / 2} ${cap} 0 0 0 ${w} ${h - bulge} `
+    + `L ${w} ${cap} A ${w / 2} ${cap} 0 0 1 0 ${cap} Z`
+}
+
+const AI_ICON = Object.fromEntries(
+  Object.entries(SPEC.nodes)
+    .filter(([, s]) => s.icon)
+    .map(([shape, s]) => [shape.replace('tm.', ''), s.icon])
+)
+const AI_TYPES = new Set(
+  Object.keys(SPEC.nodes).filter((k) => AI_ICON[k.replace('tm.', '')])
+)
+
+// —— 图例造型绑定 ——
+// 图例必须画"和节点一样的形状"，所以直接读同一份规格，而不是维护第二套色点。
+function specOf(shape) {
+  return nodeSpec(shape)
+}
 
 // —— FlowDetailPanel 的派生属性 ——
 const flowDetailType = computed(() => {
@@ -442,6 +658,32 @@ function closeFlowDetail() {
 
 let visibilityObserver = null
 let resizeObserver = null
+// 视觉规格是否已从后端覆盖过。只拉一次——规格是常量表，不需要订阅。
+let specLoaded = false
+
+/**
+ * 拉取后端 /threat/api/dfd/spec 并覆盖内置兜底规格。
+ * 路由前缀不能省：威胁建模子应用挂载在 /threat 下（见 backend/main.py 的 app.mount），
+ * 与 api/threat.js 的 baseURL 保持一致。
+ * 失败静默处理：内置常量与后端当前值一致，图照常渲染，只失去"改一处两端同步"能力。
+ * 拉到规格后需要重渲染一次（节点造型/配色在 addNode 里已被固化进 attrs）。
+ */
+async function loadSpec() {
+  if (specLoaded) return
+  specLoaded = true
+  try {
+    const resp = await fetch('/threat/api/dfd/spec')
+    if (!resp.ok) return
+    const payload = await resp.json()
+    const before = JSON.stringify(SPEC)
+    applySpec(payload)
+    if (JSON.stringify(SPEC) === before) return   // 无变化，不必重渲染
+    if (props.model && graph) render(props.model)
+  } catch (e) {
+    console.warn('[DfdGraph] 拉取 dfd spec 失败，使用内置规格', e)
+  }
+}
+
 // 容器原生 keydown 监听：编辑模式下 Delete/Backspace 删除选中节点。
 // 之所以不用 graph.bindKey，是因为它属于未安装的 x6-plugin-keyboard。
 let keydownHandler = null
@@ -479,6 +721,9 @@ onMounted(() => {
       tryRender(props.model)
     }
   })
+  // 并行拉取权威视觉规格（不阻塞首屏：内置兜底规格已能画出正确造型）。
+  // 拿到后若与内置值有差异会自行重渲染一次。
+  loadSpec()
   // 监听容器可见性（el-tabs 切换时组件从 display:none 恢复需重新 fitView）
   nextTick(() => {
     if (containerRef.value && typeof IntersectionObserver !== 'undefined') {
@@ -517,19 +762,20 @@ function initGraph() {
   const ch = c.clientHeight
   console.log('[DfdGraph] initGraph start', { cw, ch, containerClass: c.className })
   // 编辑模式：AI 提取的 DFD 必然有误差，允许用户拖动节点微调布局。
-  // 注意：默认只开启「拖拽」，连线/删除需要用户显式进入编辑模式（editMode），
-  // 避免误操作破坏 AI 生成的模型。
+  // 注意：拖拽/连线/删除都需要显式进入编辑模式，避免误操作破坏模型，
+  // 也避免"只读时拖了节点没保存"导致页面与后端/导出图不一致。
   graph = new Graph({
     container: c,
     grid: { visible: true, size: 20, type: 'dot' },
     background: { color: 'transparent' },
+    // 平移与缩放两种模式都保留：只读浏览同样需要挪动/放大看细节
     panning: { enabled: true },
     mousewheel: { enabled: true, zoomAtMousePosition: true },
     selecting: { enabled: true, rubberband: false, showNodeSelectionBox: true },
     interacting: {
       edgeLabelMovable: false,
-      // 节点可拖动（布局微调）；连线由 editMode 控制
-      nodeMovable: true,
+      // 节点拖动跟随 editable：只读锁定布局，编辑才允许微调
+      nodeMovable: !!props.editable,
       arrowheadMovable: false,
     },
     // 只允许编辑模式下从锚点拉线
@@ -566,6 +812,11 @@ function initGraph() {
     console.warn('[DfdGraph] initGraph 容器 0 尺寸,等 ResizeObserver 兜底', { cw, ch })
   }
 
+  // 缩放/平移后把泳道底色带重新拉到视口两端：泳道不参与适配 bbox，
+  // 所以调整视口后必须主动同步一次，否则缩放回来又会露出左右空白。
+  graph.on('scale', scheduleLaneSync)
+  graph.on('translate', scheduleLaneSync)
+
   graph.on('node:click', ({ node }) => {
     if (isLaneNode(node)) return
     // X6 v2 的"选中" API 是 graph.select(...)，不是 resetSelection。
@@ -593,14 +844,185 @@ function initGraph() {
     tooltip.value.visible = false
   })
 
+  // 拖动时把后端 route 折点「就地重算端点 + 保持通道不动」，而不是丢弃后
+  // 交给 X6 manhattan 重算。
+  //
+  // 为什么不能降级重算：X6 manhattan 会重新选通道，与后端 plan_edge_routes
+  // 的结果（过道位置、并行边错位、避障评分）必然不同。用户拖完常常直接导出，
+  // 此时还没保存布局，后端仍是旧坐标 —— 页面与 PNG 于是各画一套。
+  //
+  // 重算策略（保持 route 拓扑与正交性不变）：
+  //   - 端点锚点：按**新节点矩形**重算，口径与后端 _anchor 一致
+  //     （沿「相邻折点 → 节点中心」方向取矩形边界交点）；
+  //   - 与端点相邻的第一个折点：只跟随「该段所在轴」分量，
+  //     使最后一段仍正交，而通道所在的另一轴保持后端原值；
+  //   - 其余折点与另一端点：完全不动（通道位置由后端决定，不因拖动漂移）。
+  // 这样线会跟着节点走，整体形状与后端同构；保存后后端重算的结果也接近。
+  function boundaryPointToward(rect, toward) {
+    // rect: {x, y, width, height}；toward: 目标点（通常是折点）
+    // 返回「节点中心 → toward」射线与矩形边界的交点（与后端口径一致）
+    const cx = rect.x + rect.width / 2
+    const cy = rect.y + rect.height / 2
+    const dx = toward.x - cx
+    const dy = toward.y - cy
+    if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
+      return { x: cx, y: rect.y + rect.height }
+    }
+    const hw = rect.width / 2
+    const hh = rect.height / 2
+    // 求射线离开矩形的参数 t
+    const tx = Math.abs(dx) < 1e-6 ? Infinity : hw / Math.abs(dx)
+    const ty = Math.abs(dy) < 1e-6 ? Infinity : hh / Math.abs(dy)
+    const t = Math.min(tx, ty)
+    return { x: cx + dx * t, y: cy + dy * t }
+  }
+
+  // 按节点的新矩形重建 route 的某一端（另一端保持不动）。
+  // 返回新的点列，保证：端点贴合新矩形、所有相邻段严格 H/V（无斜线）。
+  function rebuildRouteEnd(route, isSrc, rect) {
+    const pts = route.map((p) => ({ x: p.x, y: p.y }))
+    if (pts.length < 2) return null
+    const anchorIdx = isSrc ? 0 : pts.length - 1
+    const adjIdx = isSrc ? 1 : pts.length - 2
+    if (adjIdx < 0 || adjIdx >= pts.length) return null
+
+    const adj = pts[adjIdx]
+    const oldAnchor = pts[anchorIdx]
+    const newAnchor = boundaryPointToward(rect, adj)
+
+    // 与端点相邻的那一段原本是水平还是竖直：由「旧锚点 → adj」判定。
+    // 这段方向必须保持，否则新锚点接上去就会产生斜线。
+    const segH = Math.abs(adj.x - oldAnchor.x) >= Math.abs(adj.y - oldAnchor.y)
+    const eps = 1e-6
+    let insert = null
+    if (segH) {
+      // 原为水平段 → 新锚点需与 adj 同 y；不同则插一个过渡点
+      if (Math.abs(newAnchor.y - adj.y) > eps) insert = { x: newAnchor.x, y: adj.y }
+    } else {
+      // 原为竖直段 → 新锚点需与 adj 同 x
+      if (Math.abs(newAnchor.x - adj.x) > eps) insert = { x: adj.x, y: newAnchor.y }
+    }
+
+    const out = isSrc
+      ? [newAnchor, ...(insert ? [insert] : []), ...pts.slice(1)]
+      : [...pts.slice(0, -1), ...(insert ? [insert] : []), newAnchor]
+
+    // 去掉相邻重复点（插入点可能与 newAnchor 或 adj 重合）
+    const dedup = []
+    for (const p of out) {
+      const last = dedup[dedup.length - 1]
+      if (last && Math.abs(last.x - p.x) < eps && Math.abs(last.y - p.y) < eps) continue
+      dedup.push(p)
+    }
+    return dedup
+  }
+
+  // 依据「相对后端基准的节点位移」重建一条边，返回 { pts, shifts }。
+  //
+  // 基准是后端原始 route（_routeBase，不可变），因此：
+  //   - 反复拖动不会累积多余折点；
+  //   - 拖动多个节点时各端位移叠加（先拖源、再拖目标，两端都生效）；
+  //   - 节点被拖回基准位置时，该端恢复后端原始形状。
+  //
+  // nodeId 为本次正在拖动的节点（可为 null，表示只按已有位移重建）。
+  function rebuildEdgeRoute(edge, nodeId) {
+    const ed = edge.getData?.() || {}
+    const base = ed._routeBase
+    if (!Array.isArray(base) || base.length < 2) return null
+    const cell = ed.tdCell || {}
+    const srcId = cell.source?.cell
+    const tgtId = cell.target?.cell
+    const shifts = { ...(ed._nodeShifts || {}) }
+
+    // 更新本次拖动节点的位移标记：与后端基准坐标比对，
+    // 差异 ≤0.5px 视为未移动（避免浮点噪音与"拖回原位"误判）。
+    if (nodeId) {
+      const node = graph.getCellById(nodeId)
+      const pos = node?.position?.()
+      const basePos = ed._basePositions?.[nodeId]
+      const moved = !basePos || !pos
+        ? false
+        : (Math.abs(basePos.x - pos.x) > 0.5 || Math.abs(basePos.y - pos.y) > 0.5)
+      if (moved) shifts[nodeId] = true
+      else delete shifts[nodeId]
+    }
+
+    const rectOf = (cid) => {
+      const n = graph.getCellById(cid)
+      const p = n?.position?.()
+      const s = n?.size?.()
+      return p && s ? { x: p.x, y: p.y, width: s.width, height: s.height } : null
+    }
+
+    let pts = base.map((p) => ({ x: p.x, y: p.y }))
+    // 两端各自只改相邻折点，顺序无关
+    if (srcId && shifts[srcId]) {
+      const r = rectOf(srcId)
+      if (r) pts = rebuildRouteEnd(pts, true, r) || pts
+    }
+    if (tgtId && shifts[tgtId]) {
+      const r = rectOf(tgtId)
+      if (r) pts = rebuildRouteEnd(pts, false, r) || pts
+    }
+    return { pts, shifts }
+  }
+
+  // 让被拖节点的相连边跟随：重建端点锚点、保持通道折点不动。
+  // 拖动中（node:moving）与松手后（node:moved）都调用，保证线实时跟随
+  // 且形状始终与后端同构。
+  function refollowEdges(node) {
+    try {
+      graph.getConnectedEdges(node).forEach((e) => {
+        const ed = e.getData?.() || {}
+        if (!ed._backendRoute) return
+        const rebuilt = rebuildEdgeRoute(e, node.id)
+        if (rebuilt) {
+          e.setVertices(rebuilt.pts)
+          e.setData({ _nodeShifts: rebuilt.shifts })
+        }
+        // 标签若来自布局期绝对坐标（labelX/labelY），节点一动该坐标就失效
+        // ——必须切回"沿边参数化"定位，否则标签会留在旧位置与线脱节。
+        // 用拖动前的 labelT/labelOffset（若布局期给过）作为参数化落点。
+        if (ed._absLabel) {
+          const hint = currentLayoutHints?.[ed.tdCell?.data?.flowId] || {}
+          const hp = labelPos(e.id)
+          const dist = typeof hint.labelT === 'number' ? hint.labelT : hp.distance
+          const off = typeof hint.labelOffset === 'number' ? hint.labelOffset : hp.offset
+          e.setData({ _absLabel: false })
+          e.prop('labels/0/position', { distance: dist, offset: off })
+          e.prop('labels/0/attrs/label/textAnchor', null)
+          e.prop('labels/0/attrs/label/textVerticalAnchor', null)
+        }
+      })
+    } catch { /* 折点重建失败不影响拖拽流程 */ }
+  }
+
+  // 拖动过程中实时跟随（否则线要等松手才跳到新位置，观感是"线脱节"）
+  graph.on('node:moving', ({ node }) => {
+    if (isLaneNode(node)) return
+    refollowEdges(node)
+  })
+
   // 拖拽结束：把新坐标回传给父组件，由其负责持久化到后端/本地模型。
   // 只上报真实位移，避免点击时的 0 位移噪音。
   graph.on('node:moved', ({ node }) => {
-    if (isLaneNode(node) || !props.editable) return
     const pos = node.position()
     const data = node.getData?.() || {}
     const tdCell = data.tdCell || {}
-    if (tdCell.position && tdCell.position.x === pos.x && tdCell.position.y === pos.y) return
+    const reallyMoved = !(tdCell.position
+      && tdCell.position.x === pos.x && tdCell.position.y === pos.y)
+    // 拖动节点后端点锚点随节点平移；通道折点保持不动（见函数注释）。
+    // 不再降级 manhattan —— 那会让页面与后端 PNG 画成两张不同的图。
+    if (reallyMoved) {
+      refollowEdges(node)
+      // 位移后跨界标记的交点已失效（按旧路由算的）：全部清除，
+      // 等下一次整图渲染重建
+      graph.getNodes()
+        .filter((n) => n.getData?.()?.crossMarker === true)
+        .forEach((n) => n.remove())
+    }
+    if (isLaneNode(node) || !props.editable) return
+    if (!reallyMoved) return
     emit('node-moved', { cellId: node.id, x: pos.x, y: pos.y })
   })
 
@@ -642,10 +1064,10 @@ function initGraph() {
   if (!c.hasAttribute('tabindex')) c.setAttribute('tabindex', '0')
 }
 
-// 泳道背景节点：不可交互（不触发选中 / 点击 / 悬停浮层）
+// 泳道背景 / 跨界落点标记：不可交互（不触发选中 / 点击 / 悬停浮层 / 删除）
 function isLaneNode(node) {
   const d = node?.getData?.() || node?.data || {}
-  return d.lane === true
+  return d.lane === true || d.crossMarker === true
 }
 
 function showTooltip(node) {
@@ -676,6 +1098,12 @@ function showTooltip(node) {
 }
 
 onBeforeUnmount(() => {
+  // 先停掉挂起的泳道同步帧：回调里会访问已 dispose 的 graph
+  if (laneSyncRaf) {
+    cancelAnimationFrame(laneSyncRaf)
+    laneSyncRaf = 0
+  }
+  laneBands = []
   if (graph) {
     graph.dispose()
     graph = null
@@ -775,6 +1203,12 @@ function focusCell(id) {
   // 抛 TypeError(graph.resetSelection is not a function),整条 watcher 链路都被
   // Vue 吞掉,导致 emphasisCell/centerCell 全部不执行,体感"点了没反应"。
   // emphasisCell 已经提供视觉反馈,不需要内置选中。
+  // 「只看跨边界」开启时，被过滤隐藏的数据流也要能被定位到：
+  // 威胁列表的"定位"可能指向隐藏的流，此时临时恢复显示该边，
+  // 否则高亮/居中都作用在不可见元素上，等于"点了没反应"。
+  if (cell.isEdge?.() && !cell.isVisible()) {
+    cell.setVisible(true)
+  }
   emphasisCell(cell)
   // 仅在"完全看不见"时才平移动视图；可见时保持画布纹丝不动
   if (!isCellVisible(cell)) centerOn(cell)
@@ -847,12 +1281,18 @@ function emphasisCell(cell) {
   }
 }
 
-// 编辑模式切换：开启后允许从锚点拉线新建数据流
+// 编辑模式切换：开启后允许从锚点拉线新建数据流、拖动节点微调布局
 watch(
   () => props.editable,
   (on) => {
     if (!graph) return
     graph.options.connecting.enabled = !!on
+    // 只读时锁定节点位置，避免"拖了没保存"造成页面与导出图不一致
+    if (graph.options.interacting) {
+      graph.options.interacting.nodeMovable = !!on
+    }
+    // 已选中的节点在只读态下不再可拖，清掉选中框避免误导
+    if (!on) graph.cleanSelection?.()
   }
 )
 
@@ -863,6 +1303,13 @@ function render(model) {
   }
   graph.clearCells()
   currentLayoutHints = null   // 避免无模型/缺 diagram 时残留上一次的 hints
+  // 泳道原始几何随 cells 一起清空：换图后若还留着上一张图的 band，
+  // 拉宽逻辑会去 getCellById 一个已不存在的泳道（白跑一轮并且语义错乱）。
+  laneBands = []
+  if (laneSyncRaf) {
+    cancelAnimationFrame(laneSyncRaf)
+    laneSyncRaf = 0
+  }
   if (!model) return
   const diagram = model.detail?.diagrams?.[0]
   if (!diagram) {
@@ -894,6 +1341,10 @@ function render(model) {
         addNode(cell)
       }
     }
+    // 全部边就位后跑一次内容级标签避让（需要完整路径几何才能取锚点）
+    avoidEdgeLabels()
+    // 跨界落点标记：必须在全部边/边界就位后计算交点（依赖路由顶点）
+    addCrossMarkers()
     console.log('[DfdGraph] render done, cells in graph:', graph.getCells().length)
   } catch (e) {
     console.error('[DfdGraph] render error:', e, e.stack)
@@ -904,33 +1355,48 @@ function render(model) {
   })
 }
 
+// 节点类型副标签（与后端 PNG 渲染器 TYPE_LABEL 一致）：
+// 名称下方的类型小字是商业级图例语义的一部分，读者不必靠颜色猜形状含义。
+// 权威来源是 dfd_spec 的 label_zh，这里只保留最小值兜底（首屏/离线时用）。
+const TYPE_LABEL = {
+  'tm.Actor': '外部实体',
+  'tm.Process': '处理过程',
+  'tm.Store': '数据存储',
+}
+
+/** 是否是信任边界容器（容器走"圆角矩形 + 虚线 + 左上角名称"，不参与 node figure）。 */
+function isBoundaryShape(shape) {
+  return shape === 'tm.BoundaryBox'
+}
+
 function addNode(cell) {
   const data = cell.data || {}
   const shape = cell.shape || 'tm.Process'
   // AI 子类型从 data.aiElementType 读取（data.type 已是 TD-可识别的形状）
   const aiType = (data.aiElementType || '').replace('tm.', '')
   const aiStyleKey = AI_ICON[aiType] ? aiType : null
-  const s = (aiStyleKey ? STYLE[aiStyleKey] : null) || STYLE[shape.replace('tm.', '')] || STYLE.Process
-  const isBoundary = shape === 'tm.BoundaryBox'
+  // 造型键与配色键的统一取法：AI 子类型优先，否则按 cell.shape。
+  // 两者都查 dfd_spec 派生的 SPEC.nodes，因此"圆柱/胶囊"与配色永远同源。
+  const specShape = aiStyleKey ? `tm.${aiStyleKey}` : shape
+  const s = nodeSpec(specShape)
+  const figure = isBoundaryShape(shape) ? 'rounded' : s.figure
+  const isBoundary = isBoundaryShape(shape)
   const pos = cell.position || { x: 0, y: 0 }
   const size = cell.size || { width: 180, height: 60 }
   const name = data.name || '未命名'
   // 只显示"未缓解"威胁——已 Mitigated 的不应误导读者
   const openThreats = (cell.threats || []).filter((t) => t.status !== 'Mitigated')
   const threatCount = openThreats.length
-  const icon = aiStyleKey ? AI_ICON[aiStyleKey] + ' ' : ''
+  const icon = aiStyleKey ? (s.icon || AI_ICON[aiStyleKey]) + ' ' : ''
   // 威胁数不再拼进 label（会顶出节点高度、把字号挤小）。
   // 改为节点下方独立的小徽标：名称保持 12px 可读，徽标作次要信息。
   const typeTag = aiStyleKey ? ` [${aiType}]` : ''
 
   // 空 trust boundary：LLM 偶尔会生成没有 child 的边界容器（噪音），画出来只会让图更乱，直接隐藏。
-  const innerCount = isBoundary
-    ? (cell.children || []).filter((cid) => {
-        const sib = allCellsRef.find((c) => c.id === cid)
-        return sib && sib.shape !== 'tm.BoundaryBox' && sib.shape !== 'tm.Text'
-      }).length
-    : 0
-  const isEmptyBoundary = isBoundary && innerCount === 0
+  // 边界显示矩形（含成员包围盒收缩）统一由 boundaryLayout 计算——
+  // 跨界落点标记（addCrossMarkers）必须用同一个矩形，才能贴住可见边框。
+  const bl = isBoundary ? boundaryLayout(cell) : null
+  const isEmptyBoundary = isBoundary && bl.memberCount === 0
 
   // 威胁徽标画进节点自身 markup（而不是独立 cell）：
   // 独立 cell 会被框选/fitView/allCellsRef 当成真实元素，还会在拖动时滞留原地，
@@ -938,56 +1404,144 @@ function addNode(cell) {
   const showBadge = threatCount > 0 && !isEmptyBoundary
   const badgeText = threatCount > 9 ? '9+' : String(threatCount)
 
-  graph.addNode({
-    id: cell.id,
-    x: pos.x,
-    y: pos.y,
-    width: size.width,
-    height: size.height,
-    shape: 'rect',
-    // 节点 zIndex 必须高于 lane（-100）和边（50），才能保证节点始终可点、可读、不被遮挡。
-    zIndex: cell.zIndex ?? 200,
-    visible: !isEmptyBoundary,
-    data: { tdCell: cell },
-    // 追加 badge 节点：position 用 relative，坐标以节点左上角为原点。
-    markup: [
-      { tagName: 'rect', selector: 'body' },
-      { tagName: 'text', selector: 'label' },
-      {
-        tagName: 'g',
-        selector: 'badgeGroup',
-        children: [
-          { tagName: 'rect', selector: 'badgeBody' },
-          { tagName: 'text', selector: 'badgeText' },
-        ],
-      },
-    ],
-    attrs: {
-      body: {
+  // 显示矩形：边界按 boundaryLayout 结果，其余用原尺寸
+  let drawX = pos.x
+  let drawY = pos.y
+  let drawW = size.width
+  let drawH = size.height
+  if (bl) {
+    drawX = bl.rect.x0
+    drawY = bl.rect.y0
+    drawW = bl.rect.x1 - bl.rect.x0
+    drawH = bl.rect.y1 - bl.rect.y0
+  }
+
+  // 类型副标签行：AI 子类型已有 [type] 标记时不重复加；
+  // 名称换行后 ≤2 行才追加，保证"名称 + 类型"不超过 3 行溢出节点。
+  // 圆柱的可视文字带只有中间 60%（顶盖/底弧各占 20%），名称最多 1 行。
+  const isCylinder = figure === 'cylinder'
+  // 字号 13：后端 PNG 用 15px，X6 受 60px 节高约束取折中；
+  // 换行宽度按节点实际宽度估算（CJK 字宽≈字号），不再用固定 16 字。
+  const nodeFontSize = 13
+  const wrapChars = Math.max(5, Math.floor((drawW - 24) / nodeFontSize))
+  const wrappedName = wrapLabel(name, isCylinder ? Math.min(12, wrapChars) : wrapChars)
+  const nameLines = wrappedName.split('\n').length
+  const typeLine = s.labelZh || TYPE_LABEL[shape]
+  const fullText = icon + wrappedName + typeTag
+    + (!typeTag && typeLine && nameLines <= (isCylinder ? 1 : 2) ? `\n${typeLine}` : '')
+
+  // 造型轮廓 markup：body 的 tagName 由 figure 决定——
+  //   cylinder → path（cylinderBodyD 按节点实际宽高生成绝对坐标，几何
+  //   与后端 _cylinder 同源；不用 refD——它对含弧 path 的 bbox 计算不可靠，
+  //   会把宽扁的存储节点缩成"透镜"状）
+  //   capsule  → 胶囊是圆角矩形的一种（rx 由 SPEC.radius 给，clamp 到 h/2）
+  //   rounded  → 圆角矩形
+  // 圆柱还要补一条顶盖弦线（capLine）：后端 _cylinder 专门画这条
+  // "上沿翻边"（spec.CYLINDER_CAP_LINE_Y），缺了它圆柱顶是纯椭圆，观感不同。
+  const baseMarkup = [
+    { tagName: 'text', selector: 'label' },
+    {
+      tagName: 'g',
+      selector: 'badgeGroup',
+      children: [
+        { tagName: 'rect', selector: 'badgeBody' },
+        { tagName: 'text', selector: 'badgeText' },
+      ],
+    },
+  ]
+  const nodeMarkup = isCylinder
+    ? [
+        { tagName: 'path', selector: 'body' },
+        { tagName: 'path', selector: 'capLine' },
+        ...baseMarkup,
+      ]
+    : [
+        { tagName: 'rect', selector: 'body' },
+        ...baseMarkup,
+      ]
+  // 胶囊半径不得超过高度一半（与后端 min(radius, h/2) 同规则，防溢出变形）
+  const radius = figure === 'capsule'
+    ? Math.min(s.radius || 0, drawH / 2)
+    : (s.radius || 0)
+
+  const capPx = drawH * (SPEC.cylinder.capRatio || 0.2)
+  const bodyAttrs = isCylinder
+    ? {
+        // 绝对坐标 path（节点本地 0..drawW / 0..drawH）——与 capLine 同一
+        // 坐标口径，和后端 _cylinder 逐像素同形
+        d: cylinderBodyD(drawW, drawH),
+        fill: isEmptyBoundary ? 'transparent' : s.fill,
+        stroke: isEmptyBoundary ? 'transparent' : s.stroke,
+        strokeWidth: 1.6,
+      }
+    : {
         fill: isEmptyBoundary ? 'transparent' : s.fill,
         stroke: isEmptyBoundary ? 'transparent' : s.stroke,
         strokeWidth: isBoundary ? 2 : 1.6,
         // 只有 trust boundary 自身画虚线；AI 子类型不应再用虚线表达
         strokeDasharray: isBoundary ? '10 5' : null,
-        rx: shape === 'tm.Actor' ? 26 : isBoundary ? 6 : 8,
-        ry: shape === 'tm.Actor' ? 26 : isBoundary ? 6 : 8,
-      },
-      label: {
-        text: icon + wrapLabel(name, 16) + typeTag,
-        fill: s.text,
-        fontSize: 12,
-        // 有未缓解威胁时加粗，作为"整体扫视"的粗粒度信号；
-        // 精确条数由右下角徽标承担，不需再靠字重区分。
-        fontWeight: threatCount > 0 ? 700 : 500,
-        lineHeight: 17,
-      },
+        rx: radius,
+        ry: radius,
+      }
+
+  graph.addNode({
+    id: cell.id,
+    x: drawX,
+    y: drawY,
+    width: drawW,
+    height: drawH,
+    shape: 'rect',
+    // 节点 zIndex 必须高于 lane（-100）和边（50），才能保证节点始终可点、可读、不被遮挡。
+    zIndex: cell.zIndex ?? 200,
+    visible: !isEmptyBoundary,
+    data: { tdCell: cell },
+    markup: nodeMarkup,
+    attrs: {
+      body: bodyAttrs,
+      capLine: isCylinder
+        ? {
+            // 顶盖弦线：绝对坐标 d（node 本地坐标系 0..drawW / 0..drawH）。
+            // 不能用 refD：水平线的形状 bbox 高为 0，refD 对零高形状 sy=1，
+            // y 会停在 20px 绝对位置而不是按比例缩放。
+            d: `M 0 ${capPx} L ${drawW} ${capPx}`,
+            stroke: isEmptyBoundary ? 'transparent' : s.stroke,
+            strokeWidth: 1.6,
+          }
+        : null,
+      label: isBoundary
+        ? {
+            // 边界名称贴左上角（与后端 PNG 一致），白描边保证压线可读
+            text: name,
+            fill: s.text,
+            fontSize: nodeFontSize,
+            fontWeight: 600,
+            textAnchor: 'start',
+            refX: 10,
+            refY: 8,
+            stroke: '#ffffff',
+            strokeWidth: 3,
+            paintOrder: 'stroke',
+            strokeLinejoin: 'round',
+          }
+        : {
+            text: fullText,
+            fill: s.text,
+            fontSize: nodeFontSize,
+            // 有未缓解威胁时加粗，作为"整体扫视"的粗粒度信号；
+            // 精确条数由右下角徽标承担，不需再靠字重区分。
+            fontWeight: threatCount > 0 ? 700 : 500,
+            lineHeight: 17,
+            // 圆柱标签下移到"可视文字带"中心（顶盖 20% + 底弧 20% 之间的 60%），
+            // 与后端 CYLINDER_LABEL_CENTER_RATIO 同值；矩形/胶囊保持垂直居中。
+            ...(isCylinder ? { refY: drawH * SPEC.cylinder.labelCenterRatio } : {}),
+          },
       // 徽标整组贴在右下角：refX/refY 相对节点宽高定位，
       // 节点被 resize 时 X6 会自动重算，不需要额外监听。
       badgeGroup: {
         // 用 ref 定位而不是绝对坐标，随节点尺寸自适应
         display: showBadge ? 'block' : 'none',
-        refX: size.width - (badgeText.length > 1 ? 30 : 22),
-        refY: size.height - 18,
+        refX: drawW - (badgeText.length > 1 ? 30 : 22),
+        refY: drawH - 18,
       },
       badgeBody: {
         width: badgeText.length > 1 ? 28 : 20,
@@ -1032,10 +1586,25 @@ function addTextNode(cell) {
   })
 }
 
-// 生命周期泳道背景：半透明底色 + 左上角泳道标签（不可交互）
+// 生命周期泳道背景：半透明底色 + 泳道标签（不可交互）。
+// 标签样式对齐后端 PNG：CJK 标签在泳道左缘竖排（每字一行），
+// 含拉丁字符的保持横排（竖排英文不可读）。
 function addLane(lane) {
+  const label = lane.label || ''
+  const isCjk = [...label].length > 0 && [...label].every((ch) => ch.charCodeAt(0) > 255)
+  const labelRefX = isCjk ? 10 : 16
+  // 记录后端下发的原始几何：拉宽泳道时按 band.x 判断"只增不减"，
+  // 并按 (band.x - 新左缘) 补偿标题锚点。
+  laneBands.push({
+    id: `lane-${lane.key || label}`,
+    x: lane.x,
+    y: lane.y,
+    width: lane.width,
+    height: lane.height,
+    labelRefX,
+  })
   graph.addNode({
-    id: `lane-${lane.key || lane.label}`,
+    id: `lane-${lane.key || label}`,
     x: lane.x,
     y: lane.y,
     width: lane.width,
@@ -1048,19 +1617,101 @@ function addLane(lane) {
         fill: STYLE.Lane.fill,
         stroke: STYLE.Lane.stroke,
         strokeWidth: 1,
-        rx: 10,
-        ry: 10,
+        // 直角对齐后端 PNG（泳道是"分区底色"，不是卡片）
+        rx: 0,
+        ry: 0,
       },
       label: {
-        text: lane.label,
+        text: isCjk ? [...label].join('\n') : label,
         fill: STYLE.Lane.text,
-        fontSize: 12,
+        fontSize: 13,
         fontWeight: 600,
+        lineHeight: 16,
         textAnchor: 'start',
-        refX: 16,
-        refY: 22,
+        refX: labelRefX,
+        // refY 是文字块**中心**相对矩形顶边的偏移（X6 默认 textVerticalAnchor
+        // 为 middle），取 lane.height / 2 即"落在泳道中线上"。
+        // 口径与后端 PNG 完全一致：dfd_renderer 里泳道标签是
+        //   _vertical_text(draw, label, x0 + S(8), (y0 + y1) / 2, ...)
+        // —— 竖排文字以泳道垂直中线为中心。
+        // 历史值 18 / 22 是"贴顶"，画布上标题会压在上沿、看着不在泳道里。
+        refY: lane.height / 2,
       },
     },
+  })
+}
+
+// 泳道标题距"泳道可见左边缘"的视觉内缩（屏幕像素）。泳道被拉宽到视口两端时，
+// 标题贴在这条内缩线上（行头式），既不飘在泳道中段、也不会随越界左缘跑丢。
+const TITLE_INSET_PX = 16
+
+/**
+ * 泳道底色带横向铺满视口（"泳道左右两侧不要再留空白"）。
+ *
+ * 为什么需要：后端下发的泳道矩形只包裹内容（例如 x=40..1106），而画布视口
+ * 通常比内容宽得多。适配视图按**内容**宽高比等比缩放（本图纵向泳道多、
+ * 由高度决定缩放比）之后，泳道左右两侧会各剩一大块空白——观感就是
+ * "泳道只占中间一条窄带，左右两边空空的"。
+ *
+ * 做法与约束：
+ *   · 泳道是分区底色（zIndex -100、不可交互、被 fitView 排除在 bbox 之外），
+ *     因此拉宽它**不改变**节点/连线/标签的任何模型坐标，也不影响适配比例；
+ *   · 只改左右，不动高度：泳道高度是"行高"语义，改了会让跨道流的过道错位；
+ *   · 只增不减：视口比泳道窄（放大看细节）时保持后端原宽，避免泳道反而
+ *     比内容还窄；
+ *   · 泳道标题贴住**可见左边缘**（行头式）：泳道被拉宽后，标题必须跟着
+ *     可见左缘走，否则它会悬在泳道中段、看着"不在泳道里"（见下方注释）。
+ */
+function syncLaneBandWidth() {
+  if (!graph || !laneBands.length) return
+  const cw = containerRef.value?.clientWidth || 0
+  if (cw <= 0) return
+  const s = graph.zoom()
+  if (!s || !Number.isFinite(s) || s <= 0) return
+  const t = graph.translate() || {}
+  const tx = Number(t.tx) || 0
+  // 视口在模型坐标系里的横向范围：screen = model * s + tx
+  const viewX0 = (0 - tx) / s
+  const viewX1 = (cw - tx) / s
+  // 视觉 ~24px 的越界余量（换算回模型坐标）：让泳道左右边缘始终落在视口外，
+  // 避免浮点取整后在画布左/右露出发丝宽的白缝。
+  const pad = 24 / s
+  // 泳道标题距"可见左边缘"的视觉内缩（屏幕像素），换算成模型坐标。
+  const titleInset = TITLE_INSET_PX / s
+  for (const band of laneBands) {
+    const cell = graph.getCellById(band.id)
+    if (!cell) continue
+    const x0 = Math.min(viewX0 - pad, band.x)
+    const x1 = Math.max(viewX1 + pad, band.x + band.width)
+    const width = x1 - x0
+    const pos = cell.position()
+    const size = cell.size()
+    if (Math.abs(pos.x - x0) >= 0.5 || Math.abs(size.width - width) >= 0.5) {
+      cell.position(x0, pos.y)
+      cell.size(width, size.height)
+    }
+    // 标题锚点（行头式）：跟着**可见的左边缘**走，不再留在内容旁边。
+    //   · 泳道左缘可见（未拉宽 / 已平移到左缘）→ 保持后端原生的标题位置；
+    //   · 泳道被拉宽到视口之外（左缘在画布外）→ 标题贴到画布可见左缘，
+    //     否则它会悬在泳道中段，看起来"不在泳道里"（用户反馈原话）。
+    const leftVisible = (x0 * s + tx) >= 0
+    const titleX = leftVisible ? band.x + band.labelRefX : viewX0 + titleInset
+    const wantRef = titleX - x0
+    // 首次（band.refX 未记录）必须写入一次；之后只在偏移真的变了才写，
+    // 避免每帧缩放/平移都触发一次无意义的 attr 重绘。
+    if (band.refX === undefined || Math.abs(band.refX - wantRef) >= 0.5) {
+      cell.attr('label/refX', wantRef)
+      band.refX = wantRef
+    }
+  }
+}
+
+/** rAF 合帧：滚轮缩放 / 拖拽平移会连续触发，同一帧只算一次即可。 */
+function scheduleLaneSync() {
+  if (laneSyncRaf) return
+  laneSyncRaf = requestAnimationFrame(() => {
+    laneSyncRaf = 0
+    syncLaneBandWidth()
   })
 }
 
@@ -1110,6 +1761,157 @@ function findContainingBoundary(cell, allCells) {
   return null
 }
 
+// —— 边界显示矩形（addNode 与跨界标记共用的唯一实现）——
+// 从 addNode 的"成员包围盒收缩"逻辑提取：只缩不涨、防退化（缩后过小
+// 则放弃收缩回原矩形）。跨信任边界落点标记必须用这个矩形求交点，
+// 才能正好落在用户看到的边框上。
+function boundaryLayout(cell) {
+  const pos = cell.position || { x: 0, y: 0 }
+  const size = cell.size || { width: 180, height: 60 }
+  let innerBox = null
+  let memberCount = 0
+  for (const cid of cell.children || []) {
+    const sib = allCellsRef.find((c) => c.id === cid)
+    if (!sib || sib.shape === 'tm.BoundaryBox' || sib.shape === 'tm.Text') continue
+    memberCount += 1
+    const p = sib.position
+    if (!p) continue
+    const sz = sib.size || { width: 180, height: 60 }
+    innerBox = innerBox
+      ? { x0: Math.min(innerBox.x0, p.x), y0: Math.min(innerBox.y0, p.y),
+          x1: Math.max(innerBox.x1, p.x + sz.width), y1: Math.max(innerBox.y1, p.y + sz.height) }
+      : { x0: p.x, y0: p.y, x1: p.x + sz.width, y1: p.y + sz.height }
+  }
+  const rect = { x0: pos.x, y0: pos.y, x1: pos.x + size.width, y1: pos.y + size.height }
+  if (innerBox) {
+    // 水平拉宽：泳道只贴内容（PAD_X=30）时，纵向长条 DFD 在宽画布上
+    // 两侧全是空白（fitView 按高度缩放，宽度天然富余）。泳道作为背景
+    // 应主动向左右伸展填满空间：目标 = 内容 ± STRETCH_X，允许超出模型
+    // 存的原始矩形，但不得侵入水平相邻泳道的领地（垂直堆叠的泳道
+    // 互不阻挡）。垂直方向维持"只缩不涨"——泳道上下紧挨，竖向膨胀
+    // 会互相压盖。
+    const STRETCH_X = 240
+    const PAD_Y = 26
+    let fx0 = Math.min(rect.x0, innerBox.x0 - STRETCH_X)
+    let fx1 = Math.max(rect.x1, innerBox.x1 + STRETCH_X)
+    for (const b of allCellsRef) {
+      if (b.id === cell.id || b.shape !== 'tm.BoundaryBox' || b.visible === false) continue
+      const ib = boundaryChildrenBBox(b)
+      if (!ib) continue // 空泳道不画也不挡（与渲染规则一致）
+      // 只钳制"真邻居"：垂直有重叠、水平不相交的泳道；嵌套/上下堆叠不设限
+      const vOverlap = ib.y0 < innerBox.y1 && ib.y1 > innerBox.y0
+      const hBefore = ib.x1 <= innerBox.x0
+      const hAfter = ib.x0 >= innerBox.x1
+      if (!vOverlap || (!hBefore && !hAfter)) continue
+      if (hBefore) fx0 = Math.max(fx0, ib.x1 + 40)
+      else fx1 = Math.min(fx1, ib.x0 - 40)
+    }
+    const fy0 = Math.max(rect.y0, innerBox.y0 - PAD_Y)
+    const fy1 = Math.min(rect.y1, innerBox.y1 + PAD_Y)
+    if (fx1 - fx0 >= 60 && fy1 - fy0 >= 48) {
+      rect.x0 = fx0
+      rect.y0 = fy0
+      rect.x1 = fx1
+      rect.y1 = fy1
+    }
+  }
+  return { rect, memberCount }
+}
+
+/** 泳道成员包围盒（几何判定：中心点落在边界矩形内的非边非容器节点）。
+ * 与后端 _boundary_children_bbox 同口径，供相邻泳道钳制使用；
+ * 自己的成员盒仍走 cell.children（权威来源），两者仅在异常模型下有出入。 */
+function boundaryChildrenBBox(bCell) {
+  const bp = bCell.position
+  const bs = bCell.size
+  if (!bp || !bs) return null
+  let box = null
+  for (const c of allCellsRef) {
+    if (c.id === bCell.id) continue
+    if (c.shape === 'tm.BoundaryBox' || c.shape === 'tm.Text') continue
+    if (c.source && c.target) continue
+    const p = c.position
+    if (!p) continue
+    const sz = c.size || { width: 180, height: 60 }
+    const cx = p.x + sz.width / 2
+    const cy = p.y + sz.height / 2
+    if (cx >= bp.x && cx <= bp.x + bs.width && cy >= bp.y && cy <= bp.y + bs.height) {
+      box = box
+        ? { x0: Math.min(box.x0, p.x), y0: Math.min(box.y0, p.y),
+            x1: Math.max(box.x1, p.x + sz.width), y1: Math.max(box.y1, p.y + sz.height) }
+        : { x0: p.x, y0: p.y, x1: p.x + sz.width, y1: p.y + sz.height }
+    }
+  }
+  return box
+}
+
+// —— 跨信任边界落点标记（与后端 PNG 的 crossMarker 同款红方块）——
+// PNG 渲染器在跨界折线穿过边界框的位置画 7px 红方块（spec.crossMarker），
+// 让「信任级变化的发生点」在图上可定位；前端此前只有虚线一种表达。
+// 只对「消费后端预计算路由」的边绘制：manhattan 回退的路径是 X6 实时
+// 算的、getVertices 拿不到稳定折线。节点拖动后交点已失效，由 node:moved
+// 整体清除（见 handler），下次整图渲染重建。
+function segRectBorderPoints(p, q, rects) {
+  const out = []
+  const dx = q.x - p.x
+  const dy = q.y - p.y
+  for (const r of rects) {
+    if (dx !== 0) {
+      for (const bx of [r.x0, r.x1]) {
+        const t = (bx - p.x) / dx
+        if (t <= 0 || t >= 1) continue
+        const y = p.y + t * dy
+        if (y >= r.y0 && y <= r.y1) out.push([bx, y])
+      }
+    }
+    if (dy !== 0) {
+      for (const by of [r.y0, r.y1]) {
+        const t = (by - p.y) / dy
+        if (t <= 0 || t >= 1) continue
+        const x = p.x + t * dx
+        if (x >= r.x0 && x <= r.x1) out.push([x, by])
+      }
+    }
+  }
+  return out
+}
+
+function addCrossMarkers() {
+  const rects = allCellsRef
+    .filter((c) => c.shape === 'tm.BoundaryBox' && c.visible !== false)
+    .map((c) => boundaryLayout(c)?.rect)
+    .filter(Boolean)
+  if (!rects.length) return
+  const seen = new Set()   // 角点/多边界重叠处可能算出相同落点，全局去重
+  for (const edge of graph.getEdges()) {
+    const cell = (edge.getData?.() || {}).tdCell
+    if (!cell || cell.data?.crossesTrustBoundary !== true) continue
+    const vertices = edge.getVertices?.() || []
+    if (vertices.length < 2) continue
+    for (let i = 0; i < vertices.length - 1; i += 1) {
+      for (const [px, py] of segRectBorderPoints(vertices[i], vertices[i + 1], rects)) {
+        const key = `${Math.round(px)}:${Math.round(py)}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        graph.addNode({
+          id: `cross-mark-${edge.id}-${key}`,
+          x: px - 3.5,
+          y: py - 3.5,
+          width: 7,
+          height: 7,
+          shape: 'rect',
+          // 与边同层（节点之下、lane 之上），与 PNG 的绘制顺序一致
+          zIndex: 60,
+          markup: [{ tagName: 'rect', selector: 'body' }],
+          attrs: { body: { fill: '#dc2626', stroke: 'none' } },
+          // crossMarker: true → isLaneNode 命中，不参与选中/删除/tooltip
+          data: { crossMarker: true, tdCell: null },
+        })
+      }
+    }
+  }
+}
+
 function addEdge(cell) {
   const data = cell.data || {}
   const isBidirectional = !!data.isBidirectional
@@ -1131,27 +1933,17 @@ function addEdge(cell) {
   }
 
   // —— 视觉语义 ——
-  // 1. 默认实线 + 灰色
-  // 2. outOfScope（超出模型范围）→ 短虚线 '4 3'
-  // 3. 跨信任边界 → 中虚线 '6 4' + 强制灰色（与图例一致，覆盖加密/公网颜色）
-  // 4. isEncrypted → 绿色描边（不跨边界时）
-  // 5. isPublicNetwork → 橙色描边（不跨边界时）
-  // 跨边界的"灰色"优先级最高：跨边界本身就是最重要的视觉信号，
-  // 加密/公网信息通过详情面板/标签查看，避免颜色叠加导致跨边界无法识别。
-  const strokeDasharray = isOutOfScope ? '4 3' : crossesBoundary ? '6 4' : null
-
-  // 视觉权重: 加密+公网双标记最粗(2.0) > 加密或公网(1.8) > 跨边界(1.6) > 普通(1.4)
-  let baseStrokeWidth = 1.4
-  if (isEncrypted || isPublicNetwork) baseStrokeWidth = 1.8
-  if (isEncrypted && isPublicNetwork) baseStrokeWidth = 2.0
-  if (crossesBoundary && !isEncrypted && !isPublicNetwork) baseStrokeWidth = 1.6
-
-  // 颜色优先级: 公网(橙) > 加密(绿) > 默认(灰)
-  // 跨边界通过虚线样式（strokeDasharray）表达，不覆盖颜色——保持叠加语义。
-  // 跨边界+加密 = 绿虚线;跨边界+公网 = 橙虚线;跨边界+普通 = 灰虚线
-  let stroke = STYLE.Flow.stroke
-  if (isPublicNetwork) stroke = '#ea580c'
-  else if (isEncrypted) stroke = '#16a34a'
+  // 描边色 / 虚线 / 线宽全部由 flowStrokeAndDash 按后端规格算出，
+  // 与后端 PNG、报告图例同源。此前这三段是前端硬编码（'4 3'/'6 4'、
+  // 1.4~2.0、'#ea580c'/'#16a34a'），与 dfd_spec 各持一份，改一端就漂移。
+  // 语义：颜色 公网 > 加密 > 默认；虚线 越界 > 跨边界 > 实线；
+  //       线宽 加密&公网 > 单标记 > 跨边界 > 普通。
+  const flowVis = flowStrokeAndDash(
+    isEncrypted, isPublicNetwork, crossesBoundary, isOutOfScope
+  )
+  const strokeDasharray = flowVis.dash
+  const baseStrokeWidth = flowVis.width
+  const stroke = flowVis.stroke
 
   // 标签：加密/公网带语义图标，普通流仅显示名称
   const hint = isEncrypted ? '🔒 ' : isPublicNetwork ? '🌐 ' : ''
@@ -1177,6 +1969,18 @@ function addEdge(cell) {
     ? flowHint.labelOffset
     : hp.offset
 
+  // —— 标签最终落点：布局期唯一真源直供（首选路径）——
+  // 后端 dfd_spec.place_edge_labels 在布局期已做完内容级避让，落点写进
+  // layoutHints[flowId].labelX/labelY（模型坐标，标签**中心**）。
+  // 这里直接把它折算成 X6 的绝对坐标点，标签不再走 position{distance,offset}
+  // ——因为 X6 的 distance/offset 是"沿边参数化"，与后端按弧长取点的口径
+  // 存在细微差异，而绝对坐标能与导出图逐像素对上。
+  //
+  // 与后�� PNG 完全同源：后端渲染时同样优先消费 labelX/labelY
+  // （见 dfd_renderer 的标签绘制分支），因此页面上标签位置 = 导出图标签位置。
+  const hasAbsLabel = !!(flowHint
+    && typeof flowHint.labelX === 'number' && typeof flowHint.labelY === 'number')
+
   // D6: 并行边路径分层。
   // X6 的 manhattan 路由本身会绕开节点，但**每条边独立计算**、彼此不知道
   // 对方存在 → 多条边挤同一通道时路径完全重合（截图里"线叠在一起"）。
@@ -1184,10 +1988,31 @@ function addEdge(cell) {
   // 自然错开，成本极低且不影响单边观感。
   const padLevel = edgePadLevel(cell.id)
 
+  // —— P2-1 统一渲染真相源：优先消费后端布局期算好的正交路由 ——
+  // layoutHints[flowId].route 由后端 dfd_layout_metrics.plan_edge_routes 统一
+  // 计算（PNG/SVG 导出、质量度量、前端初始渲染三处同源），保证
+  // 「度量通过 = 页面上画的就是这条线」。历史上这里曾无视后端结果、
+  // 每条边用 X6 manhattan 独立重算，导致后端所有布线修复在页面上全部失效。
+  //
+  // 几何细节：route 首尾点是后端算好的**节点边界锚点**。把完整 route
+  // （含首尾锚点）作为 vertices 传给 X6 时，connectionPoint 沿
+  // 「节点中心 → 首个 vertex」方向取边界交点，而锚点本身就在边界上，
+  // 交点恰好等于锚点 → 端点与后端路径严格重合，且不产生斜线残段。
+  //
+  // 无 route（老模型 / 布局期计算失败）时回退 X6 manhattan 实时避让。
+  const backendRoute = flowHint
+    && Array.isArray(flowHint.route)
+    && flowHint.route.length >= 2
+    ? flowHint.route.map((p) => ({ x: p[0], y: p[1] }))
+    : null
+
   const edge = graph.addEdge({
     id: cell.id,
     source: { cell: cell.source.cell },
     target: { cell: cell.target.cell },
+    // 数据流精简档位开启时隐藏不匹配的流（判定见 flowSecurityRelevant）；
+    // 重渲染走同一分支，过滤状态在渲染间保持一致
+    visible: !securityFlowFilter.value || flowSecurityRelevant(cell),
     // 边保持在 lane 之上、节点之下，避免遮挡组件标签但不被虚线边界覆盖
     zIndex: cell.zIndex ?? 50,
     data: {
@@ -1195,25 +2020,81 @@ function addEdge(cell) {
       _baseStroke: stroke,
       _baseStrokeWidth: baseStrokeWidth,
       _baseStrokeDasharray: strokeDasharray,
+      _backendRoute: !!backendRoute,
+      // 后端下发的**原始** route（模型坐标），作为拖动重建的不可变基准：
+      // 反复拖动时都从它出发，避免累积插入的过渡折点；
+      // 保存布局后由后端重算并整体替换（重新渲染时刷新）。
+      _routeBase: backendRoute,
+      // 两端节点在**后端基准**下的坐标（直接取自后端下发的 cells）：
+      // 用于判断某节点是否真的移动过——拖回原位时应视作未移动，
+      // 让 route 恢复后端原始形状。
+      _basePositions: (() => {
+        const out = {}
+        for (const cid of [cell.source?.cell, cell.target?.cell]) {
+          if (!cid) continue
+          const c = allCellsRef.find((x) => x.id === cid)
+          if (c?.position) out[cid] = { x: c.position.x, y: c.position.y }
+        }
+        return out
+      })(),
+      _nodeShifts: {},
+      // 标签是否来自后端绝对坐标（labelX/labelY）：节点一动该坐标失效，
+      // 需切回"沿边参数化"定位，否则标签会留在旧位置与线脱节。
+      _absLabel: hasAbsLabel,
     },
-    // 路由策略：统一用曼哈顿正交路由（忽略后端人为制造的"交叉穿越"vertices），
-    // X6 自动计算最少折点的正交路径，配合大 padding 在节点周界避让，链路清晰不交叉。
-    // 若个别流需要绕行避让节点，可通过 connector 起点方向控制；默认最短正交路径。
-    router: 'manhattan',
-    routerArgs: { padding: 32 + padLevel * 14, step: 8, maxDirectionChange: 3 },
+    // 后端路由：router 'normal' 原样通过 vertices。
+    // connector 'rounded' r=8 —— 必须显式指定：X6 边级默认 connector 是
+    // 'normal'（尖角），而后端 dfd_renderer._rounded_corners 把每个直角拐点
+    // 替换成了 r=8 的贝塞尔圆角。此前前端只有 connecting（手绘连线）配了
+    // rounded，已渲染的边没配，于是同一张图在页面上是尖角、在导出 PNG 里
+    // 是圆角。这是两侧最后两处几何差异之一。
+    router: backendRoute ? 'normal' : 'manhattan',
+    connector: { name: 'rounded', args: { radius: 8 } },
+    ...(backendRoute
+      ? { vertices: backendRoute }
+      : { routerArgs: { padding: 32 + padLevel * 14, step: 8, maxDirectionChange: 3 } }),
     labels: labelText
       ? [
-          {
-            position: { distance: labelDistance, offset: labelOffset },
-            attrs: {
-              label: {
-                text: labelText,
-                fill: labelFill,
-                fontSize: 10,
-                fontWeight: isEncrypted || isPublicNetwork ? 600 : 500,
+          hasAbsLabel
+            ? {
+                // 首选：布局期算定的绝对落点（模型坐标 → 画布坐标一致，
+                // X6 的 vertices/坐标就是模型坐标，无需换算）
+                position: { x: flowHint.labelX, y: flowHint.labelY },
+                attrs: {
+                  label: {
+                    text: labelText,
+                    fill: labelFill,
+                    fontSize: 11,
+                    fontWeight: isEncrypted || isPublicNetwork ? 600 : 500,
+                    // 标签中心对齐到给定点：X6 的 position.x/y 默认也是中心
+                    // 锚点，与后端 labelX/labelY（中心）口径一致。
+                    textAnchor: 'middle',
+                    textVerticalAnchor: 'middle',
+                    // 白描边打底（等效后端 PNG 标签的白色底板）：标签压在
+                    // 线上/网格上时仍有干净可读的轮廓，不必引入额外的
+                    // rect markup 增加布局复杂度。
+                    stroke: '#ffffff',
+                    strokeWidth: 3,
+                    paintOrder: 'stroke',
+                    strokeLinejoin: 'round',
+                  },
+                },
+              }
+            : {
+                position: { distance: labelDistance, offset: labelOffset },
+                attrs: {
+                  label: {
+                    text: labelText,
+                    fill: labelFill,
+                    fontSize: 11,
+                    fontWeight: isEncrypted || isPublicNetwork ? 600 : 500,
+                    stroke: '#ffffff',
+                    strokeWidth: 3,
+                    paintOrder: 'stroke',
+                    strokeLinejoin: 'round',
+                  },
+                },
               },
-            },
-          },
         ]
       : [],
     attrs: {
@@ -1221,7 +2102,9 @@ function addEdge(cell) {
         stroke,
         strokeWidth: baseStrokeWidth,
         strokeDasharray,
-        opacity: isEncrypted ? 0.95 : isPublicNetwork ? 0.95 : 0.75,
+        // 普通流 0.9：对齐后端 PNG 的实线观感（此前 0.75，缩小后灰线发虚）；
+        // hover 时仍统一压到 0.18，对比度不受影响。
+        opacity: isEncrypted ? 0.95 : isPublicNetwork ? 0.95 : 0.9,
         targetMarker: {
           name: 'block',
           size: 7,
@@ -1264,6 +2147,104 @@ function addEdge(cell) {
 
 // 当前选中的边 id;null = 未选中（与 flowDetail 同步，定义在 setup 顶部）
 
+// —— P1-1 内容级边标签避让（**仅兜底**，首选是后端布局期直供）——
+// 后端已在布局期用 dfd_spec.place_edge_labels 完成内容级避让，落点写在
+// layoutHints[flowId].labelX/labelY，前端 addEdge 已把标签钉死在该绝对
+// 坐标上（hasAbsLabel 分支）。
+//
+// 因此本函数**只处理拿不到绝对落点的边**（老模型 / 布局期计算失败）：
+// 后端 labelT/labelOffset 只解决「同一节点对多条流」的标签分散，
+// 不同节点对的标签仍可能撞在一起，这里做本地兜底。
+//
+// 关键：对已有绝对落点的边，只把它的 bbox 登记进 placed 参与后续避让，
+// **绝不移动它**——一旦移动就与导出图不一致了。
+function avoidEdgeLabels() {
+  const SEP = 4                                    // bbox 外扩，视觉呼吸感
+  const STEPS = [0, 16, -16, 32, -32, 48, -48, 64, -64]
+  const placed = []                                // 已放置标签 bbox（含 SEP）
+
+  const nodeBoxes = graph.getNodes()
+    .filter((n) => !isLaneNode(n))
+    .map((n) => n.getBBox())
+    .map((b) => ({ x: b.x, y: b.y, x1: b.x + b.width, y1: b.y + b.height }))
+
+  const rectHit = (a, b) => a.x < b.x1 && a.x1 > b.x && a.y < b.y1 && a.y1 > b.y
+  const countHits = (b) => {
+    let n = 0
+    for (const p of placed) if (rectHit(b, p)) n += 1
+    for (const nb of nodeBoxes) if (rectHit(b, nb)) n += 1
+    return n
+  }
+
+  // 彩色/语义边优先占位（与后端 _edge_rank 的先灰后彩一致）
+  const rank = (e) => {
+    const d = (e.getData()?.tdCell?.data) || {}
+    return (d.isPublicNetwork ? 4 : 0) + (d.isEncrypted ? 2 : 0)
+      + (d.crossesTrustBoundary ? 1 : 0)
+  }
+  const edges = graph.getEdges()
+    .filter((e) => e.getLabelAt(0)?.attrs?.label?.text)
+    .sort((a, b) => rank(b) - rank(a))
+
+  // 先登记「后端定点标签」的占位，再对未定点的标签做兜底避让。
+  // 两趟处理：若混在一趟里，先处理到的定点标签会被后续边当作已占位，
+  // 但顺序依赖 rank 排序会打乱「先占位」的确定性，分开更清晰。
+  const pinned = []
+  const floating = []
+  for (const e of edges) {
+    if (e.getData()?._absLabel) pinned.push(e)
+    else floating.push(e)
+  }
+  for (const e of pinned) {
+    // 用实际渲染 bbox 登记占位（含 SEP 外扩）
+    try {
+      const b = e.getLabelAt(0)?.getBBox?.() || e.getLabelAt(0)?.bbox
+      const r = b && typeof b.x === 'number'
+        ? { x: b.x - SEP, y: b.y - SEP, x1: b.x + b.width + SEP, y1: b.y + b.height + SEP }
+        : null
+      if (r) placed.push(r)
+    } catch { /* bbox 未就绪：跳过登记，不影响定点标签自身位置 */ }
+  }
+
+  for (const e of floating) {
+    const lab = e.getLabelAt(0)
+    const text = lab.attrs.label.text
+    const dist = typeof lab.position?.distance === 'number' ? lab.position.distance : 0.5
+    const baseOff = lab.position?.offset
+    const cur = typeof baseOff === 'number'
+      ? { x: 0, y: baseOff }
+      : { x: baseOff?.x || 0, y: baseOff?.y || 0 }
+
+    // 锚点：沿边路径按 distance 取点（X6 基于含 vertices/router 的最终几何）
+    let anchor = null
+    try {
+      const pt = e.getPointAtRatio(dist)
+      if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) anchor = { x: pt.x, y: pt.y }
+    } catch { /* 路径尚未就绪时跳过避让，保留原位 */ }
+    if (!anchor) continue
+
+    // 文本宽度估算（fontSize 10：CJK ≈10px、ASCII ≈5.5px）+ 内边距
+    let w = 8
+    for (const ch of text) w += ch.charCodeAt(0) > 255 ? 10 : 5.5
+    const h = 14
+
+    let best = null
+    let bestHits = Infinity
+    for (const dy of STEPS) {
+      const off = { x: cur.x, y: cur.y + dy }
+      const cx = anchor.x + off.x
+      const cy = anchor.y + off.y - h / 2
+      const b = { x: cx - w / 2 - SEP, y: cy - SEP, x1: cx + w / 2 + SEP, y1: cy + h + SEP }
+      const hits = countHits(b)
+      if (hits === 0) { best = { b, off }; break }
+      if (hits < bestHits) { bestHits = hits; best = { b, off } }
+    }
+    if (!best) continue
+    e.prop('labels/0/position/offset', best.off)
+    placed.push(best.b)
+  }
+}
+
 // 应用"已选中"样式
 function applySelectedEdgeStyle(edge, cell) {
   const openThreats = (cell.threats || []).filter((t) => t.status !== 'Mitigated').length
@@ -1288,7 +2269,7 @@ function restoreAllEdgeStyles() {
     e.attr('line/stroke', d._baseStroke || STYLE.Flow.stroke)
     e.attr('line/strokeWidth', d._baseStrokeWidth || 1.5)
     e.attr('line/strokeDasharray', d._baseStrokeDasharray || null)
-    e.attr('line/opacity', 0.75)
+    e.attr('line/opacity', 0.9)
     e.attr('line/filter', null)
   }
 }
@@ -1381,44 +2362,68 @@ function fitView(retry = 10) {
   } catch (e) {
     // 忽略 resize 异常
   }
-  // 排除泳道(lane)背景节点：它们是占满画布的大矩形，若计入 bbox 会把图压到画布一角
-  const cells = graph.getCells().filter((c) => {
+  // —— 只适配「真实内容」，排除两类"装饰性大矩形"（最终 scale 会放大到
+  //    贴住长边，泳道作为背景自然跟着被拉宽，无需自己计入 bbox） ——
+  // 1) 泳道背景(lane)：纵向铺满、宽度常达 1680px，比节点内容大一圈；
+  // 2) 跨界落点标记(crossMarker)：7px 小方块，但贴在边界框外沿，
+  //    会把 bbox 往边界外多带几十像素（边界本身已计入，无需重复）。
+  //
+  // 这是「前端图比 PNG 小一大圈」的根因：X6 内置 zoomToFit() 的 contentArea
+  // 是 model.getAllCellsBBox()，包含撑满画布的泳道大矩形 → 节点被压成小点。
+  // 历史注释一直写着"排除泳道"，但过滤结果从未参与缩放计算（zoomToFit 不
+  // 接受 cells 参数），必须手动 union 真实内容 bbox 再适配。
+  const contentCells = graph.getCells().filter((c) => {
+    if (!c.isNode?.()) return false
     const d = c.getData ? c.getData() : c.data
-    return !(d && d.lane === true)
+    if (!d || typeof d !== 'object') return true
+    return d.lane !== true && d.crossMarker !== true
   })
-  if (cells.length === 0) {
-    console.warn('[DfdGraph] fitView: 0 非 lane cells,图空')
+  if (contentCells.length === 0) {
+    console.warn('[DfdGraph] fitView: 0 真实内容节点,图空')
     return
   }
-  console.log('[DfdGraph] fitView start', { retry, rect: { w: rect.width, h: rect.height }, cellsCount: cells.length })
-  // 优先用 X6 v2 内置 zoomToFit（内部用 graph 自己的 view area + cell bbox，
-  // 不依赖外部 viewport，避免容器布局未完成时算错尺寸导致首次 fit 把图压成一小块）
-  if (typeof graph.zoomToFit === 'function') {
-    try {
-      graph.zoomToFit({
-        padding: 40,
-        minScale: 0.3,
-        maxScale: 1.2,
-      })
-      try {
-        const t = graph.translate()
-        const s = graph.zoom()
-        console.log('[DfdGraph] fitView done', { zoom: s, translate: { tx: t.tx, ty: t.ty } })
-      } catch (_) { /* 读取 transform 失败不影响图 */ }
-      return
-    } catch (e) {
-      // 某些 X6 版本对空 cell 列表或边界异常会抛错,回退到 zoomTo
-      console.error('[DfdGraph] zoomToFit failed, fallback', e)
-    }
+  console.log('[DfdGraph] fitView start', {
+    retry, rect: { w: rect.width, h: rect.height }, contentCount: contentCells.length,
+  })
+  let bbox = null
+  for (const c of contentCells) {
+    const b = c.getBBox?.()
+    if (!b || b.width === 0 || b.height === 0) continue
+    const nx = Math.min(bbox ? bbox.x : Infinity, b.x)
+    const ny = Math.min(bbox ? bbox.y : Infinity, b.y)
+    const nx1 = Math.max(bbox ? bbox.x + bbox.width : -Infinity, b.x + b.width)
+    const ny1 = Math.max(bbox ? bbox.y + bbox.height : -Infinity, b.y + b.height)
+    bbox = { x: nx, y: ny, width: nx1 - nx, height: ny1 - ny }
   }
-  // 回退：手动算 bbox + zoomTo
-  const bbox = graph.getContentBBox(cells)
-  if (!bbox) {
-    console.warn('[DfdGraph] fitView fallback: getContentBBox 失败')
+  if (!bbox || bbox.width <= 0 || bbox.height <= 0) {
+    console.warn('[DfdGraph] fitView: 无有效节点 bbox,跳过缩放')
     return
   }
-  graph.zoomTo(bbox, { padding: 40, minScale: 0.3, maxScale: 1.2 })
-  console.log('[DfdGraph] fitView (fallback) done', { bbox })
+  const PAD = 40
+  const availW = Math.max(1, rect.width - PAD * 2)
+  const availH = Math.max(1, rect.height - PAD * 2)
+  // 适配 = **整图完整可见 + 尽量放大填满**：等比塞入后，若两轴都有富余
+  // 就放大到贴住长边，泳道随之被拉宽，画布空间用满。
+  // 历史坑位：早期给 scale 设 0.75 "可读性下限"，纵向大图装不下被截；
+  // 中期又只允许缩不放大（上限 1.2），于是模型坐标仅几百像素宽的泳道图
+  // 在 1000+ 宽的画布上"小小地缩在中间、四周全是留白"。现在上限提到 2.0，
+  // 让"装得下就拉宽铺满"真正生效。
+  const fitScale = Math.min(availW / bbox.width, availH / bbox.height)
+  const scale = Math.max(0.2, Math.min(2.0, fitScale))
+  try {
+    graph.zoomTo(scale, { absolute: true })
+    graph.centerPoint(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2)
+    console.log('[DfdGraph] fitView done', {
+      bbox, fitScale: Number(fitScale.toFixed(3)), scale: Number(scale.toFixed(3)),
+    })
+  } catch (e) {
+    console.error('[DfdGraph] fitView 缩放失败:', e?.message || e)
+  }
+  // 适配比例由**内容**决定，泳道不参与 bbox：缩放/居中定下来之后，
+  // 再把泳道底色带拉到当前视口左右两端，填掉两侧空白。
+  // （zoomTo / centerPoint 也会发 scale/translate 事件，这里显式再调一次
+  //   是为了不依赖"事件一定被派发"这一实现细节。）
+  syncLaneBandWidth()
 }
 
 defineExpose({ fitView })
@@ -1445,20 +2450,30 @@ defineExpose({ fitView })
 }
 
 /* —— 图例 —— */
+/* 固定两排成组：第 1 排节点类型 / 第 2 排数据流家族（含"数据流"高亮开关与
+   数据流筛选）。整块本身不再折行——折行下放给每个 .legend-row，
+   这样窄屏最多是"某一排内部换行"，不会让两族混排、也不会把
+   数据流那族挤成"每行一个"的碎块。 */
 .legend {
   display: flex;
-  align-items: center;
-  /* 两排"圆点圆心"对齐到同一垂直线 (x ≈ 27px)：
-     - 第 1 排 .gt-title-dot  圆心 = 14(.graph-toolbar) + 8(.gt-title) + 3(半径) = 25
-     - 第 2 排 .lg-item .dot  圆心 = pad-left(.legend) + 5 = 27 → pad-left = 22
-     （原第 2 排 .filter-chip 已并入本图例，该行不再存在。） */
+  flex-direction: column;
+  align-items: stretch;
   padding: 7px 16px 7px 22px;
   font-size: 11px;
   color: var(--c-text-3, #64748b);
   border-bottom: 1px solid var(--c-line, #e2e8f0);
   background: var(--c-bg-soft, #f8fafc);
+  gap: 3px;
+}
+/* 单排：两排共用同一个左内缩，于是"排首造型/圆点圆心"落在同一竖线上
+   （第 1 排 .gt-title-dot 圆心 = 14(.graph-toolbar) + 8(.gt-title) + 3(半径) = 25
+     ≈ 第 2 排 .lg-item 造型圆心 = pad-left(.legend) 22 + 5）。 */
+.legend-row {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
 }
 /* 浮在画布右上角的纠错提示按钮：绝对定位，不占任何行高度；
    无内容时不渲染（模板里 v-if），不需要为空占位。 */
@@ -1530,16 +2545,30 @@ defineExpose({ fitView })
 .lg-item .lg-label {
   font-weight: 600;
 }
-.lg-item i.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  display: inline-block;
+/* 「只看安全相关」开关的保留/总数徽标 */
+.lg-item .lg-count {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--border);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  line-height: 15px;
 }
-.lg-item i.dot.actor { background: #0284c7; }
-.lg-item i.dot.process { background: #16a34a; border-radius: 0; }
-.lg-item i.dot.store { background: #d97706; border-radius: 0; }
-.lg-item i.dot.ai { background: #7c3aed; border-radius: 0; }
+.lg-toggle.active .lg-count {
+  background: var(--primary, #2563eb);
+  color: #fff;
+}
+.lg-item .lg-fig {
+  display: inline-block;
+  flex-shrink: 0;
+  overflow: visible;
+}
+/* active（高亮打开）时白底上要仍可辨：给造型加一圈描边阴影。
+   造型本身已有 stroke，这里只补底色衬托，避免圆柱顶盖与白底糊在一起。 */
+.lg-toggle.active .lg-fig {
+  filter: drop-shadow(0 0 0.5px rgba(255, 255, 255, 0.9));
+}
 .lg-item .dash {
   width: 22px;
   height: 0;
@@ -1589,6 +2618,10 @@ defineExpose({ fitView })
      ResizeObserver 触发后 X6 会再写内联宽高，但下一次也会被这条规则推回去。 */
   width: 100% !important;
   height: 100% !important;
+  /* 宽内容时 fitView 会保留下限缩放（不把图缩成小点），超出部分靠画布
+     自身的滚轮/拖拽平移浏览；overflow 保持 hidden 避免出现"图表外还套一层
+     原生滚动条"的双重滚动观感。 */
+  overflow: hidden;
 }
 
 /* —— 空态 —— */

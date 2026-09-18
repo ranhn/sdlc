@@ -1175,6 +1175,41 @@ async def export_result(
     )
 
 
+@router.get("/api/results/{result_id}/dfd.png")
+async def get_result_dfd_png(
+    result_id: str,
+    _auth: None = Depends(verify_api_key),
+    current_user: dict = Depends(get_sdlc_user),
+):
+    """把该结果的 DFD 渲染为 PNG，供前端**只读模式**直接展示。
+
+    为什么存在：X6 复刻后端几何在"几何"层已对齐（同一份 route），但样式层
+    （虚线规则 / 标签落点 / 节点形状 / 圆角）永远存在残余差异。只读浏览场景
+    用户要的是「跟导出报告一模一样」——直接下发 render_dfd_png 的产物，
+    与报告里的图逐像素同源，不可能再分叉。编辑模式仍走 X6。
+    """
+    try:
+        record = result_store.get(result_id, user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not record:
+        raise HTTPException(status_code=404, detail=f"结果不存在：{result_id}")
+    try:
+        from ..services.dfd_renderer import DfdRenderError, render_dfd_png
+
+        png = render_dfd_png(record)
+    except DfdRenderError as exc:
+        raise HTTPException(status_code=404, detail=f"该结果无可渲染的 DFD：{exc}") from exc
+    if not png:
+        raise HTTPException(status_code=404, detail="该结果无可渲染的 DFD")
+    return StreamingResponse(
+        io.BytesIO(png),
+        media_type="image/png",
+        # 拖动保存后布局会变，浏览器不得缓存旧图
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.patch("/api/results/{result_id}/threats/{threat_id}")
 async def update_threat_status(
     result_id: str,
@@ -1636,6 +1671,27 @@ async def upload_document(
         "extracted": text,
         "images": images,
     }
+
+
+# ----------------------------------------------------------------------
+# DFD 视觉规格（单一事实来源下发）
+# ----------------------------------------------------------------------
+@router.get("/api/dfd/spec")
+def get_dfd_spec() -> dict:
+    """把 dfd_spec 的视觉规格下发给前端 X6 画布。
+
+    为什么走接口而不是前端再抄一份常量：
+        节点造型（胶囊/圆柱）、配色、线型语义此前在"前端画布 / 后端 PNG /
+        报告图例表"三处各写一遍，反复出现"图例说矩形、实际画圆柱"这类
+        不一致。规格收敛到 dfd_spec 后，前端用本接口覆盖内置兜底值，
+        使"改一处、两端同时生效"成为结构保证。
+
+    前端是渲染链路的从属方：接口不可用时它保留内置兜底规格继续画图，
+    因此这里不需要鉴权，也不做任何 IO。
+    """
+    from ..services import dfd_spec as _spec
+
+    return _spec.spec_for_frontend()
 
 
 # ----------------------------------------------------------------------
