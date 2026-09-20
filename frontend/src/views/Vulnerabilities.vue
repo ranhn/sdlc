@@ -169,7 +169,8 @@
         </el-form-item>
         <el-form-item label="修复负责人">
           <el-select v-model="createForm.assignee_id" clearable filterable placeholder="可留空，由安全专家指派" style="width: 100%">
-            <el-option v-for="u in users" :key="u.id" :value="u.id" :label="u.full_name || u.username">
+            <!-- label 用 userLabel()：里面带上了英文用户名，否则只按中文名搜（见 utils/userLabel.js 说明） -->
+            <el-option v-for="u in users" :key="u.id" :value="u.id" :label="userLabel(u)">
               <span style="display: inline-block; width: 160px">{{ u.full_name || u.username }}</span>
               <span style="color: #909399; font-size: 12px">{{ u.username }}</span>
             </el-option>
@@ -363,7 +364,10 @@
     <!-- 指派弹窗 -->
     <el-dialog v-model="assignVisible" title="指派负责人" width="400px">
       <el-select v-model="assignTo" placeholder="选择负责人" style="width: 100%" filterable>
-        <el-option v-for="u in users" :key="u.id" :value="u.id">
+        <!-- ⚠️ 这里原来没传 :label —— Element 的本地过滤只比对 label，拿不到就退化成
+             比对 value（数字 id），于是搜任何名字都显示"无匹配数据"。
+             现在统一用 userLabel()（用户名 + 中文名），大小写由 Element 用 RegExp(query,'i') 处理。 -->
+        <el-option v-for="u in users" :key="u.id" :value="u.id" :label="userLabel(u)">
           <span style="display: inline-block; width: 160px">{{ u.username }}</span>
           <span>{{ u.full_name || '—' }}</span>
         </el-option>
@@ -392,6 +396,7 @@ import { ElMessage, ElImageViewer } from 'element-plus'
 import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 import { fmtDateTime } from '../utils/time'
+import { userLabel } from '../utils/userLabel'
 
 const store = useUserStore()
 const route = useRoute()

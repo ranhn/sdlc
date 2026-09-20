@@ -37,7 +37,8 @@
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="负责人">
           <el-select v-model="form.owner_id" clearable filterable placeholder="选择负责人">
-            <el-option v-for="u in users" :key="u.id" :label="u.full_name || u.username" :value="u.id" />
+            <!-- label 用 userLabel()：含英文用户名，否则只能按中文名搜（见 utils/userLabel.js） -->
+            <el-option v-for="u in users" :key="u.id" :label="userLabel(u)" :value="u.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
@@ -57,6 +58,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 import { fmtDateTime } from '../utils/time'
+import { userLabel } from '../utils/userLabel'
 
 const store = useUserStore()
 const canEdit = computed(() => ['admin', 'secops'].includes(store.role))
