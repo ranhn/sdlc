@@ -33,9 +33,11 @@
             <el-option label="待复测" value="retest" />
             <el-option label="已修复" value="fixed" />
             <el-option label="已关闭" value="closed" />
-            <!-- 已驳回与已忽略都是"不修的终态"，归在一个选项里（传多状态，后端支持）：
-                 此前只筛 ignored，被驳回的漏洞在状态筛选里搜不到 -->
-            <el-option label="已忽略 / 已驳回" value="ignored,rejected" />
+            <!-- 只展示「已驳回」：页面上没有任何"忽略"入口（详情里的状态操作只有
+                 确认/修复/复测/关闭/指派/驳回），库里也没有 ignored 数据。
+                 但 value 里仍带上 ignored —— 老环境的历史数据万一有该状态，
+                 不至于从筛选里"消失"（它照样能被筛出来，状态列显示「已忽略」）。 -->
+            <el-option label="已驳回" value="rejected,ignored" />
           </el-select>
         </el-form-item>
         <el-form-item label="等级">
@@ -516,7 +518,8 @@ function categoryOfType(t) {
   return t ? (typeToCategory[t] || '') : ''
 }
 const actionRoles = {
-  confirm: ['admin', 'secops'], reject: ['admin', 'secops'], ignore: ['admin', 'secops'],
+  // 已移除 ignore：没有"忽略"入口，后端状态机也不再提供该动作（与后端 state_machine 对齐）
+  confirm: ['admin', 'secops'], reject: ['admin', 'secops'],
   start_fix: ['admin', 'secops', 'dev'], finish_fix: ['admin', 'secops', 'dev', 'tester'],
   pass_retest: ['admin', 'secops', 'tester'], close: ['admin', 'secops'],
   assign: ['admin', 'secops'],
@@ -525,7 +528,6 @@ const actionRoles = {
 const actionFrom = {
   confirm: ['pending'],
   reject: ['pending'],
-  ignore: ['pending', 'confirmed'],
   start_fix: ['confirmed'],
   finish_fix: ['fixing'],
   pass_retest: ['retest'],

@@ -9,17 +9,20 @@
 - fixed      已修复
 - closed     已关闭
 - rejected   已驳回
-- ignored    已忽略
+- ignored    已忽略（**历史状态**，见下）
 
 关键流转（动作）：
 - submit     draft -> pending        提交人
 - confirm    pending -> confirmed   安全专家
 - reject     pending -> rejected    安全专家（驳回）
-- ignore     pending -> ignored     安全专家（忽略）
 - start_fix  confirmed -> fixing    修复人
 - finish_fix fixing -> retest       修复人
 - pass_retest retest -> fixed       复测人
 - close      fixed -> closed        安全专家
+
+关于 ignored：**已从状态机移除动作**。页面上从来没有"忽略"入口（详情里的状态操作只有
+确认/修复/复测/关闭/指派/驳回），实测库里也没有该状态的数据，留着动作只会让人能从 API
+把漏洞改成页面上看不到、也筛不出来的状态。状态常量与中文名保留，仅为兼容历史数据。
 """
 
 
@@ -32,6 +35,8 @@ class VulnState:
     FIXED = "fixed"
     CLOSED = "closed"
     REJECTED = "rejected"
+    # ⚠️ 已废弃的状态：状态机不再提供 ignore 动作，仅保留常量与中文名，让老库里
+    # status='ignored' 的历史漏洞在列表/导出里仍能正常显示「已忽略」而不是空白。
     IGNORED = "ignored"
 
 
@@ -47,6 +52,7 @@ STATUS_NAMES = {
     VulnState.FIXED: "已修复",
     VulnState.CLOSED: "已关闭",
     VulnState.REJECTED: "已驳回",
+    # 仅用于展示历史数据（新流程不会再产生该状态）—— 去掉的话老数据会显示成英文原文
     VulnState.IGNORED: "已忽略",
 }
 
@@ -57,7 +63,6 @@ ACTION_RULES = {
     "submit":        {"from": [VulnState.DRAFT], "roles": ["admin", "secops", "dev", "tester", "user"]},
     "confirm":       {"from": [VulnState.PENDING], "roles": ["admin", "secops"]},
     "reject":        {"from": [VulnState.PENDING], "roles": ["admin", "secops"]},
-    "ignore":        {"from": [VulnState.PENDING, VulnState.CONFIRMED], "roles": ["admin", "secops"]},
     "start_fix":     {"from": [VulnState.CONFIRMED], "roles": ["admin", "secops", "dev"]},
     "finish_fix":    {"from": [VulnState.FIXING], "roles": ["admin", "secops", "dev", "tester"]},
     "pass_retest":   {"from": [VulnState.RETEST], "roles": ["admin", "secops", "tester"]},
@@ -68,7 +73,6 @@ TRANSITIONS = {
     "submit": VulnState.PENDING,
     "confirm": VulnState.CONFIRMED,
     "reject": VulnState.REJECTED,
-    "ignore": VulnState.IGNORED,
     "start_fix": VulnState.FIXING,
     "finish_fix": VulnState.RETEST,
     "pass_retest": VulnState.FIXED,

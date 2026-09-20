@@ -15,7 +15,9 @@
             <el-option label="待复测" value="retest" />
             <el-option label="已修复" value="fixed" />
             <el-option label="已关闭" value="closed" />
-            <el-option label="已忽略" value="ignored" />
+            <!-- 与「提交漏洞」页同一口径：页面没有"忽略"入口，按「已驳回」筛；
+                 value 里带上 ignored 以兼容历史数据 -->
+            <el-option label="已驳回" value="rejected,ignored" />
           </el-select>
         </el-form-item>
         <el-form-item label="等级">

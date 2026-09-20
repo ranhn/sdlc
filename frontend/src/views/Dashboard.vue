@@ -90,12 +90,13 @@ const statCards = reactive([
   { label: '高危', value: 0, icon: 'BellFilled', bg: '#fee2e2', color: '#ef4444' },
   {
     label: '已修复', value: 0, icon: 'CircleCheck', bg: '#dcfce7', color: '#22c55e',
-    // 口径与漏洞列表状态列一致：这几种状态都算"已修复"，趋势图「修复」线同口径
-    tip: '口径：已修复 + 已关闭 + 已忽略/已驳回（按状态列统计），与趋势图「修复」线一致。',
+    // 口径与漏洞列表状态列一致：这几种状态都算"已修复"，趋势图「修复」线同口径。
+    // （后端还额外把历史遗留的 ignored 一起计入，但页面上不再提这个状态了）
+    tip: '口径：已修复 + 已关闭 + 已驳回（按状态列统计），与趋势图「修复」线一致。',
   },
   {
     label: '修复率', value: '0%', icon: 'TrendCharts', bg: '#f3e8ff', color: '#8b5cf6',
-    tip: '修复率 = 已修复 + 已关闭 + 已忽略/已驳回 / 漏洞总数',
+    tip: '修复率 = 已修复 + 已关闭 + 已驳回 / 漏洞总数',
   },
   { label: '平均修复时长', value: '0h', icon: 'Timer', bg: '#ecfeff', color: '#06b6d4' },
 ])
@@ -129,7 +130,7 @@ function renderTrend(chart, data) {
     grid: { left: 40, right: 20, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: dates },
     yAxis: { type: 'value', minInterval: 1 },
-    // 「修复」= 状态为已修复 / 已关闭 / 已忽略·已驳回 的漏洞（状态列里这几种都算已修复），
+    // 「修复」= 状态为已修复 / 已关闭 / 已驳回 的漏洞（状态列里这几种都算已修复），
     // 与上方「已修复」卡片、修复率同口径，故不再单列「驳回」线
     series: [
       { name: '新增', type: 'line', smooth: true, data: data.map((d) => d.created), itemStyle: { color: '#3b82f6' }, areaStyle: { opacity: 0.1 } },

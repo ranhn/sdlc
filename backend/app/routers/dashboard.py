@@ -15,9 +15,11 @@ from app.utils import network_clock as nc
 router = APIRouter(prefix="/api/dashboard", tags=["数据大盘"])
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+# 终态（不修的）：已关闭 / 已驳回。这里仍保留 "ignored" —— 状态机已删掉 ignore 动作，
+# 但老库里可能存着历史 ignored 数据，留着它这些旧数据才会被算作"已关闭"而不是挂在未处理里。
 CLOSED_STATUSES = {"closed", "rejected", "ignored"}
-# 前端漏洞状态列里，这几种都算「已修复」：已修复 / 已关闭 / 已忽略·已驳回。
-# 大盘的「已修复」卡片、修复率、趋势图的「修复」线统一用这个口径，避免三处对不上。
+# 页面口径：已修复 / 已关闭 / 已驳回 都算「已修复」（漏洞列表状态列同口径）。
+# 大盘的「已修复」卡片、修复率、趋势图的「修复」线统一用它，避免三处对不上。
 CLOSURE_STATUSES = {"fixed"} | CLOSED_STATUSES
 
 
@@ -32,7 +34,7 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
     fixing = sum(1 for v in vulns if v.status == "fixing")
     closed = sum(1 for v in vulns if v.status in CLOSED_STATUSES)
 
-    # 修复率 = (已修复 + 已关闭 + 已驳回 + 已忽略) / 总数
+    # 修复率 = (已修复 + 已关闭 + 已驳回) / 总数
     fixed_count = sum(1 for v in vulns if v.status in CLOSURE_STATUSES)
     fix_rate = round(fixed_count / total * 100, 1) if total else 0
 
@@ -68,7 +70,7 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
         "high": high,
         "fixing": fixing,
         "closed": closed,
-        # 「已修复」卡片用的口径：已修复 + 已关闭 + 已驳回 + 已忽略（与修复率、趋势图一致）
+        # 「已修复」卡片用的口径：已修复 + 已关闭 + 已驳回（与修复率、趋势图一致）
         "fixed_total": fixed_count,
         "fix_rate": fix_rate,
         "avg_fix_hours": avg_fix_hours,
@@ -86,15 +88,15 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
 def trend(days: int = 30, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     """近 N 天「新增 / 修复」趋势。
 
-    「修复」= 状态属于 CLOSURE_STATUSES 的漏洞（已修复 / 已关闭 / 已忽略·已驳回 ——
+    「修复」= 状态属于 CLOSURE_STATUSES 的漏洞（已修复 / 已关闭 / 已驳回 ——
     也就是前端漏洞列表状态列里的这几种），按它**进入该状态的时间**归日：
 
       - 已修复 / 已关闭：优先 `fixed_at`（研发修复完成那一刻），退回 `closed_at`；
-      - 已忽略 / 已驳回：这两个状态没有独立时间列，取流转记录里流转到该状态的时间。
+      - 已驳回：这个状态没有独立时间列，取流转记录里流转到该状态的时间。
 
     每条漏洞只算一次（取最早的那个时间点），所以"修复后又关闭"不会被重复计数。
 
-    以前的写法是"只要 `fixed_at` 落在该天就算"，于是驳回/忽略的漏洞在趋势图上永远
+    以前的写法是"只要 `fixed_at` 落在该天就算"，于是被驳回的漏洞在趋势图上永远
     看不到 —— KPI 卡显示「已修复 1」而趋势图是 0（用户反馈），现在两处同口径。
     另外把原来的"每天 2 次 count 查询"改成一次取回后在内存分桶（30 天 90 次 → 3 次）。
     """

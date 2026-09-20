@@ -405,10 +405,14 @@ def vuln_action(vuln_id: int, action: str, data: VulnStatusAction,
     from_status = v.status
     v.status = to_status
 
+    # ⚠️ 这里原来写的是 __import__("datetime").nc.utcnow() —— 导入的是 datetime 模块，
+    # 上面根本没有 nc 属性，于是"修复完成"和"关闭"两个动作必崩 500
+    # （AttributeError: module 'datetime' has no attribute 'nc'）。
+    # 正确写法是直接用模块顶部 import 的网络时钟 nc（全项目统一用它取时间）。
     if action == "close":
-        v.closed_at = __import__("datetime").nc.utcnow()
+        v.closed_at = nc.utcnow()
     if action == "finish_fix":
-        v.fixed_at = __import__("datetime").nc.utcnow()
+        v.fixed_at = nc.utcnow()
         v.reviewer_id = current.id
     if action == "pass_retest":
         v.reviewer_id = current.id
