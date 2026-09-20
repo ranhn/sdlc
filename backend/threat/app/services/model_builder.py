@@ -177,6 +177,42 @@ def recompute_layout_hints(diagram: dict) -> None:
         h["labelY"] = round(float(xy[1]), 1)
 
 
+def _longest_common_substring(a: str, b: str) -> str:
+    """两个名字的**最长公共子串**（用于判断节点与边界名是否有实义重合）。
+
+    为什么不用"关键词表"：边界名千变万化（「IM 与人工审批侧」这类没有标准词的
+    名字很常见），而它与节点名的实义重合天然存在（"审批" × "审批服务"）。
+    取最长公共子串比"按词切分"稳（中文没空格，名字里还大量中英混排）。
+
+    返回子串本身（不只长度）：调用方要排除"服务 / 数据"这类**泛化词**重合
+    —— 只有泛化词重合不足以判定归属（「异常告警服务」与「健康云服务侧边界」
+    都有"服务"，但它实际是与 Twilio 对接的组件）。长度封顶 12（名字都很短）。
+    """
+    a, b = str(a or ""), str(b or "")
+    if not a or not b:
+        return ""
+    prev = [0] * (len(b) + 1)
+    best, best_end = 0, 0
+    for i in range(1, len(a) + 1):
+        cur = [0] * (len(b) + 1)
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best, best_end = cur[j], i
+                    if best >= 12:
+                        return a[best_end - best:best_end]
+        prev = cur
+    return a[best_end - best:best_end] if best else ""
+
+
+# 泛化词：仅靠它们重合不足以判定"节点属于该边界"（详见 _longest_common_substring）
+_GENERIC_NAME_WORDS = frozenset({
+    "服务", "服务侧", "数据", "系统", "平台", "接口", "网络", "边界", "信任",
+    "应用", "中心", "管理", "模块", "业务", "内网", "外网", "核心", "集群",
+})
+
+
 class ThreatModelBuilder:
     """将分析结果整合为 Threat Dragon v2 兼容的威胁模型 JSON。"""
 
@@ -404,6 +440,8 @@ class ThreatModelBuilder:
         layout = self._layout(components, flows)
         # 生命周期泳道元数据（无 lifecycle 字段时 _layout 不输出）
         lanes_meta = layout.pop("_lanes", None) if isinstance(layout, dict) else None
+        # 信任边界成员（建模期分区结果，与 _lanes 同样是 _layout 的私有返回键）
+        boundary_members = layout.pop("_boundary_members", None) or {}
 
         # 组件 → 所属 trustboundary 的映射；用于计算每条数据流的「跨边界」语义。
         # 渲染层会把 crossesTrustBoundary===true 的边画成中虚线，与加密/公网形成
@@ -418,10 +456,34 @@ class ThreatModelBuilder:
             element_by_id[f["id"]] = "dataflow"
 
         # 1. 创建组件 cells
+        cell_by_comp: dict[str, dict] = {}
         for i, comp in enumerate(components):
             cell = self._make_component_cell(comp, layout[comp["id"]], i)
             id_to_cell_id[comp["id"]] = cell["id"]
+            cell_by_comp[comp["id"]] = cell
             cells.append(cell)
+
+        # 1.5 信任边界成员落进 cell（**唯一事实源**）。
+        # 为什么必须落：消费"边界成员"的有 5 处（PNG 渲染器、Word 报告的"所属边界"
+        # 列与边界表、布局度量、前端画布、前端"可挂威胁元素"下拉），此前各自用
+        # "几何包含"重新推导，同一份结果就出现三套口径：画布不画空边界、报告表里
+        # 却把它编号列出（包含元素 —、元素数 0）、度量又把近重复边界数成 2 个。
+        # 这里写 cell.data.boundaryMembers（成员 cell id）+ boundaryEmpty，
+        # 老结果没有这两个字段时，各消费方保留几何兜底（向后兼容）。
+        for comp in components:
+            if comp.get("type") != "trustboundary":
+                continue
+            cell = cell_by_comp.get(comp["id"])
+            if cell is None:
+                continue
+            members = [
+                id_to_cell_id[m]
+                for m in (boundary_members.get(comp["id"]) or [])
+                if m in id_to_cell_id
+            ]
+            data = cell.setdefault("data", {})
+            data["boundaryMembers"] = members
+            data["boundaryEmpty"] = not members
 
         # 2. 创建数据流 cells
         for flow in flows:
@@ -854,6 +916,170 @@ class ThreatModelBuilder:
                 membership[cid] = bid
         return membership
 
+    # ------------------------------------------------------------------
+    # 信任边界：语义角色 + 成员**分区**（每个组件只属于一个边界）
+    # ------------------------------------------------------------------
+    # 边界名 → 语义角色。**只看名字，不看描述**：LLM 写边界描述时几乎必然出现
+    # 「数据 / 服务」这类泛化词，把描述一并纳入关键词匹配会把每个边界都撑成
+    # "全类型"，于是各边界各自选出的成员完全一样 → 成员包围盒完全一样 →
+    # 画布上几个虚线框叠成一个（用户反馈"图中只有一个边界，却显示 3 个"）。
+    _BOUNDARY_ROLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("third", ("第三方", "外部平台", "外部系统", "外部服务", "合作方", "供应商",
+                   "伙伴", "生态", "third")),
+        ("store", ("存储侧", "数据层", "数据存储", "存储域", "数据域", "数据库层",
+                   "持久化层", "数据平台")),
+        ("edge", ("公网", "用户侧", "客户端", "终端", "移动端", "手机", "前端",
+                  "外网", "接入", "边缘", "互联网", "dmz")),
+        ("service", ("服务侧", "内网", "后端", "服务端", "核心", "业务", "中台",
+                     "微服务", "可信", "集群")),
+    )
+    # 第三方（系统之外的一方）：actor 名字命中即视为第三方
+    _THIRD_PARTY_KEYWORDS = ("第三方", "支付", "银行", "短信", "邮件", "物流", "快递",
+                             "地图", "天气", "社交", "认证", "twilio", "ses",
+                             "healthkit", "google fit", "apple", "sms")
+    # 客户端类组件（公网/用户侧边界的典型成员）
+    _CLIENT_KEYWORDS = ("前端", "客户端", "浏览器", "看板", "dashboard", "h5",
+                        "小程序", "手机", "移动", "app", "web", "本地缓存", "终端")
+
+    def _boundary_role(self, name: str) -> str:
+        """按名字判定边界角色；无法判定返回 'other'。"""
+        text = str(name or "").lower()
+        for role, kws in self._BOUNDARY_ROLE_KEYWORDS:
+            if any(k.lower() in text for k in kws):
+                return role
+        return "other"
+
+    def _is_third_party(self, name: str) -> bool:
+        text = str(name or "").lower()
+        return any(k.lower() in text for k in self._THIRD_PARTY_KEYWORDS)
+
+    def _is_client_side(self, name: str) -> bool:
+        text = str(name or "").lower()
+        return any(k.lower() in text for k in self._CLIENT_KEYWORDS)
+
+    def _partition_boundary_members(
+        self,
+        comp_by_id: dict[str, Any],
+        comp_type: dict[str, str],
+        flows: list[dict[str, Any]],
+        layer_of: dict[str, int],
+    ) -> dict[str, list[str]]:
+        """把组件**互斥地**分配给各信任边界，返回 {boundary_id: [component_id]}。
+
+        为什么必须互斥（本函数存在的根本原因）：
+            旧实现让每个边界**各自**推断成员。关键词相近的边界（"公网侧" /
+            "第三方接口" / "服务侧"，或描述里都写了"数据/服务"）会各自选中
+            同一批内网节点，于是各边界的成员包围盒一模一样 —— 画布上多个虚线框
+            完全重叠，看着只有一个，而工具栏计数仍是多个（用户反馈）。分区
+            （partition）从根上消除重合：成员不同，几何才可能不同。
+
+        分配规则（按优先级，先命中先得；纯确定性，同输入必得同结果）：
+            1. **名称最长公共子串 ≥2 字**：节点名与边界名有实义重合时优先
+               （边界「IM 与人工审批侧」× 节点「审批服务」→ 归该边界）；
+            2. third：与第三方外部实体直接相连的 process → 第三方边界；
+            3. edge：客户端类 process（前端/App/H5/看板/本地缓存）与最浅层
+               入口 process → 公网 / 用户侧边界；
+            4. store：存储类组件 → 存储侧边界；
+            5. service：其余 process → 服务侧边界；
+            6. 兜底：仍未认领的组件 → 按 service / store / edge / third / other
+               顺序归入第一个存在的边界（等价于旧版"存储不许裸奔在边界外"）。
+        actor / externalentity 不进任何边界（DFD 语义：外部实体在边界之外）。
+
+        同角色的多个边界（例如同时存在两个"服务侧"边界）：按 id 排序取第一个
+        作为该角色的代表，其余成员为空 —— 前端对"无成员边界"不绘制也不计数，
+        计数与实际可见的框自然一致（不会再出现"显示 3 个、只看到 1 个"）。
+        """
+        boundary_ids = sorted(cid for cid, t in comp_type.items() if t == "trustboundary")
+        if not boundary_ids:
+            return {}
+
+        store_types = {"datastore", "vectorstore", "trainingdata", "store"}
+        proc_types = {"process", "model", "prompt", "tool", "agentconfig"}
+        actor_types = {"actor", "externalentity"}
+
+        bname = {bid: str(comp_by_id.get(bid, {}).get("name") or "") for bid in boundary_ids}
+
+        # P3 生成的外层边界：包裹所有非 actor 组件（保持既有语义，它不会与别的边界共存）
+        outer = next((b for b in boundary_ids if str(b).startswith("outer-boundary-")), None)
+        if outer:
+            inner = sorted(
+                cid for cid, t in comp_type.items()
+                if t not in actor_types and t != "trustboundary"
+            )
+            return {b: (inner if b == outer else []) for b in boundary_ids}
+
+        # 角色 → 代表边界（同角色取 id 最小者）
+        role_bid: dict[str, str] = {}
+        for bid in boundary_ids:
+            role_bid.setdefault(self._boundary_role(bname[bid]), bid)
+
+        # 第三方外部实体的直接邻居（与第三方对接的 process 应落在第三方边界内）
+        third_anchors = {
+            cid for cid, c in comp_by_id.items()
+            if comp_type.get(cid) in actor_types
+            and self._is_third_party(str(c.get("name") or ""))
+        }
+        third_neighbors: set[str] = set()
+        for f in flows:
+            s = str(f.get("sourceId") or "")
+            t = str(f.get("targetId") or "")
+            if s in third_anchors and t:
+                third_neighbors.add(t)
+            if t in third_anchors and s:
+                third_neighbors.add(s)
+
+        layers = [layer_of.get(cid, 0) for cid, t in comp_type.items()
+                  if t not in actor_types and t != "trustboundary"]
+        min_l = min(layers) if layers else 0
+
+        # 参与流数（度越大越核心）：成员排序用，保证确定性
+        degree: dict[str, int] = {}
+        for f in flows:
+            for e in (f.get("sourceId"), f.get("targetId")):
+                if e:
+                    degree[e] = degree.get(e, 0) + 1
+
+        members: dict[str, list[str]] = {bid: [] for bid in boundary_ids}
+        for cid in sorted(comp_type):
+            ctype = comp_type.get(cid)
+            if ctype == "trustboundary" or ctype in actor_types:
+                continue  # 容器自身与外部实体都不进边界
+            cname = str(comp_by_id.get(cid, {}).get("name") or "")
+
+            # 1) 名称**实义**重合：≥2 字连续，且不能只是"服务 / 数据"这类泛化词
+            best_len, target = 0, None
+            for bid in boundary_ids:
+                common = _longest_common_substring(bname[bid], cname)
+                if (len(common) >= 2 and common not in _GENERIC_NAME_WORDS
+                        and (len(common) > best_len
+                             or (len(common) == best_len
+                                 and (target is None or bid < target)))):
+                    best_len, target = len(common), bid
+
+            if target is None and cid in third_neighbors and role_bid.get("third"):
+                target = role_bid["third"]
+            if target is None and role_bid.get("edge") and ctype in proc_types:
+                if self._is_client_side(cname) or layer_of.get(cid, 0) <= min_l:
+                    target = role_bid["edge"]
+            if target is None and role_bid.get("store") and ctype in store_types:
+                target = role_bid["store"]
+            if target is None and role_bid.get("service"):
+                target = role_bid["service"]
+            if target is None:
+                for role in ("store", "edge", "third", "other"):
+                    if role_bid.get(role):
+                        target = role_bid[role]
+                        break
+            if target:
+                members[target].append(cid)
+
+        for bid in members:
+            members[bid].sort(
+                key=lambda c: (-degree.get(c, 0), layer_of.get(c, 0),
+                               str(comp_by_id.get(c, {}).get("name") or ""))
+            )
+        return members
+
     def _infer_boundary_children(
         self,
         comp_by_id: dict[str, Any],
@@ -862,18 +1088,15 @@ class ThreatModelBuilder:
         boundary_cid: str,
         layer_of: dict[str, int],
     ) -> list[str]:
-        """推断某个信任边界应包裹的组件（确定性启发式）。
+        """返回该信任边界包裹的组件（走全局分区，见 _partition_boundary_members）。
 
-        策略：
-        1. 用边界名字/描述中的关键词区分『存储侧 / 服务侧 / 用户侧』语义；
-        2. 存储侧（数据库/缓存/日志…）→ 只含 datastore / vectorstore / trainingdata；
-        3. 服务侧（内网/服务/后端/微服务…）→ 只含 process，且排除最上游(用户侧)浅层，
-           取拓扑中间层的 process；
-        4. 用户侧（公网/用户/前端/接入…）→ 只含 actor + 最上游浅层 process；
-        5. 无关键词命中 → 兜底含全部非 boundary 组件。
-        6. P3 兜底：outer boundary（id 以 'outer-boundary-' 开头）→ 包含所有
-           非 actor 非 boundary 组件，作为「业务系统边界」的最外层容器。
-        这样能避免『公网边界』误吞所有节点，边界之间互不重叠。
+        保留本函数名与签名：Kahn 布局路径、泳道布局路径、「跨边界流标记」三处
+        都调它，实现收敛到一处才能保证"画布上看到的框"与"报告里的所属边界"一致
+        （历史问题是三处各自推断，成员对不上）。
+
+        为什么不再按"关键词 + 拓扑层"各自选：那条路会让关键词相近的边界各自
+        选中同一批节点，成员包围盒完全重合 → 多个虚线框叠成一个（用户反馈
+        "图中只有一个边界，却显示 3 个"）。分区保证成员互斥，几何才会分开。
         """
         # P3 兜底：outer boundary 走全包分支，绕开关键词推断
         if str(boundary_cid).startswith("outer-boundary-"):
@@ -882,102 +1105,10 @@ class ThreatModelBuilder:
                 if t not in ("trustboundary", "actor", "externalentity", "text")
             ]
 
-        name = str(comp_by_id.get(boundary_cid, {}).get("name") or "")
-        desc = str(comp_by_id.get(boundary_cid, {}).get("description") or "")
-        text = (name + " " + desc).lower()
-
-        # 类型语义分组
-        store_types = {"datastore", "vectorstore", "trainingdata", "store"}
-        proc_types = {"process", "model", "prompt", "tool", "agentconfig"}
-        actor_types = {"actor", "externalentity"}
-
-        def _match_impl(*groups):
-            kw_pool = {
-                "store": ("数据库", "存储", "数据", "缓存", "db", "database",
-                          "redis", "mysql", "日志", "es", "elastic", "消息",
-                          "queue", "mq", "对象存储", "oss"),
-                "proc": ("服务", "后端", "微服务", "内部", "api", "业务", "中台",
-                         "网关", "核心", "内网"),
-                "actor": ("公网", "用户", "外网", "前端", "浏览器", "web", "app",
-                          "客户端", "移动端", "手机", "h5", "接入"),
-            }
-            return any(any(k.lower() in text for k in kw_pool[g]) for g in groups)
-
-        matched_types: set[str] = set()
-        if _match_impl("store"):
-            matched_types |= store_types
-        if _match_impl("proc"):
-            matched_types |= proc_types
-        if _match_impl("actor"):
-            matched_types |= actor_types
-        if not matched_types:
-            matched_types = store_types | proc_types | actor_types
-
-        candidates = [
-            cid for cid, t in comp_type.items()
-            if t in matched_types and t != "trustboundary"
-        ]
-        if not candidates:
-            return []
-
-        # 按拓扑层（layer_of）分组，区分 用户侧(浅层)/服务侧(中层)/存储侧(深层)
-        layers = [layer_of.get(c, 0) for c in candidates]
-        min_l, max_l = (min(layers), max(layers)) if layers else (0, 0)
-        mid_l = (min_l + max_l) / 2.0
-
-        # 只保留该边界语义对应的那一段节点：
-        #   store → 深层（>= mid_l）；proc → 中层（>= min_l，避开最浅用户侧）；
-        #   actor → 浅层（<= mid_l）。
-        selected = []
-        for c in candidates:
-            t = comp_type.get(c)
-            l = layer_of.get(c, 0)
-            if t in store_types:
-                if l >= mid_l - 0.5:
-                    selected.append(c)
-            elif t in proc_types:
-                # 内网/服务侧边界包含 process。
-                # 但最上游的『入口前端』process（layer 很浅、通常已归公网/用户侧边界）
-                # 必须排除，否则内网边界会误吞公网边界，导致边界互相嵌套重叠。
-                # 取 l >= min_l + 1.5 的中层及以下 process 作为服务侧核心。
-                if matched_types & proc_types and l >= min_l + 1.5:
-                    selected.append(c)
-            else:  # actor / externalentity
-                if l <= mid_l + 0.5:
-                    selected.append(c)
-        if not selected:
-            selected = candidates
-
-        # 公网/用户侧边界：把与之直接相邻的最浅层 process（如 Web 前端）一并纳入，
-        # 使边界包裹『外部 actor + 入口前端』，而非只有空荡荡的外部实体。
-        if matched_types & actor_types and not (matched_types & proc_types):
-            shallow_procs = [
-                c for c in comp_type
-                if comp_type.get(c) in proc_types
-                and layer_of.get(c, 0) <= min_l + 1.5
-            ]
-            shallow_procs.sort(
-                key=lambda c: (layer_of.get(c, 0),
-                               str(comp_by_id.get(c, {}).get("name") or ""))
-            )
-            selected = shallow_procs + selected
-
-        # 信任边界不包裹外部 actor/外部实体（它们应在边界外，符合 DFD 语义）
-        selected = [c for c in selected
-                    if comp_type.get(c) not in actor_types]
-
-        # 按"参与流数"降序（度越大越核心），保证确定性
-        degree: dict[str, int] = {}
-        for f in flows:
-            for e in (f.get("sourceId"), f.get("targetId")):
-                if e:
-                    degree[e] = degree.get(e, 0) + 1
-        selected.sort(
-            key=lambda c: (-degree.get(c, 0),
-                           layer_of.get(c, 0),
-                           str(comp_by_id.get(c, {}).get("name") or ""))
+        parts = self._partition_boundary_members(
+            comp_by_id, comp_type, flows, layer_of
         )
-        return selected
+        return list(parts.get(boundary_cid, []))
 
     def _dispatch_orphan_stores(
         self,
@@ -1197,19 +1328,18 @@ class ThreatModelBuilder:
         for cid in boundary_ids:
             inner = boundary_inner[cid]
             if not inner:
-                # 兜底：仍给一个可见的容器（与它数据流连通范围相关）
-                xs_all = [positions[k]["x"] for k in positions
-                          if comp_type.get(k) != "trustboundary"]
-                if xs_all:
-                    cx = (min(xs_all) + max(xs_all)) / 2 + self.NODE_WIDTH / 2
-                    cy = self.MARGIN + (n_layers * row_h) / 2 + self.NODE_HEIGHT / 2
-                    positions[cid] = {
-                        "x": cx - 180, "y": cy - 60,
-                        "layer": 0, "container": True,
-                        "containerSize": {"width": 400, "height": 200},
-                        "containerCenter": (cx, cy),
-                    }
-                    boundary_inner[cid] = []
+                # 成员为空的边界：**不画也不计数**（显式给零几何）。
+                # 历史实现是"给一个 400x200 的假容器让它可见"，但前端/渲染器判
+                # "空边界"用的是**几何包含**（节点中心是否落在框内），那个假框
+                # 往往正好圈住几个无关节点 → 空边界被算成有成员、画出来、还进了
+                # 工具栏计数 —— 用户看到的就是"显示 3 个边界，图里只有一个"。
+                positions[cid] = {
+                    "x": 0, "y": 0, "layer": 0, "container": True,
+                    "emptyBoundary": True,
+                    "containerSize": {"width": 0, "height": 0},
+                    "containerCenter": (0, 0),
+                }
+                boundary_inner[cid] = []
                 continue
 
             boundary_inner[cid] = inner
@@ -1231,6 +1361,14 @@ class ThreatModelBuilder:
                 },
                 "containerCenter": (cx, cy),
             }
+
+        # 成员分区结果随 layout 一起返回（与 _lanes 同样的私有键）：
+        # build() 会把它落进 cell.data.boundaryMembers —— 渲染器 / Word 报告 /
+        # 布局度量 / 前端下拉一共 5 处消费"边界成员"，此前各自用几何包含重新推导，
+        # 同一份结果会自相矛盾（画布不画空边界、报告表里却列着它）。
+        positions["_boundary_members"] = {
+            cid: list(boundary_inner.get(cid) or []) for cid in boundary_ids
+        }
 
         # --- E. 信任边界垂直避让：不同边界容器互不重叠 ---
         # 信任边界是水平条带容器。若相邻边界的 y 区间重叠，把后一个边界
@@ -1555,23 +1693,16 @@ class ThreatModelBuilder:
         for cid in boundary_ids:
             inner = boundary_inner[cid]
             if not inner:
-                xs_all = [
-                    positions[k]["x"]
-                    for k in positions
-                    if comp_type.get(k) != "trustboundary"
-                ]
-                if xs_all:
-                    cx = (min(xs_all) + max(xs_all)) / 2 + self.NODE_WIDTH / 2
-                    cy = canvas_h / 2 + self.NODE_HEIGHT / 2
-                    positions[cid] = {
-                        "x": cx - 180,
-                        "y": cy - 60,
-                        "layer": 0,
-                        "container": True,
-                        "containerSize": {"width": 400, "height": 200},
-                        "containerCenter": (cx, cy),
-                    }
-                    boundary_inner[cid] = []
+                # 同 Kahn 布局：空成员边界给零几何（不画不计数），不再给假容器 ——
+                # 假容器会被"按几何包含判成员"的前端/渲染器误算成有成员。
+                positions[cid] = {
+                    "x": 0, "y": 0, "layer": 0,
+                    "container": True,
+                    "emptyBoundary": True,
+                    "containerSize": {"width": 0, "height": 0},
+                    "containerCenter": (0, 0),
+                }
+                boundary_inner[cid] = []
                 continue
 
             boundary_inner[cid] = inner
@@ -1593,6 +1724,11 @@ class ThreatModelBuilder:
                 },
                 "containerCenter": (cx, cy),
             }
+
+        # 成员分区结果随 layout 返回（同 Kahn 布局，见那里的说明）
+        positions["_boundary_members"] = {
+            cid: list(boundary_inner.get(cid) or []) for cid in boundary_ids
+        }
 
         # --- D. 信任边界垂直避让（与 Kahn 布局一致） ---
         _bd_order = sorted(
@@ -1857,6 +1993,11 @@ class ThreatModelBuilder:
         outliers: list[tuple[str, float, str]] = []
         for c in components:
             cid = c["id"]
+            if c.get("type") == "trustboundary":
+                # 边界容器不参与泳道 y 偏离检查：它横跨多条泳道、高度由成员 bbox
+                # 决定，本就不落在单个泳道行高内；而空边界（零几何、y=0）扫进来
+                # 只会刷"节点偏离泳道"的假告警。
+                continue
             pos = layout.get(cid)
             if not isinstance(pos, dict) or "x" not in pos:
                 continue

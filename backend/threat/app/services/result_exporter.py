@@ -452,6 +452,36 @@ def _collect_elements(model: dict[str, Any]) -> dict[str, Any]:
         else:
             node_cells.append(c)
 
+    # ---- 信任边界成员：**事实优先**，几何兜底 ----
+    # 事实来源是建模期落库的 cell.data.boundaryMembers（成员 cell id）/
+    # boundaryEmpty（见 model_builder.build 的 1.5 段）。历史实现是报告端自己按
+    # "中心点落在框内 + break 取第一个命中者"重推——与画布、PNG 渲染器口径不同，
+    # 会出现"同一页里插图没有这个框、边界表却把它编号列出（元素数 0）"。
+    def _geom_in_boundary(cell: dict, boundary: dict) -> bool:
+        pos, size = cell.get("position") or {}, cell.get("size") or {}
+        bpos, bsize = boundary.get("position") or {}, boundary.get("size") or {}
+        if not pos or not bpos:
+            return False
+        cx = pos.get("x", 0) + size.get("width", 0) / 2
+        cy = pos.get("y", 0) + size.get("height", 0) / 2
+        return (
+            bpos.get("x", 0) <= cx <= bpos.get("x", 0) + bsize.get("width", 0)
+            and bpos.get("y", 0) <= cy <= bpos.get("y", 0) + bsize.get("height", 0)
+        )
+
+    def _members_of(boundary: dict) -> list[dict]:
+        """该边界包含的节点（建模期事实优先，老结果退回几何包含）。"""
+        data = boundary.get("data") or {}
+        ids = data.get("boundaryMembers")
+        if ids is not None:
+            wanted = set(ids)
+            return [c for c in node_cells if c.get("id") in wanted]
+        return [c for c in node_cells if _geom_in_boundary(c, boundary)]
+
+    # 空边界不参与编号 / 清单 / 边界安全分析表 —— 与画布、PNG 渲染器（都不画空边界）
+    # 保持一致；历史实现在这里把空边界也编号成 TB1/TB2 并逐行印出。
+    boundary_cells = [b for b in boundary_cells if _members_of(b)]
+
     # ---- 元素编号：按类别分别从 1 开始（EE1 / P2 / DS3 / DF5 / TB2）----
     id_by_cell: dict[str, str] = {}
     counters: dict[str, int] = {}
@@ -476,25 +506,12 @@ def _collect_elements(model: dict[str, Any]) -> dict[str, Any]:
         for c in all_cells
     }
 
-    # ---- 元素所属信任边界（按几何包含关系判断）----
-    def _in_boundary(cell: dict, boundary: dict) -> bool:
-        pos, size = cell.get("position") or {}, cell.get("size") or {}
-        bpos, bsize = boundary.get("position") or {}, boundary.get("size") or {}
-        if not pos or not bpos:
-            return False
-        cx = pos.get("x", 0) + size.get("width", 0) / 2
-        cy = pos.get("y", 0) + size.get("height", 0) / 2
-        return (
-            bpos.get("x", 0) <= cx <= bpos.get("x", 0) + bsize.get("width", 0)
-            and bpos.get("y", 0) <= cy <= bpos.get("y", 0) + bsize.get("height", 0)
-        )
-
+    # ---- 元素所属信任边界（事实优先，几何兜底；见上方 _members_of）----
     boundary_of: dict[str, str] = {}
-    for c in node_cells:
-        for b in boundary_cells:
-            if _in_boundary(c, b):
-                boundary_of[c.get("id")] = id_by_cell.get(b.get("id"), "")
-                break
+    for b in boundary_cells:
+        bid = id_by_cell.get(b.get("id"), "")
+        for c in _members_of(b):
+            boundary_of.setdefault(c.get("id"), bid)
 
     # ---- 威胁数（每个元素关联多少条威胁）----
     threat_count: dict[str, int] = {}
@@ -575,18 +592,16 @@ def _collect_elements(model: dict[str, Any]) -> dict[str, Any]:
         # 时列位整体错位：源/目标/穿越边界恒为空、威胁数恒为「—」。
         groups.append(("数据流", flow_rows))
 
-    # 信任边界清单
+    # 信任边界清单（成员与「所属边界」列同源，避免同一份报告里两处口径不同）
     for b in boundary_cells:
         bid = id_by_cell.get(b.get("id"), "-")
-        inner = [id_by_cell.get(c.get("id"), "?") for c in node_cells
-                 if boundary_of.get(c.get("id")) == bid]
+        members = _members_of(b)
         out["boundaries"].append({
             "id": bid,
             "name": name_by_cell.get(b.get("id"), "-") or "-",
             "description": ((b.get("data") or {}).get("description") or "") or "-",
-            "members": inner,
-            "member_names": [name_by_cell.get(c.get("id"), "") for c in node_cells
-                             if boundary_of.get(c.get("id")) == bid],
+            "members": [id_by_cell.get(c.get("id"), "?") for c in members],
+            "member_names": [name_by_cell.get(c.get("id"), "") for c in members],
         })
 
     out["groups"] = groups

@@ -1049,6 +1049,37 @@ def _edge_endpoints(cell: dict, by_id: dict[str, dict]) -> Optional[tuple[dict, 
     return s, t
 
 
+def is_empty_boundary(boundary: dict, nodes: list[dict]) -> bool:
+    """信任边界是否"空"（没有任何成员）。
+
+    **事实优先**：读建模期落库的 ``cell.data.boundaryEmpty``（见
+    ``model_builder.build`` 的 1.5 段）；老结果没有该字段时退回"几何上没有任何
+    节点中心落在框内"。
+
+    为什么要统一口径：前端工具栏只数"可绘制的边界"、PNG 渲染器与画布都不画空
+    边界，而度量此前把空边界（0×0）也计进 ``n_boundaries`` —— 同一份结果会出现
+    "画布上 1 个边界、度量报 3 个"。
+    """
+    data = boundary.get("data") or {}
+    flag = data.get("boundaryEmpty")
+    if flag is not None:
+        return bool(flag)
+    members = data.get("boundaryMembers")
+    if members is not None:
+        return not members
+    br = rect_of(boundary)
+    for n in nodes:
+        if rect_contains_point(br, center_of(rect_of(n))):
+            return False
+    return True
+
+
+def count_drawable_boundaries(diagram: dict) -> int:
+    """可绘制的边界数（排除空成员边界）——与前端工具栏「边界 N」同口径。"""
+    nodes = node_cells(diagram)
+    return sum(1 for b in boundary_cells(diagram) if not is_empty_boundary(b, nodes))
+
+
 def metric_member_outside(diagram: dict) -> list[str]:
     """信任边界成员越框：成员中心在容器内、但成员 bbox 超出容器边界。
 
@@ -1058,6 +1089,8 @@ def metric_member_outside(diagram: dict) -> list[str]:
     problems: list[str] = []
     nodes = node_cells(diagram)
     for b in boundary_cells(diagram):
+        if is_empty_boundary(b, nodes):
+            continue  # 空边界不画也不校验
         br = rect_of(b)
         members = (b.get("data") or {}).get("boundaryMembers")
         for n in nodes:
@@ -1418,7 +1451,7 @@ def evaluate(record: dict) -> Optional[dict[str, Any]]:
         "canvas_aspect": metric_canvas_aspect(d),
         "n_nodes": len(node_cells(d)),
         "n_edges": len(edge_cells(d)),
-        "n_boundaries": len(boundary_cells(d)),
+        "n_boundaries": count_drawable_boundaries(d),
         # 源头降噪三项（见 metric_* 上方说明）
         "primary_flows": metric_primary_flows(d),
         "flow_noise_ratio": metric_flow_noise_ratio(d),

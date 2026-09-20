@@ -323,6 +323,9 @@ let allCellsRef = []  // 当前 DFD 全量 cells，供 addNode 内做"空 trust 
 // 泳道只是"分区底色"：视口比内容宽时把它的矩形左右拉宽铺满画布，
 // 但原始宽度必须留存——拉宽只增不减，且泳道标题锚点要按偏移量补偿。
 let laneBands = []
+// 本次 render 已画出的边界显示矩形：用于"近重复边界只画一个"判定（见 addNode）。
+// 每次 render 清空——边界矩形的判定依赖全量 cells 与泳道几何。
+let drawnBoundaryRects = []
 // 拉宽动作挂在画布 scale/translate 上（滚轮缩放/拖拽平移都是高频事件），
 // 用 rAF 合帧，避免一帧里重复算同一份视口范围。
 let laneSyncRaf = 0
@@ -1375,6 +1378,7 @@ function render(model) {
   // 泳道原始几何随 cells 一起清空：换图后若还留着上一张图的 band，
   // 拉宽逻辑会去 getCellById 一个已不存在的泳道（白跑一轮并且语义错乱）。
   laneBands = []
+  drawnBoundaryRects = []   // 近重复边界判定按本次 render 重算
   boundaryCount.value = 0
   if (laneSyncRaf) {
     cancelAnimationFrame(laneSyncRaf)
@@ -1470,7 +1474,26 @@ function addNode(cell) {
   // 边界显示矩形（含成员包围盒收缩）统一由 boundaryLayout 计算——
   // 跨界落点标记（addCrossMarkers）必须用同一个矩形，才能贴住可见边框。
   const bl = isBoundary ? boundaryLayout(cell) : null
-  const isEmptyBoundary = isBoundary && bl.memberCount === 0
+  let isEmptyBoundary = isBoundary && bl.memberCount === 0
+
+  // 近重复边界只画一个（与后端 PNG 渲染器 dfd_renderer 同口径）。
+  // 成员推断不互斥时，几个边界会拿到同一批成员、算出完全相同的矩形：叠画看着
+  // 只有一个框，工具栏计数却仍是 3 —— "图里 1 个、显示 3 个"就是这个（用户反馈）。
+  // 重叠 >0.9（按较小面积）即视为重复，按"空边界"处理（不画、不计入 toolbar 计数）。
+  if (isBoundary && !isEmptyBoundary) {
+    const r = bl.rect
+    const area = Math.max(1, (r.x1 - r.x0) * (r.y1 - r.y0))
+    for (const prev of drawnBoundaryRects) {
+      const ix = Math.max(0, Math.min(prev.x1, r.x1) - Math.max(prev.x0, r.x0))
+      const iy = Math.max(0, Math.min(prev.y1, r.y1) - Math.max(prev.y0, r.y0))
+      const prevArea = Math.max(1, (prev.x1 - prev.x0) * (prev.y1 - prev.y0))
+      if ((ix * iy) / Math.min(area, prevArea) > 0.9) {
+        isEmptyBoundary = true
+        break
+      }
+    }
+    if (!isEmptyBoundary) drawnBoundaryRects.push({ ...r })
+  }
 
   // 威胁徽标画进节点自身 markup（而不是独立 cell）：
   // 独立 cell 会被框选/fitView/allCellsRef 当成真实元素，还会在拖动时滞留原地，

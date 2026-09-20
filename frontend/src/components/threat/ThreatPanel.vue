@@ -501,9 +501,16 @@ const elementOptions = computed(() => {
     if (cell.shape === 'tm.Text') continue
     const name = (cell.data?.name || '').trim()
     if (!name) continue
-    // 跳过后端自动补的空 trust boundary（没有子元素）
+    // 跳过后端补的**空**信任边界（没有成员，画布上也不画）。
+    // 事实优先读建模期落库的 data.boundaryEmpty / boundaryMembers；老模型没有这两个
+    // 字段时才退回 cell.children —— 历史实现只看 children，而后端从不写该字段，
+    // 结果**所有**边界（含真有成员的）都被排除出"可挂威胁元素"下拉。
     const isBoundary = cell.shape === 'tm.BoundaryBox'
-    if (isBoundary && !(cell.children || []).length) continue
+    if (isBoundary) {
+      const empty = cell.data?.boundaryEmpty
+        ?? !((cell.data?.boundaryMembers || cell.children || []).length)
+      if (empty) continue
+    }
     const isEdge = !!(cell.source || cell.target)
     rows.push({ id: name, name, kind: isEdge ? '数据流' : '组件' })
   }
