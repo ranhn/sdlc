@@ -44,42 +44,45 @@
       :data="pagedList"
       v-loading="loading"
       stripe
-      class="vuln-table"
+      class="vuln-table tight-table"
       :show-overflow-tooltip="true"
       ref="tableRef"
       row-key="id"
     >
-      <el-table-column type="index" :index="rowIndex" width="48" align="center" />
-      <el-table-column label="标题" min-width="260" show-overflow-tooltip>
+      <el-table-column type="index" :index="rowIndex" width="44" align="center" />
+      <!-- 标题：与「提交漏洞」页同一口径 —— 权重给到最大（Element 按 min-width 比例
+           分配富余宽度），其余列压到"够用就行"，配合 .cell 的窄内边距。 -->
+      <el-table-column label="标题" min-width="320" show-overflow-tooltip>
         <template #default="{ row }">
           <el-link type="primary" :underline="false" @click="openDetail(row)">{{ row.title }}</el-link>
         </template>
       </el-table-column>
-      <el-table-column prop="system_name" label="所属系统" min-width="100" align="center" />
-      <el-table-column label="等级" width="70" align="center">
+      <el-table-column prop="system_name" label="所属系统" min-width="92" align="center" />
+      <el-table-column label="等级" width="64" align="center">
         <template #default="{ row }">
           <el-tag :type="severityType[row.severity]" effect="dark" size="small">{{ severityName[row.severity] }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="vuln_type" label="类型" min-width="90" align="center" />
-      <el-table-column label="来源" width="80" align="center">
+      <el-table-column prop="vuln_type" label="类型" min-width="96" align="center" />
+      <el-table-column label="来源" width="64" align="center">
         <template #default="{ row }">
           <el-tag v-if="row.is_external" type="danger" size="small">外部</el-tag>
           <el-tag v-else type="info" size="small">内部</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80" align="center">
+      <!-- 状态/提交人：2~3 个汉字 + 标签，按"不折行"的最小宽度给 -->
+      <el-table-column label="状态" width="76" align="center">
         <template #default="{ row }">
           <el-tag :type="statusType[row.status]" size="small">{{ statusNames[row.status] }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="reporter_name" label="提交人" min-width="110" align="center" show-overflow-tooltip>
+      <el-table-column prop="reporter_name" label="提交人" min-width="92" align="center" show-overflow-tooltip>
         <template #default="{ row }">{{ row.reporter_name || '—' }}</template>
       </el-table-column>
-      <el-table-column prop="created_at" label="提交时间" width="150" align="center">
+      <el-table-column prop="created_at" label="提交时间" width="138" align="center">
         <template #default="{ row }">{{ fmt(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="70" align="center" fixed="right">
+      <el-table-column label="操作" width="68" align="center" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
         </template>
@@ -321,8 +324,7 @@ onMounted(async () => {
 .vuln-table { background: #fff; border-radius: 10px; }
 /* 分页条：贴着表格下方、右对齐（Element 默认居中，跟表格右缘对齐更像后台列表） */
 .vuln-pager { display: flex; justify-content: flex-end; padding: 10px 4px 2px; flex-shrink: 0; }
-.vuln-table :deep(.el-table__cell) { padding: 6px 0 !important; }
-.vuln-table :deep(.el-table .cell) { padding-left: 8px; padding-right: 8px; word-break: keep-all; white-space: nowrap; }
+/* 列间距/不换行由全局 .tight-table 提供（src/styles/main.css），不再本页各写一份 */
 .sec-title { font-weight: 600; margin: 16px 0 8px; color: #0f172a; }
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }

@@ -30,6 +30,10 @@ class Department(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
     parent_id = Column(Integer, nullable=True)
+    # 飞书部门 open_department_id：同步时按它匹配/落库，人员的部门归属也靠它对齐。
+    # 没有这个字段时，飞书部门只能靠人工维护的 FEISHU_DEPT_MAP_JSON 映射本地部门，
+    # 部门一多必然漏配，人员就会全落"默认部门"。
+    feishu_open_dept_id = Column(String(100), nullable=True, index=True)
 
 
 class Role(Base):
@@ -50,6 +54,9 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(50), nullable=False)
+    # 英文名：飞书把中英文名拼在一个 `name` 字段里（"Tracy.Yang 杨翠"）、而 `en_name`
+    # 字段实测为空，所以同步时从 `name` 里拆出来单独存一列（列表要分两列展示）。
+    en_name = Column(String(50), nullable=True)
     email = Column(String(100), nullable=True)
     role_id = Column(Integer, ForeignKey("sys_role.id"), nullable=False)
     department_id = Column(Integer, ForeignKey("sys_department.id"), nullable=True)

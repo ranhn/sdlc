@@ -42,6 +42,8 @@ def _run_lightweight_migrations():
         ("sys_user", "feishu_open_id", "VARCHAR(100)"),
         ("sys_user", "last_synced_at", "DATETIME"),
         ("sys_user", "must_change_password", "BOOLEAN DEFAULT 0"),
+        ("sys_user", "en_name", "VARCHAR(50)"),
+        ("sys_department", "feishu_open_dept_id", "VARCHAR(100)"),
         ("vuln", "is_external", "BOOLEAN DEFAULT 0 NOT NULL"),
         ("vuln", "external_source", "VARCHAR(100)"),
         ("vuln", "api_endpoint", "VARCHAR(500)"),
@@ -60,6 +62,15 @@ def _run_lightweight_migrations():
     try:
         with engine.begin() as conn:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sys_user_feishu_open_id ON sys_user (feishu_open_id)"))
+    except Exception:
+        pass
+    # 为 sys_department.feishu_open_dept_id 创建索引（飞书部门同步按它匹配，已存在则忽略）
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_sys_department_feishu_open_dept_id "
+                "ON sys_department (feishu_open_dept_id)"
+            ))
     except Exception:
         pass
 

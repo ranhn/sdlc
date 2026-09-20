@@ -66,22 +66,27 @@
       :data="pagedList"
       v-loading="loading"
       stripe
-      class="vuln-table"
+      class="vuln-table tight-table"
       :show-overflow-tooltip="true"
       ref="tableRef"
       row-key="id"
       @selection-change="onSelectionChange"
     >
       <!-- reserve-selection：翻页后已勾选的行仍然保留（批量导出跨页有效） -->
-      <el-table-column v-if="canExport" type="selection" width="44" align="center" :reserve-selection="true" />
-      <el-table-column type="index" :index="rowIndex" width="48" align="center" />
-      <el-table-column label="标题" min-width="260" show-overflow-tooltip>
+      <el-table-column v-if="canExport" type="selection" width="40" align="center" :reserve-selection="true" />
+      <el-table-column type="index" :index="rowIndex" width="44" align="center" />
+      <!-- 标题：这张表里唯一"信息密度高、又必须读全"的列，权重给到最大。
+           Element 会把富余宽度按 min-width 比例分给 min-width 列，所以标题权重越大、
+           别的列压得越紧，它拿到的实际宽度就越多（配合 .cell 的窄内边距）。
+           截断时 hover 有 tooltip（表级 show-overflow-tooltip 已开）。 -->
+      <el-table-column label="标题" min-width="320" show-overflow-tooltip>
         <template #default="{ row }">
           <el-link type="primary" :underline="false" @click="openDetail(row)">{{ row.title }}</el-link>
         </template>
       </el-table-column>
-      <el-table-column prop="system_name" label="所属系统" min-width="100" align="center" />
-      <el-table-column label="接口地址" min-width="220" align="center">
+      <el-table-column prop="system_name" label="所属系统" min-width="92" align="center" />
+      <!-- 接口地址普遍很长，本来就靠 tooltip 看全，宽度让给标题 -->
+      <el-table-column label="接口地址" min-width="170" align="center">
         <template #default="{ row }">
           <el-tooltip v-if="row.api_endpoint" :content="row.api_endpoint" placement="top" :show-after="300">
             <el-link type="primary" :underline="false" @click.stop="openDetail(row)">{{ clip(row.api_endpoint) }}</el-link>
@@ -89,30 +94,31 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column label="等级" width="70" align="center">
+      <el-table-column label="等级" width="64" align="center">
         <template #default="{ row }">
           <el-tag :type="severityType[row.severity]" effect="dark" size="small">{{ severityName[row.severity] }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="vuln_type" label="类型" min-width="120" align="center" />
-      <el-table-column label="来源" width="80" align="center">
+      <el-table-column prop="vuln_type" label="类型" min-width="104" align="center" />
+      <el-table-column label="来源" width="64" align="center">
         <template #default="{ row }">
           <el-tag v-if="row.is_external" type="danger" size="small">外部</el-tag>
           <el-tag v-else type="info" size="small">内部</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80" align="center">
+      <!-- 状态/负责人：都是 2~3 个汉字 + 一个标签，按"够用就行"给宽，避免折行 -->
+      <el-table-column label="状态" width="76" align="center">
         <template #default="{ row }">
           <el-tag :type="statusType[row.status]" size="small">{{ statusNames[row.status] }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="assignee_name" label="负责人" min-width="110" align="center" show-overflow-tooltip>
+      <el-table-column prop="assignee_name" label="负责人" min-width="92" align="center" show-overflow-tooltip>
         <template #default="{ row }">{{ row.assignee_name || '—' }}</template>
       </el-table-column>
-      <el-table-column prop="created_at" label="提交时间" width="150" align="center">
+      <el-table-column prop="created_at" label="提交时间" width="138" align="center">
         <template #default="{ row }">{{ fmt(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="120" align="center" fixed="right">
+      <el-table-column label="操作" width="112" align="center" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
           <el-tooltip
@@ -961,8 +967,8 @@ onMounted(async () => {
 .vuln-table { background: #fff; border-radius: 10px; }
 /* 分页条：贴着表格下方、右对齐（Element 默认居中，跟表格右缘对齐更像后台列表） */
 .vuln-pager { display: flex; justify-content: flex-end; padding: 10px 4px 2px; flex-shrink: 0; }
-.vuln-table :deep(.el-table__cell) { padding: 6px 0 !important; }
-.vuln-table :deep(.el-table .cell) { padding-left: 8px; padding-right: 8px; word-break: keep-all; white-space: nowrap; }
+/* 列间距/不换行由全局 .tight-table 提供（src/styles/main.css），不再本页各写一份：
+   同一段样式原来在这里和 VulnFix.vue 各写了一遍，两处选择器都写错且静默失效。 */
 /* 操作列三个按钮(详情/编辑/导出)水平+垂直对齐,统一行高 */
 .vuln-table :deep(.cell) .el-button.is-link { line-height: 1; padding: 4px 6px; vertical-align: middle; }
 .tip { font-size: 12px; color: #94a3b8; margin-top: 6px; }

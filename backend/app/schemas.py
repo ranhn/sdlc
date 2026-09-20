@@ -44,6 +44,20 @@ class UserCreate(BaseModel):
     must_change_password: bool = False
 
 
+class UserUpdate(BaseModel):
+    """编辑用户：只开放姓名 / 邮箱 / 角色 / 部门。
+
+    刻意不开放两个字段：
+      · username —— 改掉会让人无法用原账号登录（而且飞书同步的用户名就是英文名，
+        再手工改名会被下次同步覆盖）；
+      · password —— 有独立的"改密"入口，重置密码应当在明确操作下进行。
+    """
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    role_id: Optional[int] = None
+    department_id: Optional[int] = None
+
+
 class ChangePasswordIn(BaseModel):
     old_password: Optional[str] = None
     new_password: str = Field(min_length=8, max_length=64)
@@ -53,13 +67,19 @@ class UserOut(BaseModel):
     id: int
     username: str
     full_name: str
+    en_name: Optional[str] = None  # 英文名（飞书 name 里拆出来的，与中文名分列展示）
     email: Optional[str] = None
     role_id: int
     role_name: Optional[str] = None
     role_code: Optional[str] = None  # 用于前端判断是否对目标用户开放写操作（如 secops 不可操作 admin 行）
     department_id: Optional[int] = None
+    department_name: Optional[str] = None  # 人员列表直接显示部门名，避免前端再查一次
     is_active: bool
     is_deleted: bool = False
+    # 下面两个字段前端列表要用：飞书标签（feishu_open_id）与"最近同步"列。
+    # 之前 UserOut 里没有它们，接口不返回 → 列表里"最近同步"永远显示"—"、飞书标签也不出现。
+    feishu_open_id: Optional[str] = None
+    last_synced_at: Optional[AwareDT] = None
 
     class Config:
         from_attributes = True
@@ -68,6 +88,8 @@ class UserOut(BaseModel):
 class DepartmentOut(BaseModel):
     id: int
     name: str
+    parent_id: Optional[int] = None
+    feishu_open_dept_id: Optional[str] = None
 
     class Config:
         from_attributes = True

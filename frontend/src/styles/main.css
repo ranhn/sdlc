@@ -28,3 +28,22 @@ body {
 .page-title { font-size: 18px; font-weight: 600; color: #0f172a; }
 
 /* Element Plus 输入框保持默认浅色主题 */
+
+/* ===== 紧凑列表表格（统一口径，全站只此一份）=====
+   用途：给「提交漏洞 / 漏洞修复」这类"长标题 + 多列"的列表页统一列间距 ——
+   单元格左右内边距 12px → 6px、单元格不换行、富余宽度靠列宽权重让给标题列。
+   为什么抽到全局：
+     这两行原本在 Vulnerabilities.vue / VulnFix.vue 里**各写了一份**，而且两份都把
+     选择器写成 `:deep(.el-table .cell)` —— .vuln-table 本身就是 .el-table 的根节点，
+     内部没有嵌套的 .el-table，规则静默失效（不报错、只是没生效），谁都没发现。
+     放到全局还有两个好处：① 不需要 :deep()，选择器写错的风险小得多；
+     ② 以后新增列表页 class 一挂就有同样口径，不用复制粘贴。
+   用法：<el-table class="tight-table" ...>，并确保表格开了 show-overflow-tooltip
+     —— 这里 nowrap 会截断长文本，没有 tooltip 就等于丢信息。 */
+.el-table.tight-table .el-table__cell { padding: 6px 0 !important; }
+.el-table.tight-table .cell {
+  padding-left: 6px;
+  padding-right: 6px;
+  word-break: keep-all;
+  white-space: nowrap;
+}

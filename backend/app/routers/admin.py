@@ -17,6 +17,7 @@ from ..schemas import (
     RoleOut,
     UserCreate,
     UserOut,
+    UserUpdate,
     ChangePasswordIn,
 )
 from ..security import get_current_user, hash_password, write_operation_log
@@ -60,6 +61,15 @@ def list_roles(db: Session = Depends(get_db)):
 
 
 # ============ 用户 ============
+def _user_out(u: User, dept_names: dict) -> UserOut:
+    """组装 UserOut：把角色名/角色码/部门名这些关联字段补上（列表与编辑接口共用）。"""
+    out = UserOut.model_validate(u)
+    out.role_name = u.role.name if u.role else None
+    out.role_code = u.role.code if u.role else None
+    out.department_name = dept_names.get(u.department_id)
+    return out
+
+
 @router.post("/users", response_model=UserOut)
 def create_user(data: UserCreate, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     require_admin(current)
@@ -87,6 +97,69 @@ def create_user(data: UserCreate, db: Session = Depends(get_db), current: User =
     return user
 
 
+@router.put("/users/{user_id}", response_model=UserOut)
+def update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db),
+                current: User = Depends(get_current_user)):
+    """编辑用户：姓名 / 邮箱 / 角色 / 部门（管理员、安全专家可用）。
+
+    三处防护，都是"改错了很难恢复"的场景：
+      1. secops 不能改**超级管理员**账号（防提权），也不能把人改成超级管理员；
+      2. 不能把系统里**最后一个**超级管理员降级 —— 否则没人能再管理用户/角色；
+      3. 只改传了值的字段，没传的保持原样（避免前端少传一个字段就把数据清空）。
+    """
+    require_admin(current)
+    user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()  # noqa: E712
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_can_target_admin(current, user, "修改")
+
+    changes: list[str] = []
+    if data.role_id is not None and data.role_id != user.role_id:
+        new_role = db.query(Role).filter(Role.id == data.role_id).first()
+        if not new_role:
+            raise HTTPException(status_code=400, detail="角色不存在")
+        if current.role.code == "secops" and new_role.code == "admin":
+            raise HTTPException(status_code=403, detail="安全专家无权把账号提升为超级管理员")
+        if user.role and user.role.code == "admin" and new_role.code != "admin":
+            others = db.query(User).filter(
+                User.is_deleted == False, User.is_active == True,  # noqa: E712
+                User.role_id == user.role_id, User.id != user.id,
+            ).count()
+            if others == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="系统至少要保留一个超级管理员，不能把最后一个降级",
+                )
+        changes.append(f"角色 {user.role.name if user.role else '—'} → {new_role.name}")
+        user.role_id = new_role.id
+
+    if data.full_name is not None and data.full_name.strip() and data.full_name.strip() != user.full_name:
+        changes.append(f"姓名 {user.full_name} → {data.full_name.strip()}")
+        user.full_name = data.full_name.strip()
+
+    if data.email is not None and (data.email.strip() or None) != user.email:
+        new_email = data.email.strip() or None
+        changes.append(f"邮箱 {user.email or '—'} → {new_email or '—'}")
+        user.email = new_email
+
+    if data.department_id is not None and data.department_id != user.department_id:
+        dept = db.query(Department).filter(Department.id == data.department_id).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail="部门不存在")
+        changes.append(f"部门 → {dept.name}")
+        user.department_id = dept.id
+
+    dept_names = {d.id: d.name for d in db.query(Department).all()}
+    if not changes:
+        return _user_out(user, dept_names)
+
+    db.commit()
+    db.refresh(user)
+    write_operation_log(db, current, "update_user", "admin",
+                        f"编辑用户 {user.username}: " + "; ".join(changes))
+    return _user_out(user, dept_names)
+
+
 @router.get("/users", response_model=list[UserOut])
 def list_users(
     q: str | None = None,
@@ -103,13 +176,9 @@ def list_users(
             | (User.email.ilike(like))
         )
     users = query.order_by(User.id.asc()).all()
-    result = []
-    for u in users:
-        out = UserOut.model_validate(u)
-        out.role_name = u.role.name if u.role else None
-        out.role_code = u.role.code if u.role else None
-        result.append(out)
-    return result
+    # 部门名一次性查表成字典，避免每行一次查询（N+1）
+    dept_names = {d.id: d.name for d in db.query(Department).all()}
+    return [_user_out(u, dept_names) for u in users]
 
 
 @router.post("/users/{user_id}/toggle", response_model=UserOut)

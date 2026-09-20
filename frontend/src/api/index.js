@@ -77,6 +77,8 @@ export const adminApi = {
   roles: () => http.get('/roles'),
   users: (params) => http.get('/users', { params }),
   createUser: (data) => http.post('/users', data),
+  // 编辑用户（姓名/邮箱/角色/部门）—— 只传要改的字段，没传的后端保持原样
+  updateUser: (id, data) => http.put(`/users/${id}`, data),
   toggleUser: (id) => http.post(`/users/${id}/toggle`),
   deleteUser: (id) => http.delete(`/users/${id}`),
   changePassword: (id, data) => http.post(`/users/${id}/change-password`, data),
@@ -85,7 +87,10 @@ export const adminApi = {
 // ---------- 飞书同步 ----------
 export const feishuApi = {
   config: () => http.get('/admin/feishu/config'),
-  sync: () => http.post('/admin/feishu/sync'),
+  // 同步要遍历 400+ 个部门、拉 1600+ 人，实测约 45s，远超全局 20s 超时 ——
+  // 必须单独放宽，否则接口还在跑、前端已经报 "timeout of 20000ms exceeded"，
+  // 用户以为同步失败（其实服务端已经同步完了），会重复点击。
+  sync: () => http.post('/admin/feishu/sync', null, { timeout: 300000 }),
 }
 
 // ---------- 系统资产 ----------
