@@ -9,7 +9,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import User, Vuln, VulnComment, VulnFlow
+from ..models import AssetSystem, User, Vuln, VulnComment, VulnFlow
 from ..schemas import (
     VulnAssign,
     VulnCommentOut,
@@ -21,8 +21,9 @@ from ..schemas import (
     VulnUpdate,
 )
 from ..security import get_current_user, write_operation_log
-from ..state_machine import TRANSITIONS, validate_action
+from ..state_machine import STATUS_NAMES, TRANSITIONS, validate_action
 from ..utils import network_clock as nc
+from ..utils.vuln_docx import SEV_ZH, render_vulns_docx
 
 # 导出文件与页面展示一致：DB 存 naive UTC，展示统一转东八区(北京时间)
 from zoneinfo import ZoneInfo
@@ -37,10 +38,7 @@ def _cn_strftime(dt) -> str:
 
 router = APIRouter(prefix="/api/vulns", tags=["漏洞管理"])
 
-STATUS_NAMES = {
-    "draft": "草稿", "pending": "待确认", "confirmed": "已确认", "fixing": "修复中",
-    "retest": "待复测", "fixed": "已修复", "closed": "已关闭", "rejected": "已驳回", "ignored": "已忽略",
-}
+# STATUS_NAMES 已收敛到 state_machine（单一来源），此处不再本地维护一份副本。
 
 
 def _to_out(v: Vuln, db: Session) -> VulnOut:
@@ -100,6 +98,43 @@ def _apply_status_filter(query, status: str | None):
     if len(codes) == 1:
         return query.filter(Vuln.status == codes[0])
     return query.filter(Vuln.status.in_(codes))
+
+
+def _describe_scope(
+    db: Session,
+    *,
+    status: str | None = None,
+    severity: str | None = None,
+    system_id: int | None = None,
+    mine: bool = False,
+    assigned_to_me: bool = False,
+    ids: str | None = None,
+) -> str:
+    """把导出筛选条件翻译成报告封面/附录用的自然语言范围描述。
+
+    为什么要有：报告一旦离开系统（打印、外发），读者只能从文档本身判断
+    "这份清单是哪一批数据"。不写清范围，几份不同筛选的报告混在一起就分不出来了。
+    """
+    parts: list[str] = []
+    if ids:
+        parts.append(f"指定漏洞（{len([x for x in ids.split(',') if x.strip()])} 条）")
+    if status:
+        names = " / ".join(
+            STATUS_NAMES.get(s.strip(), s.strip())
+            for s in status.split(",") if s.strip()
+        )
+        if names:
+            parts.append(f"状态：{names}")
+    if severity:
+        parts.append(f"等级：{SEV_ZH.get(severity, severity)}")
+    if system_id:
+        row = db.query(AssetSystem).filter(AssetSystem.id == system_id).first()
+        parts.append(f"所属系统：{row.name if row else system_id}")
+    if assigned_to_me:
+        parts.append("指派给我的漏洞")
+    elif mine:
+        parts.append("与我相关（我提交或我负责）")
+    return " · ".join(parts) if parts else "全部漏洞"
 
 
 @router.get("", response_model=list[VulnOut])
@@ -173,9 +208,13 @@ def export_vulns(
     vulns = query.order_by(Vuln.created_at.desc()).all()
     rows = [_to_out(v, db) for v in vulns]
 
+    scope_desc = _describe_scope(
+        db, status=status, severity=severity, system_id=system_id,
+        mine=mine, assigned_to_me=assigned_to_me, ids=ids,
+    )
     if fmt == "csv":
         return _export_csv(rows)
-    return _export_docx(rows)
+    return _export_docx(rows, exported_by=current.full_name, scope_desc=scope_desc)
 
 
 def _export_csv(rows: list[VulnOut]):
@@ -188,7 +227,8 @@ def _export_csv(rows: list[VulnOut]):
     for r in rows:
         writer.writerow([
             r.id, r.title, r.system_name or "", r.api_endpoint or "",
-            {"critical": "严重", "high": "高危", "medium": "中危", "low": "低危"}.get(r.severity, r.severity),
+            # 等级中文化统一走 vuln_docx.SEV_ZH（Word 报告同源），避免两处各写一份
+            SEV_ZH.get(r.severity, r.severity),
             r.vuln_category or "", r.vuln_type or "", STATUS_NAMES.get(r.status, r.status),
             r.reporter_name or "", r.assignee_name or "未指派", r.reviewer_name or "",
             _cn_strftime(r.created_at),
@@ -197,189 +237,36 @@ def _export_csv(rows: list[VulnOut]):
     return StreamingResponse(
         iter([data]),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="vulns.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="vulns-{nc.now().strftime("%Y%m%d-%H%M")}.csv"'},
     )
 
 
-def _export_docx(rows: list[VulnOut]):
-    from docx import Document
-    from docx.shared import Pt, Inches
-    from docx.oxml.ns import qn
+def _export_docx(rows: list[VulnOut], *, exported_by: str | None = None,
+                 scope_desc: str | None = None):
+    """生成漏洞清单 Word 报告（商业级排版）。
 
-    def _set_cn_font(run, font_name="Microsoft YaHei", size=None):
-        """同时设置 ascii / hAnsi / eastAsia 三个字体族,避免中文显示为方块。"""
-        run.font.name = font_name
-        rPr = run._element.get_or_add_rPr()
-        rFonts = rPr.find(qn("w:rFonts"))
-        if rFonts is None:
-            rFonts = rPr.makeelement(qn("w:rFonts"), {})
-            rPr.insert(0, rFonts)
-        rFonts.set(qn("w:eastAsia"), font_name)
-        rFonts.set(qn("w:ascii"), font_name)
-        rFonts.set(qn("w:hAnsi"), font_name)
-        rFonts.set(qn("w:cs"), font_name)
-        if size is not None:
-            run.font.size = Pt(size)
+    排版逻辑集中在 ``utils.vuln_docx``（封面 / 统计概览 / 横向清单表 / 逐条详情 /
+    页眉页脚页码 / 附录），路由层只负责"渲染 + 包成下载响应"。
 
-    def _add_cn_paragraph(doc, text, size=10, bold=False):
-        p = doc.add_paragraph()
-        run = p.add_run(text)
-        _set_cn_font(run, size=size)
-        run.bold = bold
-        return p
-
-    def _data_url_to_bytes(data_url: str) -> bytes | None:
-        """把 data:image/png;base64,xxx 还原成图片字节。"""
-        if not data_url or not isinstance(data_url, str):
-            return None
-        if data_url.startswith("data:"):
-            comma = data_url.find(",")
-            if comma < 0:
-                return None
-            head = data_url[:comma]
-            payload = data_url[comma + 1 :]
-            if "base64" in head:
-                import base64
-                try:
-                    return base64.b64decode(payload)
-                except Exception:
-                    return None
-            # 非 base64,按 utf-8 解码后当文本
-            return payload.encode("utf-8", errors="ignore")
-        # 已是裸 url 或本地路径,暂不下载(避免依赖网络)
-        return None
-
-    def _add_image(doc, data_url: str, width_inches: float = 4.5):
-        img_bytes = _data_url_to_bytes(data_url)
-        if not img_bytes:
-            return False
-        try:
-            doc.add_picture(io.BytesIO(img_bytes), width=Inches(width_inches))
-            return True
-        except Exception:
-            return False
-
-    doc = Document()
-    # 全局 Normal 样式:把 ascii/hAnsi/eastAsia 都设为中文字体
-    style = doc.styles["Normal"]
-    style.font.name = "Microsoft YaHei"
-    style.font.size = Pt(10)
-    rpr = style.element.get_or_add_rPr()
-    rfonts = rpr.find(qn("w:rFonts"))
-    if rfonts is None:
-        rfonts = rpr.makeelement(qn("w:rFonts"), {})
-        rpr.insert(0, rfonts)
-    rfonts.set(qn("w:eastAsia"), "Microsoft YaHei")
-    rfonts.set(qn("w:ascii"), "Microsoft YaHei")
-    rfonts.set(qn("w:hAnsi"), "Microsoft YaHei")
-    rfonts.set(qn("w:cs"), "Microsoft YaHei")
-
-    # 标题:用 heading 样式(本身可能用 Calibri),再覆盖中文字体
-    title = doc.add_heading("漏洞清单", level=1)
-    for run in title.runs:
-        _set_cn_font(run, size=20, font_name="Microsoft YaHei")
-    _add_cn_paragraph(doc, f"导出时间：{nc.now().strftime('%Y-%m-%d %H:%M')}    共 {len(rows)} 条", size=10)
-
-    table = doc.add_table(rows=1, cols=10)
-    table.style = "Light Grid Accent 1"
-    hdr = table.rows[0].cells
-    for i, h in enumerate(["ID", "标题", "系统", "接口地址", "等级", "大类", "类型", "状态", "负责人", "创建时间"]):
-        hdr[i].text = ""  # 先清空,再用 run 写入并设置中文字体
-        run = hdr[i].paragraphs[0].add_run(h)
-        _set_cn_font(run, size=10)
-        run.bold = True
-    sev_map = {"critical": "严重", "high": "高危", "medium": "中危", "low": "低危"}
-    for r in rows:
-        cells = table.add_row().cells
-        values = [
-            str(r.id),
-            r.title or "",
-            r.system_name or "",
-            r.api_endpoint or "",
-            sev_map.get(r.severity, r.severity or ""),
-            r.vuln_category or "",
-            r.vuln_type or "",
-            STATUS_NAMES.get(r.status, r.status or ""),
-            r.assignee_name or "未指派",
-            _cn_strftime(r.created_at),
-        ]
-        for i, v in enumerate(values):
-            cells[i].text = ""
-            run = cells[i].paragraphs[0].add_run(str(v))
-            _set_cn_font(run, size=10)
-
-    # 详情段落(含截图嵌入)
-    if rows:
-        doc.add_paragraph()
-        h2 = doc.add_heading("漏洞详情", level=2)
-        for run in h2.runs:
-            _set_cn_font(run, size=14)
-        for r in rows:
-            h3 = doc.add_heading(f"#{r.id} {r.title}", level=3)
-            for run in h3.runs:
-                _set_cn_font(run, size=12)
-            _add_cn_paragraph(
-                doc,
-                f"所属系统：{r.system_name or '—'}    接口地址：{r.api_endpoint or '—'}    等级：{sev_map.get(r.severity, r.severity or '')}    状态：{STATUS_NAMES.get(r.status, r.status or '')}",
-                size=10,
-            )
-            _add_cn_paragraph(
-                doc,
-                f"漏洞类型：{r.vuln_category or '—'} / {r.vuln_type or '—'}",
-                size=10,
-            )
-            _add_cn_paragraph(
-                doc,
-                f"提交人：{r.reporter_name or '—'}    负责人：{r.assignee_name or '未指派'}    复测人：{r.reviewer_name or '—'}",
-                size=10,
-            )
-            if r.description:
-                _add_cn_paragraph(doc, f"【漏洞描述】{r.description}", size=10)
-            if r.reproduce_steps:
-                _add_cn_paragraph(doc, f"【复现步骤】{r.reproduce_steps}", size=10)
-            if r.impact:
-                _add_cn_paragraph(doc, f"【影响范围】{r.impact}", size=10)
-            if r.fix_suggestion:
-                _add_cn_paragraph(doc, f"【修复建议】{r.fix_suggestion}", size=10)
-
-            # 复现步骤截图(每步配图)
-            if r.step_screenshots:
-                _add_cn_paragraph(doc, f"【复现步骤截图】共 {len(r.step_screenshots)} 张", size=10, bold=True)
-                ok = 0
-                last_no = None
-                for shot in r.step_screenshots:
-                    data_url = (shot or {}).get("data_url") if isinstance(shot, dict) else None
-                    step_no = (shot or {}).get("step_no") if isinstance(shot, dict) else None
-                    # 一步可以有多张图（同一个 step_no 多条），标题只在换步时打一次
-                    if step_no is not None and step_no != last_no:
-                        _add_cn_paragraph(doc, f"步骤 {step_no}:", size=10)
-                        last_no = step_no
-                    if data_url and _add_image(doc, data_url):
-                        ok += 1
-                    else:
-                        _add_cn_paragraph(doc, "  (图片数据无法解析,略)", size=10)
-                if ok == 0:
-                    _add_cn_paragraph(doc, "  (所有步骤截图均无法解析,需通过系统查看)", size=10)
-
-            # 兼容旧字段:全局截图列表
-            if r.screenshots:
-                _add_cn_paragraph(doc, f"【截图证据】共 {len(r.screenshots)} 张", size=10, bold=True)
-                ok = 0
-                for url in r.screenshots:
-                    if _add_image(doc, url):
-                        ok += 1
-                if ok == 0:
-                    _add_cn_paragraph(doc, "  (截图数据无法解析,需通过系统查看)", size=10)
-            doc.add_paragraph("")
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
+    为什么重写（用户反馈："批量导出的 word 报告格式有点问题"）：
+        旧实现 ``doc.add_table(rows=1, cols=10)`` 且**不设列宽** —— A4 纵向版心
+        16.4cm 被 10 等分，每列约 1.6cm，长文本被压成一字一行（标题竖排、ID 断成
+        两行、接口地址只剩一列竖字）。Word 是固定表格布局，列宽必须显式写进
+        tblGrid/tcW（见 ``vuln_docx._set_col_widths``），并且清单章改用**横向**
+        版心 25.1cm，10 列才有合理宽度。
+    """
+    data = render_vulns_docx(rows, exported_by=exported_by, scope_desc=scope_desc)
+    stamp = nc.now().strftime("%Y%m%d-%H%M")
     return StreamingResponse(
-        iter([buf.getvalue()]),
+        iter([data]),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": 'attachment; filename="vulns.docx"'},
+        headers={"Content-Disposition": f'attachment; filename="vulns-report-{stamp}.docx"'},
     )
+
+
+
+
+
 
 
 @router.get("/{vuln_id}", response_model=VulnOut)

@@ -35,6 +35,22 @@ class VulnState:
     IGNORED = "ignored"
 
 
+# 状态 -> 中文名。**唯一来源**：路由层（提示文案）、导出报告都从这里取，
+# 避免同一个状态在页面写「已修复」、在 Word 报告里写成别的（历史上有过一份
+# 各自维护的副本，加状态时漏改一处就出现两种叫法）。
+STATUS_NAMES = {
+    VulnState.DRAFT: "草稿",
+    VulnState.PENDING: "待确认",
+    VulnState.CONFIRMED: "已确认",
+    VulnState.FIXING: "修复中",
+    VulnState.RETEST: "待复测",
+    VulnState.FIXED: "已修复",
+    VulnState.CLOSED: "已关闭",
+    VulnState.REJECTED: "已驳回",
+    VulnState.IGNORED: "已忽略",
+}
+
+
 # 每个动作允许的角色（使用角色 code）
 # admin=超管, secops=安全专家, dev=研发人员, tester=测试人员, user=普通员工
 ACTION_RULES = {
