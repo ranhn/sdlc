@@ -21,4 +21,7 @@ set DATABASE_URL=sqlite:///./security_platform.db
 REM 启动
 REM 使用统一入口 main.py（同时挂载 SDLC 业务子应用 + /threat AI 威胁建模 + Vue3 前端 SPA）
 REM 单独的 app.app_entry:app 不会挂载威胁建模，会导致 /threat/api/* 全部 404
-uvicorn main:app --host 127.0.0.1 --port 8001 --reload --no-use-colors
+REM --timeout-graceful-shutdown 10：--reload 触发重启时，旧进程默认会**无限**等
+REM 客户端连接关闭（浏览器/代理的 keep-alive 连接会让它一直等），结果是新进程起不来、
+REM 8001 直接没响应（本地开发踩过：改完后端代码接口就挂了）。给个 10 秒上限即可自愈。
+uvicorn main:app --host 127.0.0.1 --port 8001 --reload --no-use-colors --timeout-graceful-shutdown 10

@@ -3,17 +3,20 @@
     <!-- 统计卡片 -->
     <el-row :gutter="16" class="stat-row">
       <el-col :span="4" v-for="s in statCards" :key="s.label">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-inner">
-            <div class="stat-icon" :style="{ background: s.bg, color: s.color }">
-              <el-icon :size="22"><component :is="s.icon" /></el-icon>
+        <!-- 口径说明（如「已修复」其实是闭环口径）：鼠标悬停卡片时提示 -->
+        <el-tooltip :content="s.tip" placement="bottom" :disabled="!s.tip">
+          <el-card shadow="hover" class="stat-card">
+            <div class="stat-inner">
+              <div class="stat-icon" :style="{ background: s.bg, color: s.color }">
+                <el-icon :size="22"><component :is="s.icon" /></el-icon>
+              </div>
+              <div class="stat-info">
+                <div class="stat-value">{{ s.value }}</div>
+                <div class="stat-label">{{ s.label }}</div>
+              </div>
             </div>
-            <div class="stat-info">
-              <div class="stat-value">{{ s.value }}</div>
-              <div class="stat-label">{{ s.label }}</div>
-            </div>
-          </div>
-        </el-card>
+          </el-card>
+        </el-tooltip>
       </el-col>
     </el-row>
 
@@ -85,8 +88,15 @@ const statCards = reactive([
   { label: '漏洞总数', value: 0, icon: 'Warning', bg: '#eff6ff', color: '#3b82f6' },
   { label: '待修复', value: 0, icon: 'RemoveFilled', bg: '#fef3c7', color: '#f59e0b' },
   { label: '高危', value: 0, icon: 'BellFilled', bg: '#fee2e2', color: '#ef4444' },
-  { label: '已修复', value: 0, icon: 'CircleCheck', bg: '#dcfce7', color: '#22c55e' },
-  { label: '修复率', value: '0%', icon: 'TrendCharts', bg: '#f3e8ff', color: '#8b5cf6' },
+  {
+    label: '已修复', value: 0, icon: 'CircleCheck', bg: '#dcfce7', color: '#22c55e',
+    // 口径与漏洞列表状态列一致：这几种状态都算"已修复"，趋势图「修复」线同口径
+    tip: '口径：已修复 + 已关闭 + 已忽略/已驳回（按状态列统计），与趋势图「修复」线一致。',
+  },
+  {
+    label: '修复率', value: '0%', icon: 'TrendCharts', bg: '#f3e8ff', color: '#8b5cf6',
+    tip: '修复率 = 已修复 + 已关闭 + 已忽略/已驳回 / 漏洞总数',
+  },
   { label: '平均修复时长', value: '0h', icon: 'Timer', bg: '#ecfeff', color: '#06b6d4' },
 ])
 
@@ -119,6 +129,8 @@ function renderTrend(chart, data) {
     grid: { left: 40, right: 20, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: dates },
     yAxis: { type: 'value', minInterval: 1 },
+    // 「修复」= 状态为已修复 / 已关闭 / 已忽略·已驳回 的漏洞（状态列里这几种都算已修复），
+    // 与上方「已修复」卡片、修复率同口径，故不再单列「驳回」线
     series: [
       { name: '新增', type: 'line', smooth: true, data: data.map((d) => d.created), itemStyle: { color: '#3b82f6' }, areaStyle: { opacity: 0.1 } },
       { name: '修复', type: 'line', smooth: true, data: data.map((d) => d.fixed), itemStyle: { color: '#22c55e' }, areaStyle: { opacity: 0.1 } },
@@ -153,7 +165,7 @@ async function loadAndRender(t, top, sev, ty, st) {
     statCards[0].value = o.total
     statCards[1].value = o.open
     statCards[2].value = o.critical + o.high
-    statCards[3].value = o.closed
+    statCards[3].value = o.fixed_total ?? o.closed
     statCards[4].value = o.fix_rate + '%'
     statCards[5].value = o.avg_fix_hours + 'h'
 

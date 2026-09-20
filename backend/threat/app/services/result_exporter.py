@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from functools import lru_cache
 from typing import Any
@@ -2312,16 +2313,29 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
     # ---------- 系统分解（DFD 图 + 图例 + 元素清单 + 信任边界） ----------
     # 按模型里已持久化的坐标在后端复现前端画布（泳道/信任边界/节点/数据流
     # 全要素），渲染失败时降级为无图报告（不阻断导出）。
-    try:
-        from .dfd_renderer import render_dfd_png, DfdRenderError
+    # 渲染失败会退化成"无图报告"，而这件事对用户完全不可见（只多一行灰色小字，
+    # 很容易被当成"报告本来就没图"）——用户反馈过"导出的 Word 报告没有数据流图"，
+    # 现场（后端 --reload 重载、瞬时资源紧张、字体/依赖半初始化）却已无法复现。
+    # 因此这里：失败重试一次；仍失败则把**失败原因写进报告正文**并打 ERROR 日志，
+    # 让下一次出现时能直接看到原因，而不是又收到一份"少了一张图"的报告。
+    dfd_err = ""
+    png = None
+    for attempt in (1, 2):
+        try:
+            from .dfd_renderer import render_dfd_png, DfdRenderError
 
-        png = render_dfd_png(record)
-    except DfdRenderError as exc:
-        png = None
-        logger.warning("DFD 渲染降级（无图导出）: %s", exc)
-    except Exception as exc:  # noqa: BLE001
-        png = None
-        logger.warning("DFD 渲染异常（无图导出）: %s", exc)
+            png = render_dfd_png(record)
+            dfd_err = ""
+            break
+        except DfdRenderError as exc:
+            dfd_err = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            dfd_err = f"{type(exc).__name__}: {exc}"
+        if attempt == 1:
+            logger.warning("DFD 渲染失败，重试一次（结果 %s）：%s", record.get("id"), dfd_err)
+            time.sleep(0.5)
+    if png is None and dfd_err:
+        logger.error("DFD 渲染失败，该报告将不含数据流图（结果 %s）：%s", record.get("id"), dfd_err)
 
     _no_d = chapter_no["decomposition"]
     _h1(_no_d, CHAPTER_TITLES['decomposition'])
@@ -2352,9 +2366,15 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         cap_run.font.color.rgb = RGBColor(0x8A, 0x94, 0xA6)
         cap_run.bold = True
     else:
-        doc.add_paragraph(
-            "（本次结果未包含可渲染的数据流图，或图片渲染失败。）"
-        ).runs[0].font.color.rgb = RGBColor(0x8A, 0x94, 0xA6)
+        # 无图必须写清原因：只写"没有图"，用户无法判断是数据问题还是渲染故障，
+        # 我们也拿不到现场。渲染报错时用红字把原因带出来（并已打 ERROR 日志）。
+        _no_img_p = doc.add_paragraph(
+            f"（数据流图渲染失败：{dfd_err}）" if dfd_err
+            else "（本次结果未包含可渲染的数据流图。）"
+        )
+        _no_img_p.runs[0].font.color.rgb = (
+            RGBColor(0xC0, 0x39, 0x2B) if dfd_err else RGBColor(0x8A, 0x94, 0xA6)
+        )
 
     # ---- 图例说明 ----
     _h2(f"{_no_d}.1", "图例说明")

@@ -1190,7 +1190,13 @@ async function onAnalyzeRequest(payload) {
     store.updateProgress(0, '任务已提交，等待后端返回进度…')
     store.appendLog('任务已提交 (ID: ' + taskId.slice(0, 8) + ')')
     if (submitResp?.deduped) {
-      store.appendLog('同输入在 5 秒窗口内复用已有任务（去重命中）', 'detail')
+      // 后端按"同 owner + 同输入指纹 + 任务在跑/刚跑完"去重：直接复用已有任务，
+      // 不会再跑一轮模型、也不会多落一份结果（否则同一份输入会出现两份建模结果）。
+      store.appendLog('同一份输入刚提交过，复用已有任务/结果（未重复调用模型）', 'detail')
+      ElMessage.info({
+        message: '输入与上次相同：已复用上次的建模任务/结果，未重复建模。如需重新生成，请稍后再提交。',
+        duration: 4000,
+      })
     }
     startTaskPolling(taskId)
   } catch (err) {

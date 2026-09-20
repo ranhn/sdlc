@@ -218,18 +218,24 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
             continue  # 空边界不画（与前端 visible:false 一致）
         style = NODE_STYLE["tm.BoundaryBox"]
         x0, y0, x1, y1 = _rect_of(c)
-        # 收缩/拉宽到子节点实际范围：建模产物里边界框可能远大于内容
-        # （布局兜底尺寸 / 成员推断偏差），大片空白也被涂上底色会连成
-        # 灰板。规则与前端 DfdGraph.boundaryLayout 完全同口径：
+        # 收缩到子节点实际范围：建模产物里边界框可能远大于内容
+        # （布局兜底尺寸 / 成员推断偏差）。规则与前端 DfdGraph.boundaryLayout
+        # 完全同口径：
         #   垂直 = 只缩不涨（内容 ± 26，泳道上下堆叠，竖向膨胀会互压）；
-        #   水平 = 主动拉宽到内容 ± 240（纵向长条 DFD 在宽画布上两侧
-        #   全是空白，泳道作为背景应伸展填满），允许超出模型原始矩形，
-        #   但不得侵入水平相邻泳道（垂直重叠、水平不相交）的领地。
+        #   水平 = 内容 ± 26，且**钳在所在泳道带的左右边界内**。
+        # 水平以前是"主动拉宽到内容 ± 240"（想让边界像分区带一样撑满画布），
+        # 结果虚线框横跨到泳道外面、甚至探出画布两侧 —— 用户反馈"框太大、
+        # 都到外面去了，应该刚好在泳道边界内"。无底色之后大框只剩一圈空虚线，
+        # 更没有存在的理由，收进泳道带内才对得上"分区"语义。
         _inner = _boundary_children_bbox(c, all_cells)
         if _inner:
-            _stretch_x, _pad_y = 240.0, 26.0
-            _fx0 = min(x0, _inner[0] - _stretch_x)
-            _fx1 = max(x1, _inner[2] + _stretch_x)
+            _pad_x, _pad_y = 26.0, 26.0
+            _fx0 = _inner[0] - _pad_x
+            _fx1 = _inner[2] + _pad_x
+            _lane = _primary_lane_span(lanes, _inner)
+            if _lane:
+                _fx0 = max(_fx0, _lane[0])
+                _fx1 = min(_fx1, _lane[1])
             for _ob in boundary_cells:
                 if _ob is c:
                     continue
@@ -267,11 +273,11 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
         _drawn_tb.append(_rect_now)
         px0, py0 = P(x0, y0)
         px1, py1 = P(x1, y1)
-        # 容器底色：预混白减淡——多个边界矩形在异常模型里可能大面积
-        # 重叠（历史记录里两个边界几何几乎重合），原色叠两层会形成
-        # 明显灰色色块；45% 叠白后重叠也只剩极浅色差。
-        draw.rounded_rectangle([px0, py0, px1, py1], radius=S(6),
-                               fill=_blend_white(style["fill"], 0.45))
+        # 信任边界**不填底色**，只画虚线框 + 左上角名称标签。
+        # 用户反馈（导出 Word 里的图）：边界矩形通常横跨好几条泳道，填底色会把
+        # 泳道底色带、泳道分隔线和左侧竖排泳道名一并盖掉，"泳道分区"这层信息就没了。
+        # 现在不画底色，泳道原样透出；顺带也不再需要"预混白减淡"去处理多个边界
+        # 重叠的灰块问题（无底色即无叠色）。与 Threat Dragon 惯例一致：信任边界=虚线框。
         # 名称标签（容器左上角）——标签底色仍用原色，保证在浅底上可读
         name = (c.get("data") or {}).get("name") or ""
         if name and f_lane:
@@ -849,17 +855,22 @@ def _boundary_child_count(boundary: dict, cells: list[dict]) -> int:
     return n
 
 
-def _blend_white(hex_color: str, alpha: float) -> str:
-    """把颜色按透明度 alpha 叠到白底上（PIL 无真 alpha 合成，预先混色）。
+def _primary_lane_span(lanes: list[dict], inner: tuple[float, float, float, float]):
+    """与内容范围垂直重叠最多的那条泳道的水平跨度 (x0, x1)；无泳道返回 None。
 
-    信任边界底色用它减淡：异常模型里多个边界矩形可能大面积重叠（历史
-    记录里两个边界几何几乎重合），原色叠两层会形成明显的灰色色块；
-    预混白后即使重叠也只剩极浅的冷暖差。
+    信任边界的水平范围以它为准（钳在泳道带内）——泳道是分区的权威几何，
+    边界不该越过它跑到画布两侧外面去。
     """
-    h = (hex_color or "#ffffff").lstrip("#")
-    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-    mix = lambda c: int(round(c * alpha + 255 * (1 - alpha)))  # noqa: E731
-    return f"#{mix(r):02x}{mix(g):02x}{mix(b):02x}"
+    best = None
+    best_overlap = 0.0
+    for lane in lanes or []:
+        ly0 = lane.get("y", 0)
+        ly1 = ly0 + lane.get("height", 0)
+        overlap = min(ly1, inner[3]) - max(ly0, inner[1])
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = (lane.get("x", 0), lane.get("x", 0) + lane.get("width", 0))
+    return best
 
 
 def _boundary_children_bbox(boundary: dict, cells: list[dict]):
@@ -893,7 +904,7 @@ def _mini_shape(draw, shape: str, x0: float, y0: float, x1: float, y1: float, S)
     if figure == "cylinder":
         _cylinder(draw, x0, y0, x1, y1, sp["fill"], sp["stroke"], lw)
     elif shape == "tm.BoundaryBox":
-        draw.rectangle([x0, y0, x1, y1], fill=_blend_white(sp["fill"], 0.45))
+        # 与主图/导出图同口径：信任边界只画虚线框，不填底色（图例要能对上真实画法）
         _dashed_rect(draw, x0, y0, x1, y1, sp["stroke"], lw, (3, 2), S)
     else:
         h = y1 - y0

@@ -63,14 +63,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ----------------------------------------------------------------------
-# P0-1：In-flight 任务去重（5 秒窗口）
+# P0-1：同输入任务去重（按任务真实状态，而不是提交后的固定秒数窗口）
 # ----------------------------------------------------------------------
-# 同一 owner 在 5 秒内对相同 fingerprint 提交分析请求，视为重复提交：
-# 直接复用已注册的 task_id（前端轮询同一任务），不再开新的 LLM 任务。
-# 任务结束（success / fail / cancel）必须 _unregister_inflight 释放，
-# 否则用户在 5 秒内不能再次重提（用户感知：按钮无效）。
-_INFLIGHT: dict[tuple[str, str], tuple[float, str]] = {}
-_INFLIGHT_TTL_SEC = 5.0
+# 同一 owner 对相同 fingerprint 重复提交（用户连点两次「开始分析」、前端重试、
+# 以为没提交成功又来一次）时复用已有任务，而不是新开一轮 LLM：
+#   · 任务还在 pending / running → 复用：否则两个任务**并跑**，同一份输入落两份
+#     结果、烧两份 token（用户反馈「同一个任务生成了两份建模结果」就是这个）；
+#   · 任务刚成功（≤ _REUSE_FINISHED_SEC 秒）→ 也复用：前端轮询它立刻拿到已完成
+#     结果并跳到结果页，用户看到的就是刚生成的那份，不白跑一轮；
+#   · 其余情况（失败/取消/已过窗口）→ 放行，用户确实想基于同一份输入再跑一轮
+#     （「版本对比」就是靠多次结果做的）。
+# 注意：任务结束后**不**释放这个映射 —— 老实现是「5 秒 TTL + 任务结束即释放」，
+# 恰好把"跑完马上又点一次"和"间隔 >5 秒的重复提交"这两条最常见的重复路径漏掉。
+_REUSE_FINISHED_SEC = 180.0
+_INFLIGHT: dict[tuple[str, str], str] = {}
+
+
+def _reusable_task_id(task_id: str | None) -> str | None:
+    """该任务现在还能被复用吗？可复用则返回 task_id，否则 None。"""
+    if not task_id:
+        return None
+    try:
+        task = task_manager.get(task_id)
+    except TaskNotFoundError:
+        return None  # 已被 TTL 清理，或后端重启过（内存任务丢失）
+    status = str(task.get("status") or "")
+    if status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        return task_id
+    if status == TaskStatus.SUCCESS:
+        finished = task.get("finished_at") or 0
+        if finished and nc.epoch() - finished <= _REUSE_FINISHED_SEC:
+            return task_id
+    return None
 
 
 def _compute_fingerprint(req: AnalyzeRequest) -> str:
@@ -100,20 +124,12 @@ def _compute_fingerprint(req: AnalyzeRequest) -> str:
 
 
 def _register_inflight(owner: str, fp: str, task_id: str) -> None:
-    """登记一个正在跑的任务，TTL 内同 owner+fp 的请求会复用。"""
-    now = nc.epoch()
-    # 顺手清理过期键，避免长时间运行后 dict 膨胀
-    for k, (ts, _) in list(_INFLIGHT.items()):
-        if now - ts > _INFLIGHT_TTL_SEC:
-            _INFLIGHT.pop(k, None)
-    _INFLIGHT[(owner, fp)] = (now, task_id)
+    """登记 owner+fingerprint → task_id；顺手清掉已不可复用的旧条目。"""
+    for key, tid in list(_INFLIGHT.items()):
+        if _reusable_task_id(tid) is None:
+            _INFLIGHT.pop(key, None)
+    _INFLIGHT[(owner, fp)] = task_id
 
-
-def _unregister_inflight(owner: str, fp: str, task_id: str) -> None:
-    """任务结束（无论 success/fail/cancel）时释放 in-flight 槽位。"""
-    cur = _INFLIGHT.get((owner, fp))
-    if cur and cur[1] == task_id:
-        _INFLIGHT.pop((owner, fp), None)
 
 # 根据配置初始化限流参数
 rate_limiter.set_config(settings.rate_limit_per_minute)
@@ -306,8 +322,9 @@ async def analyze(
     真实的分析流程在后台执行，前端通过 ``GET /api/tasks/{task_id}``
     轮询进度与结果。流程：文档 -> DFD 数据流图 -> STRIDE 威胁 -> 威胁模型。
 
-    P0-1 in-flight 去重：同 owner + 同 fingerprint 在 5 秒内视为重复提交，
-    直接复用已注册的 task_id（前端轮询同一任务），不再开新的 LLM 任务。
+    P0-1 同输入去重：同 owner + 同 fingerprint 若已有任务在跑、或刚跑完
+    （≤ ``_REUSE_FINISHED_SEC``），复用该 task_id（前端轮询同一任务），
+    不再开新的 LLM 任务 —— 否则同一份输入会落两份结果（用户反馈过）。
     """
     # 输入长度校验
     validate_input_chars(request)
@@ -318,27 +335,32 @@ async def analyze(
     owner_username = (current_user or {}).get("username") or ""
     fingerprint = _compute_fingerprint(request)
 
-    # P0-1 in-flight 去重：同 owner + 同 fp 在 TTL 内复用 task_id
+    # P0-1 同输入去重：任务还在跑 / 刚成功 → 复用，不再新开任务
     if owner_username:
-        existing = _INFLIGHT.get((owner_username, fingerprint))
-        if existing:
-            ts, existing_tid = existing
-            if nc.epoch() - ts <= _INFLIGHT_TTL_SEC:
-                logger.info(
-                    "P0-1 in-flight 去重：复用 task_id=%s（owner=%s, fp=%s, age=%.2fs）",
-                    existing_tid, owner_username, fingerprint, nc.epoch() - ts,
-                )
-                return AnalyzeResponse(
-                    task_id=existing_tid,
-                    status=TaskStatus.RUNNING,
-                    steps=analyze_steps,
-                    deduped=True,
-                )
+        reused_tid = _reusable_task_id(_INFLIGHT.get((owner_username, fingerprint)))
+        if reused_tid:
+            try:
+                reused_status = task_manager.get(reused_tid).get("status") or TaskStatus.RUNNING
+            except TaskNotFoundError:
+                reused_status = TaskStatus.RUNNING
+            logger.info(
+                "P0-1 去重：同输入复用 task_id=%s（owner=%s, fp=%s, status=%s）",
+                reused_tid, owner_username, fingerprint, reused_status,
+            )
+            return AnalyzeResponse(
+                task_id=reused_tid,
+                status=reused_status,
+                steps=analyze_steps,
+                deduped=True,
+            )
 
     # 创建任务并立即返回
     task_id = task_manager.create(analyze_steps)
     task_manager.mark_running(task_id)
     if owner_username:
+        # 注意：这个映射**不在任务结束时删除** —— 保留它，"跑完马上又提交一次"
+        # 才能复用同一份结果；能不能复用由任务状态 + _REUSE_FINISHED_SEC 判定
+        # （见 _reusable_task_id），已过期的条目会在下次登记时被清掉。
         _register_inflight(owner_username, fingerprint, task_id)
 
     # 后台执行完整分析
@@ -474,7 +496,6 @@ async def _run_analysis_task(
     fingerprint: str | None = None,
 ) -> None:
     """后台执行完整的 AI 威胁建模流程，并逐步上报进度。"""
-    owner_username = (owner or {}).get("username") or ""
     # 开始收集本次建模产生的 LLM 响应缓存键（供删除结果时精准失效）
     from ..services.llm_cache import begin_cache_run, end_cache_run
     begin_cache_run()
@@ -812,11 +833,9 @@ async def _run_analysis_task(
         logger.exception("分析任务 %s 失败", task_id)
         http_exc = _map_llm_error(exc)
         task_manager.fail(task_id, http_exc.detail, status_code=http_exc.status_code)
-    finally:
-        # P0-1：任务结束（无论成功/失败/取消）必须释放 in-flight 槽位，
-        # 否则用户在 5 秒窗口内无法再次提交相同输入。
-        if owner_username and fingerprint:
-            _unregister_inflight(owner_username, fingerprint, task_id)
+    # P0-1：**不**在这里释放 (owner, fingerprint) → task_id 的映射。
+    # 老实现任务一结束就释放，导致"跑完马上又点一次"必然新开一轮、多落一份结果；
+    # 现在可复用性交给 _reusable_task_id（任务状态 + _REUSE_FINISHED_SEC）判定。
 
 
 def _count_by_severity(threats: list[dict]) -> dict[str, int]:

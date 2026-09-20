@@ -7,7 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import CVEInfo, CourseProgress, QuizExam, ScanResult, SBOMComponent, TrainingCourse, User, Vuln
+from ..models import CVEInfo, CourseProgress, QuizExam, ScanResult, SBOMComponent, TrainingCourse, User, Vuln, VulnFlow
 from ..security import get_current_user
 from ..vuln_taxonomy import TYPE_TO_CATEGORY
 
@@ -16,6 +16,9 @@ router = APIRouter(prefix="/api/dashboard", tags=["数据大盘"])
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 CLOSED_STATUSES = {"closed", "rejected", "ignored"}
+# 前端漏洞状态列里，这几种都算「已修复」：已修复 / 已关闭 / 已忽略·已驳回。
+# 大盘的「已修复」卡片、修复率、趋势图的「修复」线统一用这个口径，避免三处对不上。
+CLOSURE_STATUSES = {"fixed"} | CLOSED_STATUSES
 
 
 @router.get("/overview")
@@ -30,7 +33,7 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
     closed = sum(1 for v in vulns if v.status in CLOSED_STATUSES)
 
     # 修复率 = (已修复 + 已关闭 + 已驳回 + 已忽略) / 总数
-    fixed_count = sum(1 for v in vulns if v.status in CLOSED_STATUSES or v.status == "fixed")
+    fixed_count = sum(1 for v in vulns if v.status in CLOSURE_STATUSES)
     fix_rate = round(fixed_count / total * 100, 1) if total else 0
 
     # 平均修复时长（小时），取有 fixed_at 的
@@ -65,6 +68,8 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
         "high": high,
         "fixing": fixing,
         "closed": closed,
+        # 「已修复」卡片用的口径：已修复 + 已关闭 + 已驳回 + 已忽略（与修复率、趋势图一致）
+        "fixed_total": fixed_count,
         "fix_rate": fix_rate,
         "avg_fix_hours": avg_fix_hours,
         "month_new": month_new,
@@ -79,21 +84,56 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
 
 @router.get("/trend")
 def trend(days: int = 30, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
-    """近 N 天新增与修复趋势。"""
+    """近 N 天「新增 / 修复」趋势。
+
+    「修复」= 状态属于 CLOSURE_STATUSES 的漏洞（已修复 / 已关闭 / 已忽略·已驳回 ——
+    也就是前端漏洞列表状态列里的这几种），按它**进入该状态的时间**归日：
+
+      - 已修复 / 已关闭：优先 `fixed_at`（研发修复完成那一刻），退回 `closed_at`；
+      - 已忽略 / 已驳回：这两个状态没有独立时间列，取流转记录里流转到该状态的时间。
+
+    每条漏洞只算一次（取最早的那个时间点），所以"修复后又关闭"不会被重复计数。
+
+    以前的写法是"只要 `fixed_at` 落在该天就算"，于是驳回/忽略的漏洞在趋势图上永远
+    看不到 —— KPI 卡显示「已修复 1」而趋势图是 0（用户反馈），现在两处同口径。
+    另外把原来的"每天 2 次 count 查询"改成一次取回后在内存分桶（30 天 90 次 → 3 次）。
+    """
     now = nc.utcnow().date()
+    span = max(1, days)
+    day0 = now - timedelta(days=span - 1)
+    start = datetime(day0.year, day0.month, day0.day)
+    end = datetime(now.year, now.month, now.day) + timedelta(days=1)
+
+    created_by: Counter = Counter()
+    for (ts,) in db.query(Vuln.created_at).filter(
+            Vuln.created_at >= start, Vuln.created_at < end).all():
+        if ts:
+            created_by[ts.date()] += 1
+
+    # 流转记录的兜底时间：某个漏洞没有任何时间列（如被驳回）时用它
+    flow_ts: dict = {}
+    for vid, ts in db.query(VulnFlow.vuln_id, VulnFlow.created_at).filter(
+            VulnFlow.to_status.in_(tuple(CLOSURE_STATUSES))
+    ).order_by(VulnFlow.created_at.asc()).all():
+        if vid not in flow_ts and ts:
+            flow_ts[vid] = ts
+
+    fixed_by: Counter = Counter()
+    for vid, status, fixed_at, closed_at in db.query(
+            Vuln.id, Vuln.status, Vuln.fixed_at, Vuln.closed_at).all():
+        if status not in CLOSURE_STATUSES:
+            continue
+        ts = fixed_at or closed_at or flow_ts.get(vid)
+        if ts and start <= ts < end:
+            fixed_by[ts.date()] += 1
+
     result = []
-    for offset in range(days - 1, -1, -1):
+    for offset in range(span - 1, -1, -1):
         day = now - timedelta(days=offset)
-        day_start = datetime(day.year, day.month, day.day)
-        day_end = day_start + timedelta(days=1)
-        created = db.query(func.count(Vuln.id)).filter(
-            Vuln.created_at >= day_start, Vuln.created_at < day_end).scalar()
-        fixed = db.query(func.count(Vuln.id)).filter(
-            Vuln.fixed_at >= day_start, Vuln.fixed_at < day_end).scalar()
         result.append({
             "date": day.strftime("%m-%d"),
-            "created": created,
-            "fixed": fixed,
+            "created": created_by.get(day, 0),
+            "fixed": fixed_by.get(day, 0),
         })
     return result
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -17,6 +18,8 @@ from pathlib import Path
 from ..config import settings
 
 from app.utils import network_clock as nc
+
+logger = logging.getLogger(__name__)
 _LOCAL = threading.local()
 
 # 收集"当前建模 run"产生的缓存键，用于删除结果时精准失效对应缓存。
@@ -104,22 +107,46 @@ class LLMCache:
             return None
 
     def set(self, key: str, value: dict) -> None:
-        """写入缓存（幂等，覆盖旧值）。"""
+        """写入缓存（幂等，覆盖旧值）。
+
+        写失败必须**看得见**：老实现把 ``sqlite3.Error`` 静默吞掉，却仍然把这个键
+        记进"本次 run 用过的缓存键"，于是结果里看着有 N 个键、库里可能只落了 N-1 条
+        —— 下次同输入必然 miss、白跑一轮模型，表现就是"同一份输入两次结果不一样"
+        （09-18 实际发生过：威胁识别那一步 32KB 的响应没落盘，第二遍重调模型，
+        威胁数 75 → 72）。
+        现在：失败 → warning + 重试一次；两次都失败 → error 日志，且**不记录该键**
+        （没写进库里就没有"将来需要失效"的东西，记进去只会误导排查）。
+        """
         if not settings.llm_cache_enabled:
             return
         try:
             payload = json.dumps(value, ensure_ascii=False)
-            with self._lock:
-                self._conn().execute(
-                    "INSERT OR REPLACE INTO llm_cache(k, v, ts) VALUES (?,?,?)",
-                    (key, payload, nc.epoch()),
+        except (TypeError, ValueError) as exc:
+            logger.warning("LLM 响应缓存序列化失败，跳过写入 key=%s: %s", key[:12], exc)
+            return
+        for attempt in (1, 2):
+            try:
+                with self._lock:
+                    conn = self._conn()
+                    conn.execute(
+                        "INSERT OR REPLACE INTO llm_cache(k, v, ts) VALUES (?,?,?)",
+                        (key, payload, nc.epoch()),
+                    )
+                    conn.commit()
+                # 写成功才记录：供删除结果时精准失效
+                _run_cache_keys.get().add(key)
+                return
+            except sqlite3.Error as exc:
+                # 不阻断主流程，但留痕：缓存拿不到就只能重跑模型，
+                # 而模型在本项目配置下（reasoning 模型、温度走默认）不保证复现
+                logger.warning(
+                    "LLM 响应缓存写入失败（第 %d/2 次）key=%s: %s", attempt, key[:12], exc
                 )
-                self._conn().commit()
-        except sqlite3.Error:
-            # 缓存失败不影响主流程
-            pass
-        # 记录到当前建模 run 的缓存键集合，供删除结果时失效
-        _run_cache_keys.get().add(key)
+                time.sleep(0.05)
+        logger.error(
+            "LLM 响应缓存写入最终失败，本次不再记录该键（下次同输入会重新调用模型）key=%s",
+            key[:12],
+        )
 
     def remove_keys(self, keys: list[str]) -> int:
         """删除指定缓存键，返回删除条数。

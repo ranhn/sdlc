@@ -1492,7 +1492,10 @@ function addNode(cell) {
         strokeWidth: 1.6,
       }
     : {
-        fill: isEmptyBoundary ? 'transparent' : s.fill,
+        // 信任边界只画虚线框、**不填底色**：边界矩形通常横跨好几条泳道，
+        // 不透明底色会把泳道底色带、分隔线和竖排泳道名压掉（导出 PNG 里最明显，
+        // 用户反馈"信任边界把泳道挡住了"）。空边界仍整块透明不可见。
+        fill: 'transparent',
         stroke: isEmptyBoundary ? 'transparent' : s.stroke,
         strokeWidth: isBoundary ? 2 : 1.6,
         // 只有 trust boundary 自身画虚线；AI 子类型不应再用虚线表达
@@ -1785,35 +1788,31 @@ function findContainingBoundary(cell, allCells) {
 function boundaryLayout(cell) {
   const pos = cell.position || { x: 0, y: 0 }
   const size = cell.size || { width: 180, height: 60 }
-  let innerBox = null
-  let memberCount = 0
-  for (const cid of cell.children || []) {
-    const sib = allCellsRef.find((c) => c.id === cid)
-    if (!sib || sib.shape === 'tm.BoundaryBox' || sib.shape === 'tm.Text') continue
-    memberCount += 1
-    const p = sib.position
-    if (!p) continue
-    const sz = sib.size || { width: 180, height: 60 }
-    innerBox = innerBox
-      ? { x0: Math.min(innerBox.x0, p.x), y0: Math.min(innerBox.y0, p.y),
-          x1: Math.max(innerBox.x1, p.x + sz.width), y1: Math.max(innerBox.y1, p.y + sz.height) }
-      : { x0: p.x, y0: p.y, x1: p.x + sz.width, y1: p.y + sz.height }
-  }
+  // 成员判定走**几何包含**（中心点落在边界矩形内），与后端渲染器
+  // _boundary_children_bbox 同口径。不再以 cell.children 为权威：建模产物里
+  // children 经常是空的（LLM 不填这个字段），按它判"空边界"会让画布上一个
+  // 信任边界都不画、导出图却画着 2 个 —— 同一份结果两端不一致（用户反馈）。
+  const { box: innerBox, count: memberCount } = boundaryChildrenBBox(cell)
   const rect = { x0: pos.x, y0: pos.y, x1: pos.x + size.width, y1: pos.y + size.height }
   if (innerBox) {
-    // 水平拉宽：泳道只贴内容（PAD_X=30）时，纵向长条 DFD 在宽画布上
-    // 两侧全是空白（fitView 按高度缩放，宽度天然富余）。泳道作为背景
-    // 应主动向左右伸展填满空间：目标 = 内容 ± STRETCH_X，允许超出模型
-    // 存的原始矩形，但不得侵入水平相邻泳道的领地（垂直堆叠的泳道
-    // 互不阻挡）。垂直方向维持"只缩不涨"——泳道上下紧挨，竖向膨胀
-    // 会互相压盖。
-    const STRETCH_X = 240
+    // 水平：内容两侧各留 PAD_X，并**钳在所在泳道带的左右边界内**。
+    // 以前是主动拉宽到内容 ±240（想让边界像分区带一样撑满画布），结果虚线框
+    // 横跨到泳道外面、甚至探出画布两侧 —— 用户反馈"框太大、都到外面去了，
+    // 应该刚好在泳道边界内"。泳道带几何用 laneBands（后端原始宽度），
+    // 显示时的拉宽不参与这里的判定。垂直方向维持"只缩不涨"——泳道上下紧挨，
+    // 竖向膨胀会互相压盖。
+    const PAD_X = 26
     const PAD_Y = 26
-    let fx0 = Math.min(rect.x0, innerBox.x0 - STRETCH_X)
-    let fx1 = Math.max(rect.x1, innerBox.x1 + STRETCH_X)
+    const band = laneBandFor(innerBox)
+    let fx0 = innerBox.x0 - PAD_X
+    let fx1 = innerBox.x1 + PAD_X
+    if (band) {
+      fx0 = Math.max(fx0, band.x)
+      fx1 = Math.min(fx1, band.x + band.width)
+    }
     for (const b of allCellsRef) {
       if (b.id === cell.id || b.shape !== 'tm.BoundaryBox' || b.visible === false) continue
-      const ib = boundaryChildrenBBox(b)
+      const ib = boundaryChildrenBBox(b).box
       if (!ib) continue // 空泳道不画也不挡（与渲染规则一致）
       // 只钳制"真邻居"：垂直有重叠、水平不相交的泳道；嵌套/上下堆叠不设限
       const vOverlap = ib.y0 < innerBox.y1 && ib.y1 > innerBox.y0
@@ -1835,14 +1834,30 @@ function boundaryLayout(cell) {
   return { rect, memberCount }
 }
 
-/** 泳道成员包围盒（几何判定：中心点落在边界矩形内的非边非容器节点）。
- * 与后端 _boundary_children_bbox 同口径，供相邻泳道钳制使用；
- * 自己的成员盒仍走 cell.children（权威来源），两者仅在异常模型下有出入。 */
+/** 与给定内容范围垂直重叠最多的泳道带（判定用原始几何，见 laneBands）。
+ * 信任边界的水平范围以它为准：钳在泳道带内，不越到画布两侧外面去。 */
+function laneBandFor(box) {
+  let best = null
+  let bestOverlap = 0
+  for (const l of laneBands) {
+    const overlap = Math.min(l.y + l.height, box.y1) - Math.max(l.y, box.y0)
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap
+      best = l
+    }
+  }
+  return best
+}
+
+/** 边界成员：包围盒 + 个数（几何判定：中心点落在边界矩形内的非边非容器节点）。
+ * 与后端 _boundary_children_bbox 同口径 —— 画布与导出图共用同一套判定，
+ * 避免"导出有边界框、画布上没有"这类两端不一致。 */
 function boundaryChildrenBBox(bCell) {
   const bp = bCell.position
   const bs = bCell.size
-  if (!bp || !bs) return null
+  if (!bp || !bs) return { box: null, count: 0 }
   let box = null
+  let count = 0
   for (const c of allCellsRef) {
     if (c.id === bCell.id) continue
     if (c.shape === 'tm.BoundaryBox' || c.shape === 'tm.Text') continue
@@ -1853,13 +1868,14 @@ function boundaryChildrenBBox(bCell) {
     const cx = p.x + sz.width / 2
     const cy = p.y + sz.height / 2
     if (cx >= bp.x && cx <= bp.x + bs.width && cy >= bp.y && cy <= bp.y + bs.height) {
+      count += 1
       box = box
         ? { x0: Math.min(box.x0, p.x), y0: Math.min(box.y0, p.y),
             x1: Math.max(box.x1, p.x + sz.width), y1: Math.max(box.y1, p.y + sz.height) }
         : { x0: p.x, y0: p.y, x1: p.x + sz.width, y1: p.y + sz.height }
     }
   }
-  return box
+  return { box, count }
 }
 
 // —— 跨信任边界落点标记（与后端 PNG 的 crossMarker 同款红方块）——
