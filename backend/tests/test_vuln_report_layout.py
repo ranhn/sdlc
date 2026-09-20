@@ -159,6 +159,21 @@ def test_list_table_columns_have_minimum_width() -> None:
     assert round(sum(widths), 2) == round(LANDSCAPE_CONTENT_CM, 2)
 
 
+def test_renderer_preserves_input_order() -> None:
+    """渲染器**不得**自己重排：顺序由路由层决定（导出是"最早在前"，页面是"最新优先"）。
+
+    历史要求：导出台账按创建时间正序（最早在前、ID 从小到大）。若有人图省事在
+    渲染器里加一次排序，导出与页面就会互相打架，所以这里把"只按入参顺序画"钉住。
+    """
+    rows = [_row(id=i, title=f"第 {i} 条") for i in (7, 3, 25, 11)]
+    doc = _render(rows)
+    table = next(t for t in _docx_tables(doc) if len(t.columns) == len(LIST_COLUMNS))
+    got = [int(r.cells[0].text) for r in table.rows[1:]]
+    assert got == [7, 3, 25, 11], f"渲染器改变了入参顺序：{got}"
+    detail = [p.text for p in doc.paragraphs if p.text.strip().startswith("#")]
+    assert [t.split("　")[0] for t in detail] == ["#7", "#3", "#25", "#11"], detail
+
+
 def test_clipped_cells_keep_row_height_reasonable() -> None:
     """超长标题/接口地址：按真实字体度量，标题列最多 4 行、其余列最多 1 行。"""
     try:
@@ -198,6 +213,74 @@ def test_sections_have_expected_orientation() -> None:
                    round(PORTRAIT_CONTENT_CM, 2)], f"章节版心宽度异常：{got}"
 
 
+def test_toc_page_entries_point_to_existing_bookmarks() -> None:
+    """目录页存在，且每条 PAGEREF 域都指向正文里**真实存在**的书签。
+
+    目录页码靠书签引用，书签名由"章节标题文本"的 md5 派生 —— 标题文本一改、书签
+    就对不上，Word 里页码会永远显示占位符「-」（威胁建模报告踩过这个坑）。所以
+    这里既校验"域→书签"成对，也校验"目录条目文本 = 正文里的标题文本"。
+    """
+    import re
+
+    from app.utils.vuln_docx import (
+        APPENDIX_SECTIONS,
+        SUMMARY_SECTIONS,
+        _chapter_titles,
+        _toc_bookmark,
+    )
+
+    rows = [_row(id=i) for i in range(1, 4)]
+    doc = _render(rows)
+    xml = doc.element.xml
+    names = set(re.findall(r'<w:bookmarkStart[^>]*w:name="([^"]+)"', xml))
+    refs = re.findall(r"PAGEREF (\S+)", xml)
+
+    assert "目录" in [p.text for p in doc.paragraphs], "缺少目录页"
+    titles = _chapter_titles(rows)
+    expected = [
+        _toc_bookmark(1, titles["summary"]),
+        *[_toc_bookmark(2, t) for _k, t in SUMMARY_SECTIONS],
+        _toc_bookmark(1, titles["list"]),
+        _toc_bookmark(1, titles["detail"]),
+        *[_toc_bookmark(2, t) for t in APPENDIX_SECTIONS],
+    ]
+    assert refs == expected, f"目录条目与预期不一致：{refs}"
+    missing = [r for r in refs if r not in names]
+    assert not missing, f"目录引用了不存在的书签：{missing}"
+
+    # 目录条目文本必须能在正文里找到（章节标题是 Heading 段落，小节是粗体段落）
+    headings = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
+    body = [p.text for p in doc.paragraphs]
+    for text in (titles["summary"], titles["list"], titles["detail"], titles["appendix"]):
+        assert text in headings, f"目录条目「{text}」在正文里找不到同名标题"
+    for _k, text in SUMMARY_SECTIONS:
+        assert text in body, f"目录小节「{text}」在正文里找不到"
+    for text in APPENDIX_SECTIONS:
+        assert text in body, f"目录小节「{text}」在正文里找不到"
+
+
+def test_vuln_titles_are_outline_level_for_navigation_pane() -> None:
+    """每条漏洞的标题必须是 Heading 3 样式。
+
+    Word 的导航窗格/大纲级别**只认段落样式**：章节用 Heading 1、每条漏洞用
+    Heading 3，导航窗格里才能折叠浏览并逐条跳转；若用普通段落，29 条的详情章
+    在窗格里一条都看不到（用户要求"打开能导航"）。
+    """
+    rows = [_row(id=i, title=f"漏洞 {i}") for i in range(1, 6)]
+    doc = _render(rows)
+    by_style: dict[str, list[str]] = {}
+    for p in doc.paragraphs:
+        style = p.style.name if p.style is not None else ""
+        if style.startswith("Heading"):
+            by_style.setdefault(style, []).append(p.text)
+    vuln_titles = [t for t in by_style.get("Heading 3", []) if t.startswith("#")]
+    assert len(vuln_titles) == len(rows), (
+        f"只有 {len(vuln_titles)} 条漏洞标题是 Heading 3，应为 {len(rows)} 条"
+    )
+    assert "目录" in by_style.get("Heading 1", [])
+    assert len(by_style.get("Heading 1", [])) >= 5, by_style.get("Heading 1")
+
+
 def test_page_number_fields_and_cover_without_header() -> None:
     doc = _render([_row()])
     sec0 = doc.sections[0]
@@ -228,6 +311,72 @@ def test_dirty_screenshot_data_does_not_break_export() -> None:
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "无法解析" in text
     assert "复现证据" in text
+
+
+def _png_data_url(color=(10, 120, 200), size=(120, 80)) -> str:
+    """造一张真实 PNG 的 data URL（用于截图相关断言）。"""
+    import base64 as _b64
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode()
+
+
+def test_duplicate_screenshots_render_once() -> None:
+    """同一张图同时存在于 step_screenshots 与旧字段 screenshots 时，只画一次。
+
+    前端保存漏洞时会把步骤截图**同时**写进两个字段（screenshots 是旧版兼容字段，
+    VulnFix 等旧页面只认它），所以库里存了两份；历史实现两处都渲染 → 每个漏洞的
+    截图都出现两遍（用户反馈"截图都是两份"）。
+    注意：不能用"媒体部件数"断言 —— python-docx 会按 sha1 复用同一张图的部件，
+    必须数文档里的图片引用（<a:blip>）次数。
+    """
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        print("      (skip: 无 PIL，跳过截图去重用例)")
+        return
+    url = _png_data_url()
+    doc = _render([_row(step_screenshots=[{"step_no": 1, "data_url": url}],
+                        screenshots=[url])])
+    xml = doc.element.xml
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert xml.count("<a:blip") == 1, "同一张图被插入了多次"
+    assert "共 1 张" in text, text
+    assert "图 1" in text and "图 2" not in text, text
+    assert "截图证据 1" not in text, "步骤图已覆盖旧字段，不应再画一遍"
+
+    # 同一张图挂在多个步骤上：图仍只画一张，但图注要合并（不能丢掉"第 2、3 步也用了它"）
+    doc2 = _render([_row(step_screenshots=[{"step_no": n, "data_url": url}
+                                           for n in (1, 2, 3)])])
+    text2 = "\n".join(p.text for p in doc2.paragraphs)
+    assert doc2.element.xml.count("<a:blip") == 1, "多步共用一张图时被画了多次"
+    assert "步骤 1、2、3" in text2, text2
+
+
+def test_legacy_only_and_extra_screenshots_still_rendered() -> None:
+    """旧字段里"步骤图没覆盖到"的图不能被顺手丢掉。
+
+    老数据可能只有 screenshots（没有 step_screenshots）→ 必须正常渲染；
+    两个字段都有但内容不同（数据异常）时，多的那张也要画出来。
+    """
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        print("      (skip: 无 PIL，跳过截图兼容用例)")
+        return
+    u1, u2 = _png_data_url((10, 120, 200)), _png_data_url((200, 40, 40))
+
+    doc = _render([_row(screenshots=[u1, u2])])
+    assert doc.element.xml.count("<a:blip") == 2, "旧字段的截图没有全部渲染"
+
+    doc2 = _render([_row(step_screenshots=[{"step_no": 1, "data_url": u1}],
+                         screenshots=[u1, u2])])
+    text2 = "\n".join(p.text for p in doc2.paragraphs)
+    assert doc2.element.xml.count("<a:blip") == 2, "旧字段里多出的那张图被丢掉了"
+    assert "截图证据 2" in text2, text2
 
 
 def test_real_image_is_embedded() -> None:

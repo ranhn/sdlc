@@ -1,9 +1,7 @@
 """漏洞管理路由：提交/确认/修复/复测/关闭 + 状态机 + 评论。"""
-import csv
-import io
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
@@ -23,18 +21,11 @@ from ..schemas import (
 from ..security import get_current_user, write_operation_log
 from ..state_machine import STATUS_NAMES, TRANSITIONS, validate_action
 from ..utils import network_clock as nc
+from ..utils.vuln_csv import render_vulns_csv
 from ..utils.vuln_docx import SEV_ZH, render_vulns_docx
 
-# 导出文件与页面展示一致：DB 存 naive UTC，展示统一转东八区(北京时间)
-from zoneinfo import ZoneInfo
-_LOCAL_TZ = ZoneInfo("Asia/Shanghai")
-
-
-def _cn_strftime(dt) -> str:
-    """naive UTC -> 东八区 -> 'YYYY-MM-DD HH:MM'，供 CSV/DOCX 导出使用。"""
-    if dt is None:
-        return ""
-    return nc.to_utc_aware(dt).astimezone(_LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+# 导出的时间格式化（东八区）与 CSV/DOCX 渲染一起收敛到 utils.vuln_csv /
+# utils.vuln_docx：路由层不再自己拼表格与时间字符串，只负责取数 + 包响应。
 
 router = APIRouter(prefix="/api/vulns", tags=["漏洞管理"])
 
@@ -172,6 +163,7 @@ def list_vulns(
 
 @router.get("/export")
 def export_vulns(
+    request: Request,
     fmt: str = Query(..., pattern="^(csv|docx)$"),
     status: str | None = Query(default=None),
     severity: str | None = Query(default=None),
@@ -205,7 +197,11 @@ def export_vulns(
         if not id_list:
             raise HTTPException(status_code=400, detail="ids 参数不能为空")
         query = query.filter(Vuln.id.in_(id_list))
-    vulns = query.order_by(Vuln.created_at.desc()).all()
+    # 导出排序：**最早在前**（与页面列表相反）。
+    # 页面列表是"最新优先"（便于日常处理），但导出报告是台账/留档：读者按时间顺序
+    # 从头看整改脉络，最早的一条排在最前面，ID 也就自然从小到大（用户要求）。
+    # 同时序（批量导入会有相同 created_at）再用 id 升序兜底，保证结果确定、可复现。
+    vulns = query.order_by(Vuln.created_at.asc(), Vuln.id.asc()).all()
     rows = [_to_out(v, db) for v in vulns]
 
     scope_desc = _describe_scope(
@@ -213,27 +209,49 @@ def export_vulns(
         mine=mine, assigned_to_me=assigned_to_me, ids=ids,
     )
     if fmt == "csv":
-        return _export_csv(rows)
+        # CSV 里的"详情链接"要用用户此刻访问的平台地址（见 _resolve_base_url）
+        return _export_csv(rows, base_url=_resolve_base_url(request))
     return _export_docx(rows, exported_by=current.full_name, scope_desc=scope_desc)
 
 
-def _export_csv(rows: list[VulnOut]):
-    headers = ["ID", "标题", "所属系统", "接口地址", "等级", "大类", "类型", "状态", "提交人", "负责人", "复测人", "创建时间"]
-    buf = io.StringIO()
-    # 写入 BOM 让 Excel 正确识别 UTF-8
-    buf.write("\ufeff")
-    writer = csv.writer(buf)
-    writer.writerow(headers)
-    for r in rows:
-        writer.writerow([
-            r.id, r.title, r.system_name or "", r.api_endpoint or "",
-            # 等级中文化统一走 vuln_docx.SEV_ZH（Word 报告同源），避免两处各写一份
-            SEV_ZH.get(r.severity, r.severity),
-            r.vuln_category or "", r.vuln_type or "", STATUS_NAMES.get(r.status, r.status),
-            r.reporter_name or "", r.assignee_name or "未指派", r.reviewer_name or "",
-            _cn_strftime(r.created_at),
-        ])
-    data = buf.getvalue().encode("utf-8")
+def _resolve_base_url(request: Request) -> str:
+    """解析导出文件里超链接要用的平台基地址（形如 https://sdlc.example.com）。
+
+    优先级（从"用户实际在用哪个地址"到"部署配置"）：
+      1. ``Referer``：导出必然发生在平台页面上（axios 的 blob 请求同源带 Referer），
+         取它的 origin 就是用户此刻访问的地址 —— 多域名 / 内外网双入口都自适应；
+      2. ``Origin``：部分客户端/代理会带（跨域 XHR 一定带）；
+      3. ``CORS_ORIGINS`` 的第一条：部署时配置的前端白名单（生产由 run_dev/容器注入）；
+      4. 请求自身的 scheme://host：生产环境前端由 FastAPI 托管（同源），此时一定正确。
+
+    为什么不写死域名：同一份代码要跑在本地、内网、多套部署环境上，写死必然有一处是错的。
+    """
+    for raw in (request.headers.get("referer"), request.headers.get("origin")):
+        if not raw:
+            continue
+        try:
+            from urllib.parse import urlsplit
+
+            parts = urlsplit(raw)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}"
+        except Exception:  # noqa: BLE001
+            continue
+    import os
+
+    cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+    if cors:
+        return cors[0].rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def _export_csv(rows: list[VulnOut], *, base_url: str | None = None):
+    """导出 CSV：清单级字段 + 每行一条可点回平台的漏洞详情链接。
+
+    早期版本只有数据列、没有链接，CSV 发出去后读者要自己回平台"按标题搜一遍"。
+    现在每行都带 ``/vulnerabilities/submit?id=<id>`` 深链（点开直达该漏洞详情）。
+    """
+    data = render_vulns_csv(rows, base_url=base_url)
     return StreamingResponse(
         iter([data]),
         media_type="text/csv; charset=utf-8",

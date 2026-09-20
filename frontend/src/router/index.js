@@ -80,7 +80,10 @@ router.beforeEach((to) => {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   if (to.meta.admin && !['admin', 'secops'].includes(store.role)) {
-    return { path: '/vulnerabilities/fix' }
+    // 转发时必须**带上 query**：CSV 导出/通知里的深链是
+    // /vulnerabilities/submit?id=123，丢掉 id 的话开发点进来只看到修复列表、
+    // 还得自己再搜一遍（VulnFix 已支持 ?id= 直接打开该漏洞详情）。
+    return { path: '/vulnerabilities/fix', query: to.query }
   }
   return true
 })

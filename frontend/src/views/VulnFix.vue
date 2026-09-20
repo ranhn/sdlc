@@ -167,12 +167,14 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { vulnApi, systemApi } from '../api'
 import { useUserStore } from '../store/user'
 import { fmtDateTime } from '../utils/time'
 
 const store = useUserStore()
+const route = useRoute()
 const list = ref([])
 const systems = ref([])
 const loading = ref(false)
@@ -296,6 +298,17 @@ async function load(resetPage = false) {
 onMounted(async () => {
   load()
   try { systems.value = (await systemApi.list()).data } catch {}
+  // 兼容 CSV 导出/通知里的深链：/vulnerabilities/fix?id=123 直接打开该漏洞详情。
+  // 与「提交漏洞」页同一套 ?id= 语义（管理员被守卫留在 /submit，开发落到这里），
+  // 这样报告里那条链接对两种角色都"点开就是这条漏洞"。
+  const qid = Number(route.query.id)
+  if (qid && Number.isFinite(qid)) {
+    try {
+      await openDetail({ id: qid })
+    } catch (e) {
+      // 静默失败：可能权限不足（非本人负责的漏洞）或漏洞已删除
+    }
+  }
 })
 </script>
 

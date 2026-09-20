@@ -33,6 +33,7 @@ Word 的表格默认是**固定布局**：列宽必须显式写在 tblGrid / tcW
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
 from typing import Any, Iterable, Sequence
@@ -132,6 +133,32 @@ CLIP_CATEGORY = 10
 CLIP_ASSIGNEE = 8
 
 
+# 概览小节与附录小节的标题：**唯一来源**，目录页与正文都取这里。
+# 目录页码是靠书签引用的，而书签名由标题文本派生 —— 两处文本必须逐字一致，
+# 否则书签对不上、页码恒显示占位符「-」（威胁建模报告的历史教训）。
+SUMMARY_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("1.1", "1.1　风险等级分布"),
+    ("1.2", "1.2　处置进度"),
+    ("1.3", "1.3　系统分布（按漏洞数，Top 8）"),
+    ("1.4", "1.4　漏洞类型分布（Top 8）"),
+)
+APPENDIX_SECTIONS: tuple[str, ...] = (
+    "附录 A　严重度分级定义",
+    "附录 B　导出范围与口径说明",
+)
+
+
+def _chapter_titles(rows: Sequence[Any]) -> dict[str, str]:
+    """章节标题的唯一来源（目录页与正文共用，含条数）。"""
+    n = len(rows)
+    return {
+        "summary": "一、统计概览",
+        "list": f"二、漏洞清单（共 {n} 条）",
+        "detail": f"三、漏洞详情（共 {n} 条）",
+        "appendix": "附录",
+    }
+
+
 def _fit_widths(weights: Sequence[float], total: float) -> list[float]:
     """把权重按比例缩放到版心总宽，并把舍入误差补进最后一列。
 
@@ -226,20 +253,78 @@ def _para(doc, text: str = "", *, size=10, bold=False, italic=False, color=INK,
                      space_after=space_after, line=line)
 
 
-def _heading(doc, text: str, *, level: int = 1):
-    """章节标题：用真 heading 样式（保留 Word 导航窗格/大纲），并覆盖中文字体与配色。"""
-    from docx.shared import Pt
+def _heading(doc, text: str, *, level: int = 1, size: int | None = None,
+             bookmark: str | None = None):
+    """章节标题：用真 heading 样式（Word 的导航窗格/大纲级别靠样式识别），
+    并覆盖中文字体与配色（Heading 样式默认是 Calibri + 主题蓝）。
 
+    ``bookmark`` 非空时在该段落起始插书签 —— 目录页的 PAGEREF 域靠它取页码。
+    """
     h = doc.add_heading("", level=level)
     sizes = {1: 16, 2: 13, 3: 11}
     run = h.add_run(text)
-    _set_run(run, size=sizes.get(level, 11), bold=True, color=BRAND)
+    _set_run(run, size=size or sizes.get(level, 11), bold=True, color=BRAND)
     _fmt_para(h, space_before=14 if level == 1 else 10, space_after=6,
               line=1.25, keep_with_next=True)
-    if level >= 2:
-        for r in h.runs:
-            r.font.size = Pt(sizes.get(level, 11))
+    if bookmark:
+        _bookmark(h, bookmark)
     return h
+
+
+def _toc_bookmark(level: int, text: str) -> str:
+    """由目录条目文本派生稳定、合法的 Word 书签名。
+
+    Word 书签名必须字母开头、只含字母/数字/下划线、长度 ≤40，中文标题不能直接用。
+    哈希用 md5 而非内置 hash()：后者对字符串加了随机盐（PYTHONHASHSEED），同一标题
+    在不同进程/不同次导出会得到不同的名字 → 目录与正文的书签对不上、页码全部失效。
+    """
+    digest = hashlib.md5(text.encode("utf-8")).hexdigest()[:6]
+    return f"_Toc{level}_{digest}"
+
+
+def _bookmark(paragraph, name: str) -> None:
+    """在段落起始插入书签（目录 PAGEREF 引用的锚点）。
+
+    bookmarkStart 必须是段落的第一个子元素、bookmarkEnd 的 w:id 与 start 一致，
+    否则 Word 会报「书签已损坏」。id 同样由 md5 派生（保证同输入同结果）。
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    bid = str(int(hashlib.md5(name.encode("utf-8")).hexdigest()[:6], 16))
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), bid)
+    start.set(qn("w:name"), name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), bid)
+    paragraph._p.insert(0, start)
+    paragraph._p.append(end)
+
+
+def _right_tab(paragraph, cm: float) -> None:
+    """给段落加一个"点线 + 右对齐"制表位（目录条目「标题 …… 页码」的对齐方式）。"""
+    from docx.enum.text import WD_TAB_ALIGNMENT, WD_TAB_LEADER
+    from docx.shared import Cm
+
+    paragraph.paragraph_format.tab_stops.add_tab_stop(
+        Cm(cm), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS
+    )
+
+
+def _toc_entry(doc, level: int, text: str, bookmark: str, width_cm: float) -> None:
+    """目录条目：标题 + 点线 + 页码（PAGEREF 域，带 \\h 可直接 Ctrl+点击跳转）。"""
+    p = doc.add_paragraph()
+    run = p.add_run(text)
+    _set_run(run, size=10.5 if level == 1 else 9.5, bold=(level == 1),
+             color=BRAND if level == 1 else INK)
+    p.add_run("\t")
+    _field(p, f"PAGEREF {bookmark} \\h", "-")
+    for r in p.runs:
+        if r.text.strip() in ("-",) or (r.text and r.text.strip().isdigit()):
+            _set_run(r, size=10.5 if level == 1 else 9.5, color=INK)
+    _right_tab(p, width_cm)
+    _fmt_para(p, space_before=1 if level == 2 else 4, space_after=1, line=1.3)
+    return p
 
 
 def _bottom_rule(paragraph, color=BRAND, size=8):
@@ -575,7 +660,8 @@ def _summary(doc, rows: list[Any]) -> None:
     closed = sum(1 for r in rows if str(_val(r, "status")) in CLOSED_STATUSES)
     pending = total - closed
 
-    h = _heading(doc, "一、统计概览", level=1)
+    title = _chapter_titles(rows)["summary"]
+    h = _heading(doc, title, level=1, bookmark=_toc_bookmark(1, title))
     _bottom_rule(h)
 
     if total == 0:
@@ -594,8 +680,9 @@ def _summary(doc, rows: list[Any]) -> None:
           size=10, color=INK, line=1.5, space_after=8)
 
     # 1.1 等级分布（含建议响应时限：读者一眼知道该多快动手）
-    _para(doc, "1.1　风险等级分布", size=10.5, bold=True, color=BRAND_LIGHT,
-          space_before=6, space_after=4)
+    p11 = _para(doc, SUMMARY_SECTIONS[0][1], size=10.5, bold=True, color=BRAND_LIGHT,
+                space_before=6, space_after=4)
+    _bookmark(p11, _toc_bookmark(2, SUMMARY_SECTIONS[0][1]))
     sev_rows = []
     for key in SEV_ORDER:
         c = counts.get(key, 0)
@@ -618,8 +705,9 @@ def _summary(doc, rows: list[Any]) -> None:
     _para(doc, "", size=6, space_after=4)
 
     # 1.2 处置状态分布（按"待处置 / 处置中 / 已闭环"三组，读者才知道进度含义）
-    _para(doc, "1.2　处置进度", size=10.5, bold=True, color=BRAND_LIGHT,
-          space_before=6, space_after=4)
+    p12 = _para(doc, SUMMARY_SECTIONS[1][1], size=10.5, bold=True, color=BRAND_LIGHT,
+                space_before=6, space_after=4)
+    _bookmark(p12, _toc_bookmark(2, SUMMARY_SECTIONS[1][1]))
     status_rows = []
     for label, codes, note in STATUS_GROUPS:
         c = sum(1 for r in rows if str(_val(r, "status")) in codes)
@@ -649,8 +737,9 @@ def _summary(doc, rows: list[Any]) -> None:
             bucket["closed"] += 1
     top = sorted(by_system.items(), key=lambda kv: (-kv[1]["total"], kv[0]))[:8]
     if top:
-        _para(doc, "1.3　系统分布（按漏洞数，Top 8）", size=10.5, bold=True,
-              color=BRAND_LIGHT, space_before=6, space_after=4)
+        p13 = _para(doc, SUMMARY_SECTIONS[2][1], size=10.5, bold=True,
+                    color=BRAND_LIGHT, space_before=6, space_after=4)
+        _bookmark(p13, _toc_bookmark(2, SUMMARY_SECTIONS[2][1]))
         sys_rows = [
             [name, b["total"], f"{round(b['total'] / total * 100, 1)}%",
              b["high"], b["closed"], b["total"] - b["closed"]]
@@ -682,8 +771,9 @@ def _summary(doc, rows: list[Any]) -> None:
         by_type[key] = by_type.get(key, 0) + 1
     top_types = sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
     if top_types:
-        _para(doc, "1.4　漏洞类型分布（Top 8）", size=10.5, bold=True,
-              color=BRAND_LIGHT, space_before=6, space_after=4)
+        p14 = _para(doc, SUMMARY_SECTIONS[3][1], size=10.5, bold=True,
+                    color=BRAND_LIGHT, space_before=6, space_after=4)
+        _bookmark(p14, _toc_bookmark(2, SUMMARY_SECTIONS[3][1]))
         type_rows = [[cat, typ, c, f"{round(c / total * 100, 1)}%"]
                      for (cat, typ), c in top_types]
         _make_table(doc, ["一级大类", "二级类型", "数量", "占比"], type_rows,
@@ -692,18 +782,50 @@ def _summary(doc, rows: list[Any]) -> None:
                             WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER])
 
 
+def _toc(doc, rows: list[Any]) -> None:
+    """目录页：章节 + 概览/附录小节，页码用 PAGEREF 域（Ctrl+点击可跳转）。
+
+    为什么手写条目、而不是插一个 TOC 域：TOC 域在 Word 里打开时是空的 —— 必须先
+    「更新域」/F9 才有内容；手写条目**立刻可见**，只有页码需要更新一次域，且未更新时
+    显示占位符「-」而不是一个错误页码。
+
+    每条漏洞不逐条进目录（29 条会把目录撑满），它们的标题用 Heading 3 样式，
+    在 **Word 导航窗格**里可折叠浏览、点一条跳一条。
+    """
+    titles = _chapter_titles(rows)
+    h = _heading(doc, "目录", level=1)
+    _bottom_rule(h)
+
+    items: list[tuple[int, str]] = [(1, titles["summary"])]
+    if rows:
+        items += [(2, text) for _k, text in SUMMARY_SECTIONS]
+    items.append((1, titles["list"]))
+    items.append((1, titles["detail"]))
+    items += [(2, text) for text in APPENDIX_SECTIONS]
+
+    for level, text in items:
+        _toc_entry(doc, level, text, _toc_bookmark(level, text), PORTRAIT_CONTENT_CM)
+
+    _para(doc, "", size=8, space_after=4)
+    _para(doc,
+          "导航提示：在 Word 中开启「视图 → 导航窗格」即可折叠浏览全部章节与每一条漏洞"
+          "（标题已设为大纲级别）；目录页码若显示「-」，按 Ctrl+A 再按 F9 更新一次域即可。",
+          size=8.5, italic=True, color=MUTED)
+
+
 def _list_section(doc, rows: list[Any]) -> None:
     """漏洞清单（横向章节）：10 列宽表，固定列宽 + 跨页重复表头。"""
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    h = _heading(doc, f"二、漏洞清单（共 {len(rows)} 条）", level=1)
+    title = _chapter_titles(rows)["list"]
+    h = _heading(doc, title, level=1, bookmark=_toc_bookmark(1, title))
     _bottom_rule(h)
     if not rows:
         _para(doc, "本次导出范围内没有漏洞记录。", size=10, color=MUTED)
         return
     _para(doc,
-          "按创建时间倒序。表格中长文本已截断，完整内容见「三、漏洞详情」；"
-          "如需全字段数据请导出 CSV。",
+          "按创建时间正序（最早在前，ID 从小到大）。表格中长文本已截断，"
+          "完整内容见「三、漏洞详情」；如需全字段数据请导出 CSV。",
           size=9, color=MUTED, space_after=6)
 
     sev_map = dict(SEV_ZH)
@@ -756,7 +878,8 @@ def _detail_section(doc, rows: list[Any]) -> None:
     """漏洞详情（纵向章节）：每条一页，信息表 + 正文分块 + 复现截图。"""
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    h = _heading(doc, f"三、漏洞详情（共 {len(rows)} 条）", level=1)
+    title = _chapter_titles(rows)["detail"]
+    h = _heading(doc, title, level=1, bookmark=_toc_bookmark(1, title))
     _bottom_rule(h)
     if not rows:
         _para(doc, "无。", size=10, color=MUTED)
@@ -771,12 +894,12 @@ def _detail_section(doc, rows: list[Any]) -> None:
         sev_key = str(_val(r, "severity")).lower()
         sev_zh = sev_map.get(sev_key, sev_key or "—")
 
-        # 标题行：[等级] #ID 标题
-        head = doc.add_paragraph()
-        run = head.add_run(f"#{_val(r, 'id')}　{_val(r, 'title') or ''}")
-        _set_run(run, size=13, bold=True, color=BRAND)
-        _fmt_para(head, space_before=6, space_after=4, line=1.3,
-                  keep_with_next=True)
+        # 标题行：#ID 标题 —— 必须用 **Heading 3 样式**（而非普通段落）：
+        # Word 的导航窗格与"大纲级别"只认样式，用普通段落的话导航窗格里一条漏洞都
+        # 看不到，29 条的详情章只能靠翻页找（用户要求"打开就能导航"）。
+        head = _heading(doc, f"#{_val(r, 'id')}　{_val(r, 'title') or ''}",
+                        level=3, size=13)
+        _fmt_para(head, space_before=6, space_after=4, line=1.3, keep_with_next=True)
         _bottom_rule(head, color=LINE, size=4)
 
         # 等级色标 + 状态
@@ -838,28 +961,62 @@ def _detail_section(doc, rows: list[Any]) -> None:
 
 
 def _render_evidence(doc, r: Any) -> None:
-    """复现步骤截图 / 截图证据：按步骤分组，配图注，宽度限制在版心内。"""
+    """复现步骤截图 / 截图证据：按步骤分组，配图注，宽度限制在版心内。
+
+    **同一张图只画一次**。为什么必须去重：前端保存时会把步骤截图同时写进
+    ``step_screenshots``（结构化，带 step_no）与兼容旧版的 ``screenshots``
+    （纯 data_url 列表，"VulnFix 等旧页面"只认它），于是同一批图在库里存了两份
+    —— 两处都渲染的话每个漏洞的截图都会出现两遍（用户反馈"截图都是两份"）。
+    这里按**图片内容指纹**（sha1）去重，以步骤图为主（图注带步骤号更好读），
+    旧字段只补步骤图里没有的（老数据可能只填了 screenshots）。
+    """
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    shots: list[tuple[str, str]] = []   # (图注, data_url)
+    def _fingerprint(url: str) -> str:
+        data = _data_url_bytes(url)
+        return hashlib.sha1(data).hexdigest() if data else url
+
+    shots: list[dict[str, Any]] = []       # {"url", "steps", "caption"}
+    seen: dict[str, int] = {}              # 图片指纹 -> shots 下标
+
+    def _add(url: str, step_no, fallback_caption: str) -> None:
+        """登记一张图；**同一张图只登记一次**，重复出现时合并图注。
+
+        同一张图挂在多个步骤上（测试数据里很常见：每步都传了同一张截图）不能
+        画多遍，但也不能把"步骤 2~6 也引用了它"这条信息丢掉 —— 合并成
+        「步骤 1、2、3」即可，图仍只有一张。
+        """
+        fp = _fingerprint(url)
+        if fp in seen:
+            item = shots[seen[fp]]
+            if step_no is not None and step_no not in item["steps"]:
+                item["steps"].append(step_no)
+            return
+        seen[fp] = len(shots)
+        shots.append({
+            "url": url,
+            "steps": [step_no] if step_no is not None else [],
+            "caption": fallback_caption,
+        })
+
     step_shots = _val(r, "step_screenshots", None) or []
     if isinstance(step_shots, list):
         for i, shot in enumerate(step_shots, 1):
             if isinstance(shot, dict):
                 url = shot.get("data_url") or shot.get("url") or ""
                 no = shot.get("step_no")
-                cap = f"步骤 {no}" if no is not None else f"复现截图 {i}"
             else:
-                url, cap = shot, f"复现截图 {i}"
+                url, no = shot, None
             if url:
-                shots.append((str(cap), str(url)))
+                _add(str(url), no, f"复现截图 {i}")
+    # 兼容旧字段：只补步骤图里没出现过的图（老数据可能只填了 screenshots）
     raw_shots = _val(r, "screenshots", None) or []
     if isinstance(raw_shots, list):
         for i, url in enumerate(raw_shots, 1):
             if isinstance(url, dict):
                 url = url.get("data_url") or url.get("url") or ""
             if url:
-                shots.append((f"截图证据 {i}", str(url)))
+                _add(str(url), None, f"截图证据 {i}")
 
     if not shots:
         return
@@ -869,7 +1026,10 @@ def _render_evidence(doc, r: Any) -> None:
     _fmt_para(p, space_before=6, space_after=4, keep_with_next=True)
 
     idx = 0
-    for cap, url in shots:
+    for item in shots:
+        url = item["url"]
+        cap = (f"步骤 {'、'.join(str(s) for s in item['steps'])}"
+               if item["steps"] else item["caption"])
         data = _data_url_bytes(url)
         idx += 1
         if not data or not _is_valid_image(data):
@@ -973,11 +1133,13 @@ def _appendix(doc, rows: list[Any], *, scope_desc: str, exported_by: str,
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     doc.add_page_break()   # 附录独立起页（详情章最后一条可能占满整页）
-    h = _heading(doc, "附录", level=1)
+    title = _chapter_titles(rows)["appendix"]
+    h = _heading(doc, title, level=1, bookmark=_toc_bookmark(1, title))
     _bottom_rule(h)
 
-    _para(doc, "附录 A　严重度分级定义", size=10.5, bold=True, color=BRAND_LIGHT,
-          space_before=4, space_after=4)
+    p_a = _para(doc, APPENDIX_SECTIONS[0], size=10.5, bold=True, color=BRAND_LIGHT,
+                space_before=4, space_after=4)
+    _bookmark(p_a, _toc_bookmark(2, APPENDIX_SECTIONS[0]))
     sev_table = _make_table(
         doc, ["等级", "判定标准", "建议响应时限"],
         [
@@ -999,15 +1161,16 @@ def _appendix(doc, rows: list[Any], *, scope_desc: str, exported_by: str,
                 _set_run(run, size=9, bold=True, color=fg)
     _para(doc, "", size=6, space_after=6)
 
-    _para(doc, "附录 B　导出范围与口径说明", size=10.5, bold=True, color=BRAND_LIGHT,
-          space_before=4, space_after=4)
+    p_b = _para(doc, APPENDIX_SECTIONS[1], size=10.5, bold=True, color=BRAND_LIGHT,
+                space_before=4, space_after=4)
+    _bookmark(p_b, _toc_bookmark(2, APPENDIX_SECTIONS[1]))
     _make_table(
         doc, ["项目", "说明"],
         [
             ["导出范围", scope_desc or "全部漏洞"],
             ["导出人", exported_by or "—"],
             ["导出时间", exported_at],
-            ["排序规则", "清单与详情均按创建时间倒序（最新在前）"],
+            ["排序规则", "清单与详情均按创建时间正序（最早在前，ID 从小到大）"],
             ["已闭环口径", "已修复 + 已关闭 + 已驳回 + 已忽略；与数据大盘「已修复」一致"],
             ["长文本处理", "清单表内标题/接口地址超长会截断（详情章为完整内容）"],
             ["数据导出", "需要全字段数据（含提交/复测人、CVSS 等）请使用 CSV 导出"],
@@ -1094,6 +1257,9 @@ def render_vulns_docx(
 
     _cover(doc, rows, scope_desc=scope_desc, exported_by=exported_by or "—",
            exported_at=exported_at)
+    doc.add_page_break()
+    # 目录页：封面之后、正文之前（商业报告惯例），供读者直接跳章
+    _toc(doc, rows)
     doc.add_page_break()
     _summary(doc, rows)
 
