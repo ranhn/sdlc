@@ -35,6 +35,12 @@ SEVERITY_ENUM = ["Low", "Medium", "High", "Critical"]
 DFD_MAX_COMPONENTS = 20
 DFD_MAX_FLOWS = 60
 
+# 数据流预算系数：流数应 <= 组件数 × 该系数（提示词规范 12 同口径）。
+# schema 的 maxItems 是"LLM 不能越界的硬上限"，这个系数是"正常的量级"：
+# 超过说明在画调用链而不是数据流图（同信任域内的服务间编排会灌进来）。
+# document_analyzer 的兜底截断用它，且按必要性排序后再砍。
+FLOW_BUDGET_RATIO = 1.5
+
 BOOLEAN_PROPERTIES = [
     "isWebApplication", "isALog", "storesCredentials", "handlesCardPayment",
     "isEncrypted", "isPublicNetwork", "isTrustBoundary",

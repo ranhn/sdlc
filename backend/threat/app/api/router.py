@@ -47,6 +47,7 @@ from ..services.dfd_reviewer import DFDReviewer
 from ..services.document_extractor import extract_assets, extract_text, UnsupportedFileTypeError
 from ..services.attachment_store import save_attachment
 from ..services.document_analyzer import DocumentAnalyzer
+from ..services.flow_convergence import converge_flows
 from ..services.threat_analyzer import ThreatAnalyzer
 from ..services.model_builder import ThreatModelBuilder
 from ..services.task_manager import task_manager, TaskStatus, TaskNotFoundError
@@ -656,6 +657,21 @@ async def _run_analysis_task(
             return
         components = dfd["components"]
         flows = dfd["flows"]
+        # 源头收敛（确定性）：同向 + 同安全语义的数据流合并为一条。
+        # 放在威胁分析**之前**：少一条噪音流 → 少一批骨架威胁、少一段布线，
+        # 而且威胁、统计、模型、导出报告从此用的都是同一份"已收敛"的流。
+        # 提示词（规范 11/12）已经要求少生成，这里是兜底（LLM 仍可能拆成平行线）。
+        _raw_flow_n = len(flows)
+        flows, _flow_remap = converge_flows(flows)
+        if len(flows) != _raw_flow_n:
+            logger.info(
+                "数据流收敛：%d → %d 条（合并同向同语义流 %d 条）",
+                _raw_flow_n, len(flows), _raw_flow_n - len(flows),
+            )
+            task_manager.add_log(
+                task_id,
+                f"数据流收敛：{_raw_flow_n} → {len(flows)} 条（同向同语义的平行流已合并，避免图中重复连线）",
+            )
         # P1-8: 阶段收尾 - refine 路径 analyzer 内部已推 0.85；非 refine 路径这里补推。
         # 同值幂等，不影响已有 sub 进度。
         task_manager.mark_step(task_id, 0, sub_progress=0.85)

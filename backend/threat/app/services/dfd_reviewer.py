@@ -71,6 +71,16 @@ _INTERNAL_LIFECYCLES = {"transit", "store", "process", "use", "delete"}
 _ENDPOINT_LIFECYCLE = "collect"
 # 存储类组件应归属的阶段（缺省落到 store）
 _STORE_LIFECYCLE = "store"
+# process（服务 / Agent / 网关 / 定时任务）**禁止**落在这两个阶段：存储阶段只适用于
+# 存储类组件，服务即使职责是"记录 / 留存 / 审计 / 归档"也只是把数据写下去。
+# 历史上 LLM 给「审计服务」标了 store，它就被排进了「数据存储」泳道、与它写入的
+# 「审计库」并排，人看图会以为它是存储设施（用户反馈："审计服务怎么放到数据存储了"）。
+# 名字本身是存储角色的 process（「审计归档库」这类）例外，允许保留 store/delete ——
+# 它更该把 type 改成 datastore，那由 AI 自查阶段去修正。
+_PROCESS_FORBIDDEN_LIFECYCLES = {"store", "delete"}
+# process 的兜底阶段：无归属 / 被上面规则拦截时统一落 use
+# （与 document_analyzer 规范第 7 条「无明显归属时必须填 use」同口径）
+_PROCESS_FALLBACK_LIFECYCLE = "use"
 
 # DFD 自校验输出的 JSON Schema（结构化输出强约束）
 DFD_REVIEW_SCHEMA: dict[str, Any] = {
@@ -373,7 +383,8 @@ class DFDReviewer:
         由 AI 修正负责）；不新增/删除组件。依据优先级从高到低：
 
           1. 类型 + 名字角色词（前端/外部/存储）——确定性硬规则；
-          2. 数据流拓扑方向（数据源端点→collect、汇聚端点→store、
+          1.5 类型↔阶段自洽：process 不得落 store/delete（存储阶段只属于存储类组件）；
+          2. 数据流拓扑方向（数据源端点→collect、汇聚端点→use、
              中间转发→exchange、前端→exchange）——让泳道服从真实数据流；
           3. 仅当既无角色词、拓扑又能唯一判定时才推断，否则保留原值。
 
@@ -414,13 +425,21 @@ class DFDReviewer:
             if _FRONTEND_NAME.search(name):
                 return "exchange"
 
+            # 1.5) 类型自洽硬规则（与 document_analyzer 规范第 7 条同一口径）：
+            # process 不得落「存储 / 删除」阶段 —— 否则它会跑进「数据存储」泳道。
+            # 名字本身就是存储角色的（「审计归档库」）例外，保留原值交给 AI 自查改 type。
+            if lc in _PROCESS_FORBIDDEN_LIFECYCLES and not _STORE_NAME.search(name):
+                return _PROCESS_FALLBACK_LIFECYCLE
+
             # 2) 拓扑推导（仅当能唯一判定且当前阶段不符）
             if lc is None:
                 # 缺省生命周期：用拓扑补
                 if cid in out_deg and cid in in_deg:
                     return "exchange"      # 中间转发
                 if cid in in_deg and cid not in out_deg:
-                    return "store"         # 汇聚端点（落库/使用）
+                    # 汇聚端点 = 消费数据的服务（审计/报表/通知服务），**不是**存储：
+                    # 老规则在这里返回 store，会把"只进不出的服务"塞进数据存储泳道。
+                    return _PROCESS_FALLBACK_LIFECYCLE
                 if cid in out_deg and cid not in in_deg:
                     return "collect"       # 数据源端点
                 return None

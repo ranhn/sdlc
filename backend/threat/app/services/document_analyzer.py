@@ -204,6 +204,41 @@ def _auto_fix_flow_props(
 # STRIDE_RULES 由 methodology.py 统一提供（多方法论映射层），
 # 此处直接引用，避免重复定义。
 
+# 数据流"必要性"排序用的落库目的地类型（与 datastore 交互 = 关键链路）
+_FLOW_SINK_TYPES = ("datastore", "vectorstore", "trainingdata")
+# 外部实体类型（其唯一入流/出流必须保留）
+_FLOW_OUTSIDE_TYPES = ("actor", "externalentity")
+
+
+def _flow_necessity_key(
+    flow: dict[str, Any],
+    comp_by_id: dict[str, dict],
+) -> tuple:
+    """数据流必要性排序键（**越大越重要**，用于超预算时的截断）。
+
+    生成期版本：此时还没有威胁与跨边界归属（那是 model_builder 阶段的事），
+    因此按"能被确定的信号"排序，与 model_builder 的 importance 判定同精神：
+        1. 安全语义：公网 / 加密（含 protocol 含 TLS、命中敏感数据关键词）；
+        2. 与数据存储交互（数据落在哪，是报告里最该交代的一段）；
+        3. 涉及外部实体（actor / 设备 / 第三方）——进出系统的唯一通道；
+        4. 其余：同信任域内的服务间编排，最容易成为噪音，排最后。
+    末位用稳定 id 兜底，保证同一份输入两次截断结果一致（可复现）。
+    """
+    props = flow.get("properties") or {}
+    auto = _auto_fix_flow_props(flow)
+    security = int(
+        bool(props.get("isPublicNetwork")) or bool(auto.get("isPublicNetwork"))
+    ) + int(
+        bool(props.get("isEncrypted")) or bool(auto.get("isEncrypted"))
+    )
+    src = comp_by_id.get(flow.get("sourceId") or "") or {}
+    tgt = comp_by_id.get(flow.get("targetId") or "") or {}
+    kinds = {str(src.get("type") or "").lower(), str(tgt.get("type") or "").lower()}
+    storage = int(bool(kinds & set(_FLOW_SINK_TYPES)))
+    outside = int(bool(kinds & set(_FLOW_OUTSIDE_TYPES)))
+    return (security, storage, outside, str(flow.get("id") or ""))
+
+
 
 # ----------------------------------------------------------------------
 # 方案 B：DFD 结构自检 —— 在骨架归一后对结构做确定性断言
@@ -216,6 +251,10 @@ def _auto_fix_flow_props(
 #   4. trustboundary 内部出现外部实体（actor/externalentity）→ 边界归属错误。
 #   5. 组件/流悬空引用（源或目标不存在）。
 #   6. 存储类组件生命周期错配（use），外部/前端组件生命周期错配（use/store/delete）。
+#   7. 孤立组件：非 trustboundary 组件没有任何流（画在图上却无连线，
+#      既无法承载威胁语义，也会被分到一条它并不身处其中的泳道）。
+#   8. process 被标成 store/delete（类型↔阶段不自洽 → 会跑进「数据存储」泳道，
+#      历史上「审计服务」就是这样被放进数据存储的）。
 # ----------------------------------------------------------------------
 _STORE_TYPES = {"datastore", "vectorstore", "trainingdata"}
 _ENDPOINT_TYPES = {"actor", "externalentity"}
@@ -307,6 +346,26 @@ def _structural_defects(
             defects.append(
                 f"外部实体「{cname.get(str(c.get('id'))) or c.get('id')}」"
                 f"生命周期为 {lc},应为 collect/exchange"
+            )
+        # process 标 store/delete：类型与阶段不自洽。存储阶段只适用于存储类组件，
+        # 服务即使"负责记录/留存"也只是把数据写下去（use）。历史事故：「审计服务」
+        # 被标 store → 在泳道图上与「审计库」并排进了「数据存储」泳道。
+        if t == "process" and lc in ("store", "delete"):
+            defects.append(
+                f"组件「{cname.get(str(c.get('id'))) or c.get('id')}」类型是 process(服务),"
+                f"生命周期却标成 {lc};store/delete 只适用于 datastore/vectorstore——"
+                f"它若确实是存储设施请把 type 改为 datastore,否则生命周期应为 use/process"
+            )
+
+    # 孤立组件(图上无任何连线)。信任边界是容器，本就不接流，排除。
+    for c in components:
+        cid = str(c.get("id"))
+        if ctype.get(cid) == "trustboundary":
+            continue
+        if not out_ids.get(cid) and not in_ids.get(cid):
+            defects.append(
+                f"组件「{cname.get(cid) or cid}」没有任何数据流(孤立节点);"
+                f"请补充它与上下游的数据流,或确认该组件是否本就不该出现在图中"
             )
     return defects
 
@@ -659,6 +718,12 @@ class DocumentAnalyzer:
 7. **数据生命周期阶段（lifecycle）**【**必填**，每个组件必须标注 7 选 1】：
    标错或漏标都会导致 DFD 泳道错位、节点飘出 swimlane。
    严格按"该组件的**核心职责**"判断，而非"组件所在的网络位置"：
+   ⛔ **类型 / 阶段自洽硬约束**：store / delete 两个阶段**只适用于存储类组件**
+   （type = datastore / vectorstore / trainingdata）。**服务 / Agent / 网关 / 定时任务等
+   process 组件一律不得标 store / delete** —— 即使它的核心职责是"记录 / 留存 / 审计 /
+   归档"，那也属于"把数据写下去"的使用行为，应标 **use**（若它在加工数据则标 process）。
+   反例：给「审计服务」标 store 会让这个服务跑进「数据存储」泳道，与它写入的
+   「审计库」并排，人看图会以为它是存储设施。
    - collect（数据采集）：**数据从外部进入系统的入口**，包括
      · 外部实体/用户/设备（actor / externalentity），
      · 客户端 App / H5 / 小程序（接收用户输入），
@@ -690,16 +755,20 @@ class DocumentAnalyzer:
      · 开放 API / Webhook / 数据推送，
      · 数据同步 / 数据导出 / 报表分发，
      · 第三方系统对接（支付/物流/政务）。
-   - delete（数据删除）：**清理 / 删除 / 归档 / 硬销毁**，包括
-     · 清理任务 / 注销删除服务，
-     · 归档服务（冷存储、合规留存），
-     · 物理介质消磁 / 密钥撤销。
+   - delete（数据删除）：**数据被清理 / 删除 / 归档留存**的位置，包括
+     · 归档存储 / 冷存储 / 合规留存库（datastore），
+     · 清理任务所直接操作的存储介质（datastore），
+     · 物理介质消磁 / 密钥撤销（动作本身挂在相邻的 process 上）。
+     注：执行删除 / 归档**动作的服务**仍属 process（标 use 或 process），
+     只有被操作的**存储设施**才标 delete。
    ❌ 错配示例（**避免**）：
      · MySQL / Redis / OSS 必须是 **store**，不是 use（"它存数据，不是处理数据"）
      · 前端 App / 用户 App 应该是 **collect**，不是 use（"它从外部采集用户输入"）
      · AI 推理服务是 **use**（消费数据做分析），不是 store
      · 数据脱敏/加密服务是 **process**，不是 use（"它加工数据"）
      · API 网关是 **transit**，不是 use（"它只做转发，不消费数据"）
+     · 「审计服务 / 归档服务 / 报表服务」是 **use**，不是 store（"服务不是存储，
+       只有它写入的库/缓存/对象存储才是 store"）
    trustboundary（信任边界）也**应**标注 lifecycle：标其**所**包数据的阶段
    （如「用户侧」包 collect，「服务侧」包 use + store）。
    无明显归属时**必须**填 "use" 作为兜底，**不要**省略字段。
@@ -740,6 +809,8 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
    「网关」）中转,典型链路：
    - 设备/用户 → [采集/接入网关 process] → [业务后端 process] → [数据存储 datastore]
    - 用户 → [客户端 App process] → [API 网关 process] → [业务后端 process] → [DB]
+   ⚠️ 但**不要为了凑链路逐跳画流**：中间若还有"只转发、不鉴权、不加密、不改协议、
+   不加工数据"的 process，把它并进相邻的流（写进 description），见规范 11。
 9. **必建模的关键 process 类型**（覆盖绝大多数系统）:
    - 「客户端/App/前端/H5/小程序」→ type=process(presentation)
    - 「API 网关/接入网关/认证服务」→ type=process
@@ -749,7 +820,27 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
     包括物联网、车联网、工业、健康、智能家居等）：「蓝牙/WiFi/NB-IoT/LoRa/
     穿戴设备/传感器/工业设备/摄像头/边缘网关」等外部实体 → 必须经过
     「设备接入网关/数据采集服务/边缘服务」(process) → 再由 process 写入 datastore。
-    不要把任何设备/外部实体直接连到 datastore。
+    不要把任何设备/外部实体直接连到 datastore。接入网关之后的纯转发 process
+    同样不要逐跳拆成多条流（见规范 11）。
+11. **数据流的必要性（重要原则：宁可少一条，不要多一条）**：每条 flow 必须至少满足
+    下面一条，否则**不要生成**：
+    - 跨信任边界（sourceId 与 targetId 属于不同 trustboundary）；
+    - 带安全语义：isEncrypted=true / isPublicNetwork=true / protocol 含 TLS/HTTPS/WSS/MQTT，
+      或承载凭据、支付、健康等敏感数据；
+    - 与 datastore 交互（读或写，落库/取数这类"数据到底存在哪"的关键链路）；
+    - 外部实体（actor / 设备 / 第三方系统）的唯一入流或出流；
+    - 承载鉴权、授权、密钥管理（KMS）等安全控制动作。
+    **典型噪音（不要生成）**：
+    - 同一 trustboundary 内、同一生命周期泳道内的「服务→服务」纯编排/内部调用流
+      （例：「订单服务→库存服务『库存处理结果』」这种只为把调用链画全的流）；
+    - **同一对 (sourceId, targetId) 只允许 1 条流**：同方向上的多种数据内容合并进
+      这一条的 name / description（例：「上传体征数据」与「设备鉴权」合成
+      「设备鉴权与体征上报」一条），不要拆成两条平行线；
+    - 把一条链路拆成「网关→后端→后端→DB」四跳：其中只有跨边界那一段与落库那一段
+      有意义，其余并进相邻流的 description。
+12. **数据流预算**：flows 条数应 **<= 组件数 × 1.5**（接近或超过就说明你在画调用链
+    而不是数据流图）。少一条次要流不会丢结论；多一条会让画布变乱、威胁清单里
+    塞满低价值条目、报告元素清单冗长。
 """
 
     def __init__(self, llm_client: LLMClient) -> None:
@@ -1235,12 +1326,17 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
             diagram["autofixLog"] = list(autofix_log)
 
         # ------------------------------------------------------------------
-        # P0-1 软限制：超 DFD 元素数量上限时截断并告知（不报错拒绝）
+        # P0-1 软限制：超 DFD 元素/数据流预算时截断并告知（不报错拒绝）
         # schema 的 maxItems=20/60 是给 LLM 的硬约束，但 LLM 偶尔超界；这里做
-        # 兜底截断，避免 422 失败整次分析。截断策略：保留前 N 条（按稳定 id
-        # 排序后，重要的在前），并在 autofixLog 留痕。
+        # 兜底截断，避免 422 失败整次分析。
+        #
+        # 数据流预算 = min(schema 上限, 组件数 × 1.5)：提示词规范 12 已要求
+        # "流数 <= 组件数 × 1.5"，这里是兜底。**截断按必要性排序**（原来是按
+        # 稳定 id 排序、注释写"重要的在前"但实际与重要性无关）：跨边界/加密/
+        # 公网/落库/外部实体通道优先保留，同信任域内的服务间编排先被砍掉。
+        # 砍掉的是噪音流，重要流与（后面才生成的）威胁都不受影响。
         # ------------------------------------------------------------------
-        from .output_schema import DFD_MAX_COMPONENTS, DFD_MAX_FLOWS
+        from .output_schema import DFD_MAX_COMPONENTS, DFD_MAX_FLOWS, FLOW_BUDGET_RATIO
         truncated = False
         if len(skeleton_comps) > DFD_MAX_COMPONENTS:
             orig_n = len(skeleton_comps)
@@ -1249,17 +1345,34 @@ DFD 建模规范（务必遵循，避免常见建模错误）：
                 f"组件总数 {orig_n} 超过上限 {DFD_MAX_COMPONENTS}，已截断保留前 {DFD_MAX_COMPONENTS} 条"
             )
             truncated = True
-        if len(skeleton_flows) > DFD_MAX_FLOWS:
+        flow_budget = min(
+            DFD_MAX_FLOWS,
+            max(8, int(round(len(skeleton_comps) * FLOW_BUDGET_RATIO))),
+        )
+        if len(skeleton_flows) > flow_budget:
             orig_n = len(skeleton_flows)
-            # 同步过滤悬空 flow：截断后必须确保 sourceId/targetId 都仍存在
             comp_id_set = {c["id"] for c in skeleton_comps}
+            comp_by_id = {c["id"]: c for c in skeleton_comps}
+            def _rank(i: int) -> tuple:
+                sec, sto, out, fid = _flow_necessity_key(skeleton_flows[i], comp_by_id)
+                return (-sec, -sto, -out, fid, i)
+
+            ranked = sorted(range(len(skeleton_flows)), key=_rank)
             kept = []
-            for f in skeleton_flows[:DFD_MAX_FLOWS]:
+            for i in ranked:
+                if len(kept) >= flow_budget:
+                    break
+                f = skeleton_flows[i]
+                # 同步过滤悬空 flow：截断后必须确保 sourceId/targetId 都仍存在
                 if f.get("sourceId") in comp_id_set and f.get("targetId") in comp_id_set:
                     kept.append(f)
+            # 保持画布/报告的稳定顺序（与原顺序一致），避免"同图两次结果元素编号不同"
+            order = {id(f): i for i, f in enumerate(skeleton_flows)}
+            kept.sort(key=lambda f: order.get(id(f), 0))
             skeleton_flows = kept
             diagram.setdefault("autofixLog", []).append(
-                f"数据流总数 {orig_n} 超过上限 {DFD_MAX_FLOWS}，已截断保留前 {DFD_MAX_FLOWS} 条"
+                f"数据流 {orig_n} 条超过预算 {flow_budget}（组件数×{FLOW_BUDGET_RATIO}），"
+                f"已按必要性保留 {len(kept)} 条（优先保留跨边界/加密/公网/落库/外部实体通道）"
             )
             truncated = True
         if truncated:

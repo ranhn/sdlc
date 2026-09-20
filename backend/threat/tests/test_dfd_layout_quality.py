@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 
@@ -189,6 +190,8 @@ def test_historical_results_report(capsys=None):
            "edge_through_node": 0, "edge_overlap": 0}
     ratios, fills = [], []
     cross_total, cross_edges = 0, 0
+    # 源头降噪三项：重要流总数 / 全量流总数（算总体次要流占比）/ 同向重复对流
+    primary_sum, flow_sum, dup_sum = 0, 0, 0
     for name, rec in records:
         m = M.evaluate(rec)
         if not m:
@@ -200,6 +203,9 @@ def test_historical_results_report(capsys=None):
         fills.append(m["fill_ratio"])
         cross_total += int(m.get("edge_crossing") or 0)
         cross_edges += int(m.get("n_edges") or 0)
+        primary_sum += int(m.get("primary_flows") or 0)
+        flow_sum += int(m.get("n_edges") or 0)
+        dup_sum += int(m.get("flow_dup_pairs") or 0)
     lines.append("")
     lines.append("--- 汇总 ---")
     for k, v in agg.items():
@@ -210,6 +216,12 @@ def test_historical_results_report(capsys=None):
     if ratios:
         lines.append(f"  平均 span_ratio: {sum(ratios) / len(ratios):.2f}")
         lines.append(f"  平均 fill_ratio: {sum(fills) / len(fills):.1%}")
+    if flow_sum:
+        lines.append(
+            f"  重要流 {primary_sum} / 全量流 {flow_sum} = 重要流占比 "
+            f"{primary_sum / flow_sum:.0%}（次要流占比 {1 - primary_sum / flow_sum:.0%}，目标<=15%）"
+        )
+        lines.append(f"  同向重复对流: {dup_sum}（目标 0）")
     report = "\n".join(lines)
     print(report)
     return report
@@ -358,6 +370,56 @@ def test_edge_crossing_total_matches_detail():
         assert all(c > 0 for _, _, c in detail), f"{name}: 明细里出现 0 处的条目"
 
 
+def test_lane_order_polish_never_worse():
+    """泳道内顺序微调（P3）：只允许"交叉严格变少 + 缺陷不新增"，因此绝不会变差。
+
+    这条不变式是它敢在建模主流程里默认开着的唯一理由，必须守住：
+      · 交叉数必须 <= 微调前；
+      · 成员越框 / 节点重叠 / 边界重叠 三个缺陷数不得增加；
+      · 结果可复现（同一份输入跑两次，节点坐标一致）。
+    历史结果存在时会打印实际收益（本轮实测 4 份真实图合计 310 → 210 处，-32%）。
+    """
+    records = _records()
+    if not records:
+        print("（未找到历史结果，跳过）")
+        return
+    # model_builder 走运行时同一路径导入（威胁子应用 = threat.app.*，
+    # 其内部 `from app.utils import ...` 用 SDLC 宿主包）——需要 backend/ 在 sys.path
+    sys.path.insert(0, os.path.dirname(_BACKEND))
+    try:
+        from threat.app.services.model_builder import ThreatModelBuilder
+    except Exception as exc:  # 独立跑（缺宿主包/依赖）时跳过，不拖垮度量回归
+        print(f"（无法导入 model_builder，跳过泳道微调用例：{exc}）")
+        return
+
+    builder = ThreatModelBuilder()
+    total_before = total_after = 0
+    for name, rec in records:
+        d0 = M.first_diagram(rec)
+        if not d0 or not d0.get("lanes"):
+            continue
+        before = M.metric_edge_crossing(d0)
+        viol_before = (len(M.metric_member_outside(d0)), len(M.metric_node_overlap(d0)),
+                       len(M.metric_boundary_overlap(d0)))
+        d = copy.deepcopy(d0)
+        builder._polish_lane_order(d)
+        after = M.metric_edge_crossing(d)
+        viol_after = (len(M.metric_member_outside(d)), len(M.metric_node_overlap(d)),
+                      len(M.metric_boundary_overlap(d)))
+        assert after <= before, f"{name}: 微调后交叉变多 {before} → {after}"
+        assert viol_after <= viol_before, f"{name}: 微调后缺陷增加 {viol_before} → {viol_after}"
+        # 可复现：同输入第二次结果一致
+        d2 = copy.deepcopy(d0)
+        builder._polish_lane_order(d2)
+        assert all((c1.get("position") or {}) == (c2.get("position") or {})
+                   for c1, c2 in zip(d["cells"], d2["cells"])), f"{name}: 微调结果不可复现"
+        total_before += before
+        total_after += after
+    if total_before:
+        print(f"  泳道顺序微调: {total_before} → {total_after} 处 "
+              f"({100.0 * (total_after - total_before) / total_before:+.0f}%)")
+
+
 def test_edge_crossing_budget_on_synthetic():
     """合成场景：每条流平均交叉数不得超预算（拦「某次改动让交叉暴涨」）。"""
     failures: list[str] = []
@@ -395,5 +457,9 @@ if __name__ == "__main__":
     test_route_cache_not_poisoned_by_mutation()
     test_candidate_channel_pruning_keeps_zero_defects()
     print("缓存正确性：通过\n")
+
+    print("=== 泳道内顺序微调（P3 不变式）===")
+    test_lane_order_polish_never_worse()
+    print("泳道顺序微调：通过\n")
 
     test_historical_results_report()

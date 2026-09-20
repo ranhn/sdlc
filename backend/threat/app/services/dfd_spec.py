@@ -57,7 +57,9 @@ NODE_STYLE: dict[str, dict[str, Any]] = {
         "label_zh": "数据存储", "abbrev_zh": "DS",
     },
     "tm.BoundaryBox": {
-        "fill": "#f1f5f9", "stroke": "#64748b", "text": "#475569",
+        # stroke 由 #64748b 调浅到 #94a3b8：信任边界是"背景分区"层，边界一多
+        # 深灰虚线和数据流互相抢权重，画布显乱（用户反馈）。
+        "fill": "#f1f5f9", "stroke": "#94a3b8", "text": "#475569",
         "radius": 6.0, "figure": "rounded", "icon": "",
         "label_zh": "信任边界", "abbrev_zh": "TB",
     },

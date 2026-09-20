@@ -290,8 +290,9 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
                 draw.text((tx, ty), name, font=f_lane, fill=style["text"])
             except Exception:
                 pass
-        # 虚线边框（后画，压在底色边缘上）
-        _dashed_rect(draw, px0, py0, px1, py1, style["stroke"], max(1, int(S(2))), (10, 5), S)
+        # 虚线边框：更细更密（1.6 / 7-6，与画布同一档位）。边界是背景分区层，
+        # 线太粗太疏会和数据流抢视觉权重（用户反馈画布"看着很乱"）。
+        _dashed_rect(draw, px0, py0, px1, py1, style["stroke"], max(1, int(S(1.6))), (7, 6), S)
 
     # ---------- 7. 第三层：数据流 ----------
     def _edge_semantics(e: dict) -> tuple[bool, bool, bool, bool]:

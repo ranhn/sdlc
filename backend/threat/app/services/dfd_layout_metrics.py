@@ -857,6 +857,13 @@ def _plan_edge_routes_uncached(diagram: dict) -> dict[str, list[Point]]:
         cs, ct = center_of(rect_of(s)), center_of(rect_of(t))
         return -math.hypot(ct[0] - cs[0], ct[1] - cs[1])  # 负号=长的排前面
 
+    # 顺序：先长后短（长边通道选择余地小，优先占位）。
+    # 【实测记录 · 为什么不用"重要流优先"】主循环是顺序贪婪，直觉上"让图里要重点
+    # 阅读的流（跨边界/加密/公网/挂高危威胁）先占顺的通道"更合理，但实测相反：
+    #   · 4 份真实结果：交叉 310 → 315 处（+5，反而更差）
+    #   · 合成大图 50/100：979 → 979（持平）
+    # 原因同"重心法"那次：长边本身通道选择余地小，把它的顺位降到次要流之后，
+    # 它只能绕更远的通道，交叉转移而不是减少。故保持"先长后短"。
     edges.sort(key=lambda e: (_len(e), e.get("id") or ""))
 
     # 同端点的边分成一组做锚点分散（避免出口挤在一点）
@@ -903,8 +910,21 @@ def _plan_edge_routes_uncached(diagram: dict) -> dict[str, list[Point]]:
 # 规模上限：只处理"交叉贡献最高"的前 K 条边、最多 R 轮。
 # 接受条件严格（全局交叉必须下降）⇒ 调小只是少拿收益、绝不会让结果变差；
 # 调大则线性增加布线耗时（每次尝试 = 一次 route_edge）。
-_CROSS_REFINE_TOP_K = 12
+#
+# 取值依据（P3 实测，4 份真实结果 + 合成大图 50 节点/100 边）：
+#   top_k=12 rounds=4（原值） 真实 320 处 / 合成 1014 处 / 性能测试 3.30s
+#   top_k=16 rounds=4（现值） 真实 310 处 / 合成 1019 处 / 性能测试 ≈3.3s
+#   top_k=32 rounds=6         真实 310 处 / 合成  979 处 / 性能测试 6.49s（预算 8.0s）
+#   top_k=999 rounds=12       真实 310 处 / 合成  968 处 / 更慢
+# 真实图（13~16 组件）在 top_k=16 就到平台期，收益全在那份 38 条流的图上（145→135）；
+# 只有 50/100 的合成压力图才继续降。为压力图多花 2 倍布线时间、把性能预算余量
+# 从 60% 压到 19%，不划算 —— 真实图上的交叉由**排布层微调**继续压（见
+# model_builder._polish_lane_order，实测整图 -32%），这里取真实图的最优点。
+_CROSS_REFINE_TOP_K = 16
 _CROSS_REFINE_ROUNDS = 4
+
+# 布线顺序：**先长后短**（长边通道选择余地小，优先占位）—— 见下方 sort 处的
+# 说明：曾试过"重要流优先"，实测更差，已回退。
 
 
 def _polyline_crossings(r1: list[Point], r2: list[Point]) -> int:
@@ -1326,6 +1346,58 @@ def first_diagram(record: dict) -> Optional[dict]:
     return diagrams[0] if diagrams else None
 
 
+# ----------------------------------------------------------------------
+# 数据流「必要性」指标（源头降噪的度量口径）
+# ----------------------------------------------------------------------
+# 口径与前端 DfdGraph.flowIsImportant、后端 model_builder 的 importance 判定一致：
+#   重要流（primary）= 跨信任边界 | 加密 | 公网 | 挂 high|critical 威胁
+#   其余（secondary）= 无安全语义的"纯编排流" —— 正是画布上那堆交叉细线。
+# 三项：
+#   flow_noise_ratio  次要流占比（源头降噪的主指标，越小越好）
+#   flow_dup_pairs    同 (源,目标) 出现多条流的对数（源头应收敛到 ≤1 条/对）
+#   primary_flows     重要流条数（降噪**不得**让这一项变小）
+# 为什么放在这个模块：它们和布局指标一样，只需要一份 record 就能算，
+# 且测试用 importlib 直接加载本文件（不能引入包内 import），这里同样只用内置。
+def _flow_is_primary(edge: dict) -> bool:
+    d = edge.get("data") or {}
+    if d.get("crossesTrustBoundary") is True:
+        return True
+    if d.get("isEncrypted") is True or d.get("isPublicNetwork") is True:
+        return True
+    for t in (edge.get("threats") or []):
+        if str((t or {}).get("severity") or "").lower() in ("high", "critical"):
+            return True
+    return False
+
+
+def metric_primary_flows(diagram: dict) -> int:
+    """重要流条数（跨边界 / 加密 / 公网 / 挂高危威胁）。"""
+    return sum(1 for e in edge_cells(diagram) if _flow_is_primary(e))
+
+
+def metric_flow_noise_ratio(diagram: dict) -> float:
+    """次要流占比 0~1（无分母时返回 0.0）。"""
+    edges = edge_cells(diagram)
+    if not edges:
+        return 0.0
+    noise = sum(1 for e in edges if not _flow_is_primary(e))
+    return round(noise / len(edges), 3)
+
+
+def metric_flow_dup_pairs(diagram: dict) -> int:
+    """同 (源, 目标) 出现多条同向流的对数（反向的请求/响应不算）。"""
+    seen: dict[tuple[str, str], int] = {}
+    for e in edge_cells(diagram):
+        key = (
+            str(((e.get("source") or {}).get("cell")) or ""),
+            str(((e.get("target") or {}).get("cell")) or ""),
+        )
+        if not key[0] or not key[1]:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+    return sum(1 for n in seen.values() if n > 1)
+
+
 def evaluate(record: dict) -> Optional[dict[str, Any]]:
     """对一次建模结果算出全部指标。无 DFD 时返回 None。"""
     d = first_diagram(record)
@@ -1347,6 +1419,10 @@ def evaluate(record: dict) -> Optional[dict[str, Any]]:
         "n_nodes": len(node_cells(d)),
         "n_edges": len(edge_cells(d)),
         "n_boundaries": len(boundary_cells(d)),
+        # 源头降噪三项（见 metric_* 上方说明）
+        "primary_flows": metric_primary_flows(d),
+        "flow_noise_ratio": metric_flow_noise_ratio(d),
+        "flow_dup_pairs": metric_flow_dup_pairs(d),
     }
 
 
@@ -1376,6 +1452,11 @@ def format_report(name: str, m: dict[str, Any]) -> str:
     lines.append(f"  edge_crossing={cross} 处 ({cross / n_edges:.2f}/条流, 目标<=1.5)")
     for it in (m.get("edge_crossing_pairs") or [])[:3]:
         lines.append(f"       - {it}")
+    # 源头降噪三项：次要流占比 / 同向重复对流 / 重要流数（降噪不得减少最后一项）
+    lines.append(
+        f"  重要流={m.get('primary_flows', 0)}  次要流占比={float(m.get('flow_noise_ratio') or 0):.0%} "
+        f"(目标<=15%)  同向重复对流={m.get('flow_dup_pairs', 0)} (目标0)"
+    )
     return "\n".join(lines)
 
 

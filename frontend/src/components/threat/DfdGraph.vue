@@ -76,6 +76,23 @@
             全部<span class="lg-count">{{ flowStats.total }}</span>
           </button>
         </span>
+        <span class="lg-sep"></span>
+        <!-- 信任边界显示开关：边界框通常横跨好几条泳道，边界一多就是几圈长虚线
+             和数据流抢权重（用户反馈"看着很乱"）。默认显示；一键收起只留节点、
+             数据流与泳道，跨界落点标记随边界一起收起（没有边框时红方块无从对照）。 -->
+        <span class="lg-seg" role="group" aria-label="信任边界显示">
+          <button
+            type="button"
+            class="lg-seg-btn"
+            :class="{ active: showBoundaries }"
+            :title="showBoundaries
+              ? `隐藏 ${boundaryCount} 个信任边界虚线框（连同跨界落点标记）`
+              : `显示 ${boundaryCount} 个信任边界虚线框`"
+            @click="setBoundariesVisible(!showBoundaries)"
+          >
+            边界<span class="lg-count">{{ boundaryCount }}</span>
+          </button>
+        </span>
       </div>
     </div>
 
@@ -365,6 +382,12 @@ function flowHasHighThreat(cell) {
 
 /** 单条流是否属于「重要」（主图默认只画这些） */
 function flowIsImportant(cell) {
+  const d0 = cell?.data || {}
+  // 后端下发的主/次分层优先（model_builder 按"跨边界 / 加密 / 公网 / 挂高危威胁"
+  // 判定并写入 data.importance）：口径只此一份，前端不再各推一套。
+  // 老模型没有该字段时退回下面这段本地推导（两者同口径）。
+  if (d0.importance === 'primary') return true
+  if (d0.importance === 'secondary') return false
   const d = cell?.data || {}
   return d.crossesTrustBoundary === true
     || d.isEncrypted === true
@@ -404,6 +427,33 @@ function setFlowViewMode(mode) {
   if (flowViewMode.value === mode) return
   flowViewMode.value = mode
   applyFlowFilter()
+}
+
+// —— 信任边界显示开关（视图层，不改模型数据）——
+// 边界框横跨多条泳道：模型里边界一多，几圈长虚线和数据流互相抢权重，画布显乱
+// （用户反馈）。默认显示，需要干净画面时一键收起。
+const showBoundaries = ref(true)
+// 可画的边界数（有成员、非空），切档位重绘时重算，供按钮上的计数显示
+const boundaryCount = ref(0)
+
+function setBoundariesVisible(on) {
+  showBoundaries.value = on
+  applyBoundaryVisibility()
+}
+
+/** 把"显示边界"档位写到节点上；跨界落点标记跟随（没有边框时红方块无从对照） */
+function applyBoundaryVisibility() {
+  if (!graph) return
+  for (const n of graph.getNodes()) {
+    const d = n.getData?.() || {}
+    if (d.crossMarker === true) {
+      n.setVisible(showBoundaries.value)
+      continue
+    }
+    if (d.tdCell?.shape !== 'tm.BoundaryBox') continue
+    // 空边界（无成员）本来就不画，别被开关翻出来
+    n.setVisible(showBoundaries.value && d.boundaryDrawable !== false)
+  }
 }
 
 /** 把当前档位的可见性与基准透明度写到所有边上 */
@@ -481,7 +531,9 @@ const SPEC = {
     'tm.Actor': { fill: '#e0f2fe', stroke: '#0284c7', text: '#075985', radius: 26, figure: 'capsule', icon: '' },
     'tm.Process': { fill: '#dcfce7', stroke: '#16a34a', text: '#14532d', radius: 8, figure: 'rounded', icon: '' },
     'tm.Store': { fill: '#fef3c7', stroke: '#d97706', text: '#92400e', radius: 0, figure: 'cylinder', icon: '' },
-    'tm.BoundaryBox': { fill: '#f1f5f9', stroke: '#64748b', text: '#475569', radius: 6, figure: 'rounded', icon: '' },
+    // 边界描边与 dfd_spec 同步调浅（#94a3b8）：边界是背景分区层，
+    // 框多时不和数据流抢视觉权重
+    'tm.BoundaryBox': { fill: '#f1f5f9', stroke: '#94a3b8', text: '#475569', radius: 6, figure: 'rounded', icon: '' },
     'tm.Model': { fill: '#ede9fe', stroke: '#7c3aed', text: '#4c1d95', radius: 8, figure: 'rounded', icon: '🧠' },
     'tm.Prompt': { fill: '#fae8ff', stroke: '#c026d3', text: '#86198f', radius: 8, figure: 'rounded', icon: '📝' },
     'tm.VectorStore': { fill: '#f5d0fe', stroke: '#a21caf', text: '#701a75', radius: 0, figure: 'cylinder', icon: '📚' },
@@ -1323,6 +1375,7 @@ function render(model) {
   // 泳道原始几何随 cells 一起清空：换图后若还留着上一张图的 band，
   // 拉宽逻辑会去 getCellById 一个已不存在的泳道（白跑一轮并且语义错乱）。
   laneBands = []
+  boundaryCount.value = 0
   if (laneSyncRaf) {
     cancelAnimationFrame(laneSyncRaf)
     laneSyncRaf = 0
@@ -1362,6 +1415,10 @@ function render(model) {
     avoidEdgeLabels()
     // 跨界落点标记：必须在全部边/边界就位后计算交点（依赖路由顶点）
     addCrossMarkers()
+    // 重绘后按当前「边界」档位恢复可见性（并刷新按钮上的计数）
+    boundaryCount.value = graph.getNodes()
+      .filter((n) => n.getData?.()?.boundaryDrawable === true).length
+    applyBoundaryVisibility()
     console.log('[DfdGraph] render done, cells in graph:', graph.getCells().length)
   } catch (e) {
     console.error('[DfdGraph] render error:', e, e.stack)
@@ -1497,9 +1554,10 @@ function addNode(cell) {
         // 用户反馈"信任边界把泳道挡住了"）。空边界仍整块透明不可见。
         fill: 'transparent',
         stroke: isEmptyBoundary ? 'transparent' : s.stroke,
-        strokeWidth: isBoundary ? 2 : 1.6,
-        // 只有 trust boundary 自身画虚线；AI 子类型不应再用虚线表达
-        strokeDasharray: isBoundary ? '10 5' : null,
+        strokeWidth: 1.6,
+        // 只有 trust boundary 自身画虚线；AI 子类型不应再用虚线表达。
+        // 虚线比早期更细更密（1.6 / 7-6）：边界是背景分区层，别和数据流抢权重。
+        strokeDasharray: isBoundary ? '7 6' : null,
         rx: radius,
         ry: radius,
       }
@@ -1514,7 +1572,7 @@ function addNode(cell) {
     // 节点 zIndex 必须高于 lane（-100）和边（50），才能保证节点始终可点、可读、不被遮挡。
     zIndex: cell.zIndex ?? 200,
     visible: !isEmptyBoundary,
-    data: { tdCell: cell },
+    data: { tdCell: cell, boundaryDrawable: isBoundary && !isEmptyBoundary },
     markup: nodeMarkup,
     attrs: {
       body: bodyAttrs,

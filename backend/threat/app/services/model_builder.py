@@ -12,6 +12,7 @@ import math
 import uuid
 from typing import Any
 
+from .flow_convergence import converge_flows
 from .methodology import normalize_methodology
 
 logger = logging.getLogger(__name__)
@@ -374,9 +375,20 @@ class ThreatModelBuilder:
         if not isinstance(summary, dict):
             summary = {"title": "AI 生成的威胁模型", "description": ""}
 
-        # 数据流去重：(sourceId, targetId, name) 完全相同的流只保留一条，
-        # 避免 AI 重复生成同一条边导致连线与标签重叠
-        flows = self._dedupe_flows(flows)
+        # 数据流收敛：同向 + 同安全语义的流合并为一条（避免连线与标签重叠）。
+        # 返回的 id 映射用于把被合并流上的威胁**改挂**到代表流（威胁一条不丢）。
+        flows, flow_id_remap = self._dedupe_flows(flows)
+        if flow_id_remap:
+            moved = 0
+            for t in threats:
+                new_id = flow_id_remap.get(str(t.get("componentId") or ""))
+                if new_id:
+                    t["componentId"] = new_id
+                    moved += 1
+            logger.info(
+                "威胁迁移：%d 条威胁从被合并的数据流改挂到代表流（总数不变=%d）",
+                moved, len(threats),
+            )
 
         # P3 修复：自动添加外层"业务系统边界"兜底。
         # 当模型没有任何 trustboundary 节点时，AI 偶尔会漏标，DFD 呈现
@@ -443,6 +455,33 @@ class ThreatModelBuilder:
                     ]
                     break
 
+        # 3.2 数据流「重要性」标记：后端下发、前端只读，三处口径统一
+        #   primary  = 跨信任边界 | 加密 | 公网 | 挂 high|critical 威胁
+        #   secondary= 无安全语义的纯编排流（收敛后应很少）
+        # 与 dfd_layout_metrics._flow_is_primary 同口径；前端"主图/全部"优先读它，
+        # 不再各自推导（老逻辑见 DfdGraph.flowIsImportant，仅作老模型兜底）。
+        primary_n = 0
+        flow_cells = [c for c in cells if c.get("shape") == "tm.Flow"]
+        for cell in flow_cells:
+            data = cell.setdefault("data", {})
+            high = any(
+                str((t or {}).get("severity") or "").lower() in ("high", "critical")
+                for t in (cell.get("threats") or [])
+            )
+            is_primary = bool(
+                data.get("crossesTrustBoundary")
+                or data.get("isEncrypted")
+                or data.get("isPublicNetwork")
+                or high
+            )
+            data["importance"] = "primary" if is_primary else "secondary"
+            if is_primary:
+                primary_n += 1
+        logger.info(
+            "数据流分层：重要流 %d 条 / 次要流 %d 条（共 %d）",
+            primary_n, len(flow_cells) - primary_n, len(flow_cells),
+        )
+
         # 3.5/3.6 layoutHints 几何（route + 标签落点）统一由模块级
         # recompute_layout_hints 在 diagram 组装后重算——用户编辑
         # （update_layout / rename_element）也走同一入口，保证
@@ -486,7 +525,152 @@ class ThreatModelBuilder:
         }
         # 统一几何重算入口：补 route 与 labelX/labelY（唯一真源）
         recompute_layout_hints(model["detail"]["diagrams"][0])
+        # P3：泳道内顺序微调（以**真实布线交叉数**为目标，严格变好才接受）；
+        # 有接受才需要再重算一次几何（route/label 跟着新坐标走）。
+        _polish = self._polish_lane_order(model["detail"]["diagrams"][0])
+        if _polish["accepted"]:
+            recompute_layout_hints(model["detail"]["diagrams"][0])
+            logger.info(
+                "泳道内顺序微调：接受 %d/%d 次相邻交换，交叉 %d → %d 处",
+                _polish["accepted"], _polish["evals"],
+                _polish["before"], _polish["after"],
+            )
         return model
+
+    # ------------------------------------------------------------------
+    # P3：泳道内顺序微调（以真实布线交叉数为目标）
+    # ------------------------------------------------------------------
+    # 为什么这条路值得走：此前两次"看图直觉"的优化都被实测否掉 —— 布线代价函数
+    # 加交叉项（真实 62→65 处）、邻居重心法重排（62→70 处），见 dfd_layout_metrics
+    # 里的实测记录。它们的共同问题是拿**代理指标**当目标（直线交叉 / 位置估计）。
+    # 这里改成：相邻两个节点交换位置 → 真的重新布线 → 数真实交叉处数，
+    # **只有严格变少才接受** ⇒ 数学上不可能让结果变差（与交叉局部重路由同一套准则）。
+    # 实测潜力（4 份真实结果，单步最好的一对交换）：51→22、135→115、62→34、62→34。
+    #
+    # 约束：允许跨边界交换（实测"只允许同边界内交换"会把最大收益挡掉：某张图
+    # 一步就能 62→34，限制后只降到 59）。做法是交换后把"移动后仍应包住该节点"的
+    # 边界矩形**只增不减**地撑开 —— 边界成员集合不变、成员不会越框，而边界框
+    # 在渲染端本来就会按成员重算（画布/导出都按内容收缩），所以撑大无副作用。
+    # 每次评估同时检查：交叉严格变少、且成员越框/节点重叠/边界重叠都不新增。
+    # 预算：只处理 ≤ _POLISH_MAX_EDGES 条边的图，最多 _POLISH_MAX_EVALS 次评估。
+    #
+    # 为什么**不用**墙上时间做预算：一开始加了"最多 4 秒"，结果同一份输入在快慢
+    # 不同的机器上停在不同的评估点 → 布局不可复现（回归测试 test_lane_order_polish
+    # _never_worse 直接报"微调结果不可复现"）。计数预算才是确定的：同输入必得同结果。
+    # 24 次评估 ≈ 最坏 5 秒（真实 13~16 组件图的每次评估约 0.2s），建模要跑几分钟，
+    # 这点开销可以忽略。
+    _POLISH_MAX_EVALS = 24
+    _POLISH_MAX_EDGES = 40
+
+    def _polish_lane_order(self, diagram: dict[str, Any]) -> dict[str, int]:
+        """泳道内相邻节点交换的局部爬山（目标是真实布线交叉数）。
+
+        Returns:
+            {"evals": 评估次数, "accepted": 接受次数, "before": 原交叉, "after": 新交叉}
+        """
+        from . import dfd_layout_metrics as _lm
+
+        empty = {"evals": 0, "accepted": 0, "before": 0, "after": 0}
+        cells = diagram.get("cells") or []
+        lanes = diagram.get("lanes") or []
+        if not cells or not lanes:
+            return empty
+        if len(_lm.edge_cells(diagram)) > self._POLISH_MAX_EDGES:
+            return empty  # 大图不做：每次评估都是一次全量布线
+
+        nodes = _lm.node_cells(diagram)
+        if len(nodes) < 2:
+            return empty
+        bounds = [c for c in cells if c.get("shape") == "tm.BoundaryBox"]
+
+        def _rect(c: dict) -> tuple[float, float, float, float]:
+            return _lm.rect_of(c)
+
+        # 泳道分组：节点按 x 升序，组成"可交换的相邻对"
+        groups: list[list[dict]] = []
+        for lane in lanes:
+            ly0 = float(lane.get("y", 0.0))
+            ly1 = ly0 + float(lane.get("height", 0.0))
+            inside = []
+            for c in nodes:
+                r = _rect(c)
+                cy = (r[1] + r[3]) / 2.0
+                if ly0 <= cy <= ly1:
+                    inside.append(c)
+            if len(inside) >= 2:
+                inside.sort(key=lambda c: (float((c.get("position") or {}).get("x", 0.0)),
+                                           str(c.get("id") or "")))
+                groups.append(inside)
+        if not groups:
+            return empty
+
+        def _grow_boundaries_for(cell: dict) -> list[tuple[dict, dict, dict]]:
+            """把"包着该节点"的边界矩形撑到能容纳它（只增不减）。
+
+            返回被改过的 [(边界 cell, 原 position, 原 size)]，不接受时整体还原。
+            """
+            r = _rect(cell)
+            cx, cy = (r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0
+            touched: list[tuple[dict, dict, dict]] = []
+            for b in bounds:
+                br = _rect(b)
+                if not (br[0] <= cx <= br[2] and br[1] <= cy <= br[3]):
+                    continue  # 该节点不在这个边界里（成员集合不变，不扩无关边界）
+                new = (min(br[0], r[0]), min(br[1], r[1]), max(br[2], r[2]), max(br[3], r[3]))
+                if new == br:
+                    continue
+                old_pos = dict(b.get("position") or {})
+                old_size = dict(b.get("size") or {})
+                touched.append((b, old_pos, old_size))
+                b["position"] = {**old_pos, "x": new[0], "y": new[1]}
+                b["size"] = {**old_size, "width": new[2] - new[0], "height": new[3] - new[1]}
+            return touched
+
+        def _violations() -> tuple[int, int, int]:
+            return (len(_lm.metric_member_outside(diagram)),
+                    len(_lm.metric_node_overlap(diagram)),
+                    len(_lm.metric_boundary_overlap(diagram)))
+
+        before = _lm.metric_edge_crossing(diagram)
+        # 基线缺陷数（历史模型可能本来就有成员越框）：只要求交换**不新增**缺陷，
+        # 而不是要求归零 —— 否则存量模型一个交换都做不了
+        base_viol = _violations()
+        if base_viol != (0, 0, 0):
+            logger.info("泳道顺序微调：基线已有缺陷 %s，仅承诺不新增", base_viol)
+        best = before
+        evals = accepted = 0
+        improved = True
+        while improved:
+            improved = False
+            for group in groups:
+                for a, b in zip(group, group[1:]):
+                    if evals >= self._POLISH_MAX_EVALS:
+                        break
+                    pa = dict(a.get("position") or {})
+                    pb = dict(b.get("position") or {})
+                    ax, bx = pa.get("x"), pb.get("x")
+                    if ax is None or bx is None or abs(float(ax) - float(bx)) < 1.0:
+                        continue
+                    a["position"] = {**pa, "x": bx}
+                    b["position"] = {**pb, "x": ax}
+                    touched = _grow_boundaries_for(a) + _grow_boundaries_for(b)
+                    cross = _lm.metric_edge_crossing(diagram)
+                    evals += 1
+                    if cross < best and _violations() <= base_viol:
+                        best = cross
+                        accepted += 1
+                        improved = True
+                    else:  # 不接受 → 节点位置与被动过的边界几何整体还原
+                        a["position"] = pa
+                        b["position"] = pb
+                        for bcell, old_pos, old_size in touched:
+                            bcell["position"] = old_pos
+                            bcell["size"] = old_size
+                if evals >= self._POLISH_MAX_EVALS:
+                    break
+            if evals >= self._POLISH_MAX_EVALS:
+                break
+        return {"evals": evals, "accepted": accepted, "before": before, "after": best}
 
     def _layout_hints_payload(
         self,
@@ -532,29 +716,26 @@ class ThreatModelBuilder:
     # 跨越 ≥2 层的长边在源/目标端点上下错位，让折角斜线明显
     _LONG_EDGE_VERTICAL_JITTER = 30
 
-    def _dedupe_flows(self, flows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """合并 (sourceId, targetId, name) 完全重复的数据流。
+    def _dedupe_flows(
+        self, flows: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """收敛数据流：同向 + 同安全语义的重复流合并为一条。
 
-        LLM 生成的数据流偶尔会把同一条边重复输出多遍，导致图中出现
-        重叠连线和重复标签。这里保留首条；带威胁的流不做去重，避免
-        威胁因组件 id 被移除而悬空。
+        委托 ``flow_convergence.converge_flows``（键 = 源/目标/加密/公网）。
+        返回 (合并后的流, {被合并 id: 代表 id})，后者用于把威胁改挂到代表流上。
+
+        与老实现的差别：老实现只合并 (sourceId, targetId, name) 三者全同的流，
+        且"带威胁的流不敢合并"（怕威胁悬空）——于是同一条通道上「上传体征数据」
+        与「设备鉴权」两条平行线永远留着。现在用 id 重映射解决悬空问题，
+        **合并不丢威胁**成为硬约束（build() 里执行搬迁）。
         """
-        seen: dict[tuple[str, str, str], int] = {}
-        merged: list[dict[str, Any]] = []
-        for f in flows:
-            if f.get("threats"):
-                merged.append(f)
-                continue
-            key = (
-                f.get("sourceId") or "",
-                f.get("targetId") or "",
-                f.get("name") or "",
+        merged, remap = converge_flows(flows)
+        if remap:
+            logger.info(
+                "数据流收敛：%d → %d 条，%d 条同向同语义流被合并（威胁改挂代表流）",
+                len(flows or []), len(merged), len(remap),
             )
-            if key not in seen:
-                seen[key] = len(merged)
-                merged.append(f)
-            # 完全重复且无威胁 → 丢弃
-        return merged
+        return merged, remap
 
     def _build_outer_boundary(
         self, components: list[dict[str, Any]]
