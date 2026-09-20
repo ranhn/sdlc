@@ -40,10 +40,12 @@
     </el-card>
 
     <!-- 列表（每页 12 条，分页见表格下方 .vuln-pager） -->
+    <!-- border：Element Plus 的列宽拖拽必须开 border 才有拖拽手柄（与「提交漏洞」页一致） -->
     <el-table
       :data="pagedList"
       v-loading="loading"
       stripe
+      border
       class="vuln-table tight-table"
       :show-overflow-tooltip="true"
       ref="tableRef"

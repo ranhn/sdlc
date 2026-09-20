@@ -40,6 +40,56 @@ body {
      ② 以后新增列表页 class 一挂就有同样口径，不用复制粘贴。
    用法：<el-table class="tight-table" ...>，并确保表格开了 show-overflow-tooltip
      —— 这里 nowrap 会截断长文本，没有 tooltip 就等于丢信息。 */
+/* 隐藏"为了拖拽列宽而开"的竖线。
+   Element 要 table 开 border 才提供列宽拖拽，但同时会画出每列的纵向边线；视觉上我们
+   不要竖线，所以把纵向边线改成**透明**（保留 1px 占位，列宽/对齐与无边框时完全一致）。
+   敢这么覆盖的依据（看过源码，不是硬顶）：
+     · 拖拽命中判定是**几何计算** —— 鼠标落在表头单元格右边缘 8px 内即变 col-resize
+       （源码：rect.right - event.clientX < 8），与边框是否可见无关；
+     · 拖动时那条跟随的竖线是独立元素 .el-table__column-resize-proxy，不受这里影响。
+   选择器写成 5 个类，确保压过 Element 自带的 `.el-table .el-table.el-table--border
+   .el-table__cell`（4 个类）—— 不靠"谁后加载"取胜。横向的分隔线（行线/表头下边线）保留。 */
+.el-table.el-table--border.tight-table .el-table__inner-wrapper .el-table__cell {
+  border-right-color: transparent;
+}
+.el-table.tight-table.el-table--border::before,
+.el-table.tight-table.el-table--border::after {
+  background-color: transparent;
+}
+
+/* 表头「这里能拖动调列宽」的视觉提示。
+   背景：竖线被隐藏后，用户完全看不出哪里能拉（只剩鼠标移到边缘时变 col-resize）。
+   做法：在表头每个单元格的右边缘画一条短竖线，hover 该列时变主色加粗 ——
+   正好标出"可拖拽的那条边界"。
+   两个细节：
+     · 用 th 的 ::after（Element 的表头单元格既没有定位也没占用 ::after，不会打架）；
+     · 最后一列不给提示 —— Element 默认 allowDragLastColumn=false，最后一列本来就拖不动，
+       画上提示反而误导（固定列本身是 position:sticky!important，不受这里的 relative 影响）。 */
+.el-table.tight-table.el-table--border .el-table__header-wrapper th.el-table__cell {
+  position: relative;                 /* 作为下面 ::after 的定位参照 */
+}
+.el-table.tight-table.el-table--border .el-table__header-wrapper th.el-table__cell::after {
+  content: "";
+  position: absolute;
+  top: 28%;
+  bottom: 28%;
+  right: 0;
+  width: 1px;
+  /* 加深过两次才够明显：0.12 叠在表头底色(#f5f7fa)上只有 #d9dce1（对比度 1.28:1，
+     几乎看不见）→ 0.35 是 #a4a9b1（2.20:1），一眼能看出列边界、又不像网格线那样抢眼。
+     再往上 0.5 约等于 #828792（3.36:1），就接近真正的网格线了。 */
+  background: rgba(15, 23, 42, 0.35);
+  pointer-events: none;               /* 别挡住拖拽命中区 */
+  transition: background-color 0.15s, width 0.15s;
+}
+.el-table.tight-table.el-table--border .el-table__header-wrapper th.el-table__cell:hover::after {
+  width: 2px;
+  background: var(--primary, #3b82f6);
+}
+.el-table.tight-table.el-table--border .el-table__header-wrapper th.el-table__cell:last-child::after {
+  content: none;                      /* 最后一列不可拖，不给提示 */
+}
+
 .el-table.tight-table .el-table__cell { padding: 6px 0 !important; }
 .el-table.tight-table .cell {
   padding-left: 6px;

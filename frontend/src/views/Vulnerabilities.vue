@@ -62,10 +62,14 @@
     </el-card>
 
     <!-- 列表（每页 12 条，分页见表格下方 .vuln-pager） -->
+    <!-- border：Element Plus 的列宽拖拽**必须**在表格上开 border 才会出现拖拽手柄
+         （列的 resizable 默认为 true，但没 border 就拖不动）。开 border 后每列可左右拖宽，
+         长标题拖宽后就能读全。列宽在刷新/重新进入页面后会回到默认（未做持久化）。 -->
     <el-table
       :data="pagedList"
       v-loading="loading"
       stripe
+      border
       class="vuln-table tight-table"
       :show-overflow-tooltip="true"
       ref="tableRef"
