@@ -9,7 +9,10 @@
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+# BuildKit 缓存挂载：npm 下载缓存留在构建缓存里（不写进镜像层）。
+# lock 文件变化导致本层失效时，也不必重新下载全部依赖。
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --no-audit --no-fund
 COPY frontend/ .
 RUN npm run build
 

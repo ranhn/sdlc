@@ -7,18 +7,27 @@
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+# BuildKit 缓存挂载：npm 下载缓存留在构建缓存里（不写进镜像层）
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --no-audit --no-fund
 COPY frontend/ .
 RUN npm run build
 
 # ---- 阶段 2：运行后端 ----
+# 注意：不要用浮动 tag。python:3.12-slim 上游一重新发布，下面 COPY/RUN 的层缓存
+# 会全部失效、依赖要从 PyPI 全量重下（实测一次构建 380s 主要耗在这）。
+# 需要锁版本时在构建机上取一次 digest 贴上来：
+#   docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}'
 FROM python:3.12-slim
 WORKDIR /app
 
 # Python 依赖
+# BuildKit 缓存挂载：pip 下载缓存留在构建缓存里、不写进镜像层（体积不变）。
+# 层缓存失效也能离线装包，几秒完成，不必再按带宽全量下载。
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir uvicorn[standard]
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt \
+    && pip install "uvicorn[standard]"
 
 # 后端代码
 COPY backend/ ./backend/
