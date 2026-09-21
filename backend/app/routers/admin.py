@@ -189,8 +189,17 @@ def pick_users(
     而列表页每次刷新都会请求它 —— 里面大部分字段（邮箱/角色/部门/飞书 id）
     下拉根本用不到。这个接口一次约 60KB。
     不传 limit、不分页：前端是本地按关键词过滤，截断会让"某些人搜不到"。
+
+    **权限：任何已登录用户** —— 此前这里是 require_admin(current)，那是错的。
+    漏洞的负责人可以是**任何同事**，所以凡是"能指派"的人都得能列出全部人员；而"能指派"的人里
+    包含**修复人本人**（他在「漏洞修复」页可以把自己的漏洞转派给同事，见 vulns.assign_vuln
+    的负责人通道）。此前只给了他按钮、却没给他数据源：接口 403 → 前端 catch 后下拉空白，
+    现象就是"点开指派弹窗里面没有内容"（实测踩过）。
+    这里放开的**只有姓名/用户名这 3 个字段**；带邮箱/角色/部门/飞书 id 的 /users
+    仍然只给 admin/secops（下面那个接口的 require_admin 不动）。
+
+    current 只作"已登录"校验（Depends(get_current_user)），不参与过滤。
     """
-    require_admin(current)
     return _users_query(db, q).order_by(User.id.asc()).all()
 
 

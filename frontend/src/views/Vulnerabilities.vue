@@ -1015,8 +1015,10 @@ async function ensureUsers() {
   usersLoading.value = true
   try {
     users.value = (await adminApi.userPicks()).data || []
-  } catch {
+  } catch (e) {
     usersLoaded = false   // 失败不算"已加载"，下次打开弹窗可以重试
+    // 必须报出来：以前是空 catch，接口 403 时下拉只是"空的"，看不出是权限问题
+    ElMessage.error(extractErrorMsg(e, '加载人员列表失败'))
   } finally {
     usersLoading.value = false
   }

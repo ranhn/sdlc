@@ -301,6 +301,32 @@ def test_update_missing_user_returns_404():
     assert client.put("/api/users/99999", json={"full_name": "x"}).status_code == 404
 
 
+# ============ 人员下拉（/users/pick）的权限边界 ============
+def test_user_pick_open_to_any_logged_in_user_but_users_stays_admin_only():
+    """人员下拉对**任何已登录用户**开放，而全量人员列表仍然只给 admin/secops。
+
+    背景：漏洞的负责人可以是任何同事，所以"能指派"的人必须能列出全部人员 —— 而"能指派"的人里
+    包含**修复人本人**（他可以在「漏洞修复」页把自己负责的漏洞转派给同事）。此前
+    /users/pick 上有 require_admin：研发只拿到按钮、拿不到数据源，点开「指派」弹窗一片空白
+    （前端又是空 catch，看不出是 403）—— 这就是实测踩到的现象。
+    这里同时钉住"放宽的只有这一份 3 字段数据"：邮箱/角色/部门/飞书 id 仍锁在 /users 里。
+    """
+    db, roles, dept, client = _setup()
+    tracy = db.query(User).filter(User.username == "Tracy.Yang").first()   # 普通权限
+    CURRENT["user"] = tracy
+
+    r = client.get("/api/users/pick")
+    assert r.status_code == 200, f"普通用户应能读人员下拉，实际 {r.status_code}: {r.text}"
+    rows = r.json()
+    # 必须能选到任何人（含 admin/secops —— 负责人不按角色限制）
+    assert {"admin", "secops1", "Tracy.Yang"} <= {u["username"] for u in rows}, rows
+    # 只暴露 3 个字段：多一个字段就是多一份顺带泄露
+    assert set(rows[0].keys()) == {"id", "username", "full_name"}, rows[0]
+
+    # 反过来：带邮箱/角色/部门/飞书 id 的全量列表仍 403 —— 放宽的只有下拉这一个接口
+    assert client.get("/api/users").status_code == 403, "全量人员列表不该对普通用户开放"
+
+
 # ============ 运行器 ============
 def _main() -> int:
     cases = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
