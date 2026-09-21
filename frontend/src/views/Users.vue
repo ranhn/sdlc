@@ -404,7 +404,16 @@ async function onFeishuSync() {
     syncResult.value = r.data
     syncDialog.value = true
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '飞书同步失败')
+    // 未处理异常时后端返回的是**纯文本** "Internal Server Error"（不是 JSON，没有 detail），
+    // 只取 detail 会退化成干巴巴的"飞书同步失败"，排查时等于没有信息。
+    // 这里把「字符串响应 / detail / 原生错误消息 + HTTP 状态码」都显示出来。
+    const d = e?.response?.data
+    const reason = (typeof d === 'string' && d.trim())
+      || d?.detail
+      || e?.message
+      || '未知原因'
+    const status = e?.response?.status
+    ElMessage.error(`飞书同步失败：${String(reason).slice(0, 200)}${status ? `（HTTP ${status}）` : ''}`)
   } finally {
     syncing.value = false
   }

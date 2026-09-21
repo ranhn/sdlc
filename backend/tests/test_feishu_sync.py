@@ -546,6 +546,52 @@ def test_initial_password_skipped_for_manual_accounts():
     assert feishu.initial_password_for(manual) is None
 
 
+# ============ 连接池必须跟着事件循环走 ============
+
+def test_client_is_rebuilt_when_event_loop_changes():
+    """跨事件循环复用 AsyncClient 会抛 "Event loop is closed"（实测事故）。
+
+    事故现场：飞书通知在临时线程里用 asyncio.run 发，创建了共享客户端；之后主循环里的
+    通讯录同步复用它 → "从飞书同步"100% 失败。修法就是按循环缓存客户端。
+    """
+    async def probe():
+        return feishu._client()
+
+    first = asyncio.run(probe())      # 循环 1 里创建
+    second = asyncio.run(probe())     # 循环 2（新循环）里取用
+    assert first is not second, "换了事件循环却复用了同一个 AsyncClient（会崩）"
+    assert not second.is_closed
+
+    # 同一个循环内仍然复用（否则每次请求都重建连接池，同步会慢好几倍）
+    async def twice():
+        return feishu._client(), feishu._client()
+
+    a, b = asyncio.run(twice())
+    assert a is b, "同一个事件循环内应复用同一个客户端"
+
+
+# ============ 返回码要能直接指导排查 ============
+
+def test_send_error_hint_maps_known_codes():
+    """把飞书返回码翻成人话，且未知码绝不编造解释。
+
+    为什么值得专门测：这两个坑都实际踩过 —— 230006（没启用机器人能力）和
+    230013（应用可用范围不含此人，改了还得发布版本才生效）。只回一串数字的话，
+    排查要靠翻文档，而这句话能直接告诉管理员去改哪里。
+    """
+    s = feishu.explain_send_error(230013, "Bot has NO availability to this user.")
+    assert "230013" in s and "可用范围" in s and "发布" in s, s
+
+    s6 = feishu.explain_send_error(230006, "Bot ability is not activated.")
+    assert "机器人" in s6, s6
+
+    # 未知码原样返回，不硬凑解释
+    unknown = feishu.explain_send_error(123456, "something weird")
+    assert unknown == "飞书发消息失败：code=123456 something weird", unknown
+    # 非数字 code（理论上不会有）也不能炸
+    assert "……" in feishu.explain_send_error(None, "……")
+
+
 # ============ 运行器 ============
 
 def _main():

@@ -31,6 +31,10 @@ class Token(BaseModel):
     full_name: str
     username: str
     must_change_password: bool = False
+    # 用户 id：前端要用它判断"这条记录是不是我的"（如修复人能否看到确认/驳回、
+    # 提交人能否编辑自己提交的漏洞）。此前不返回，那些判断在前端永远是"否"
+    #（表现为修复人看不到按钮），只能靠从 JWT 的 sub 解 —— 这里显式给出来。
+    id: Optional[int] = None
 
 
 # ============ 用户 ============

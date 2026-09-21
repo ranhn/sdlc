@@ -29,6 +29,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt \
     && pip install "uvicorn[standard]"
 
+# 中文字体：Word 报告里的数据流图（后端 PIL 渲染）依赖它。
+# slim 镜像默认**没有任何字体**，缺字体时导出的图会"只有框线、没有文字"，
+# 而且过去是静默的（修完才加的日志）—— 排查一次很费劲，这里一次性装好。
+# 体积：fonts-noto-cjk 约 90MB；只想要小体积可换成 fonts-wqy-zenhei（约 5MB），
+# 两者路径都已在 dfd_renderer.font_candidates 里。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # 后端代码
 COPY backend/ ./backend/
 

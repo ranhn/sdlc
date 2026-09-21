@@ -14,6 +14,27 @@ from app.utils import network_clock  # noqa: F401
 
 import os
 
+# ⚠️ 必须在 import 任何 app 子模块**之前**加载 .env ——
+# `security.py` 在 import 阶段就读取 SECRET_KEY（用于签发/校验 JWT），而它是由下面的
+# `from app.app_entry import app` → `routers.auth` 链式 import 触发的。顺序一旦反了
+# （例如只靠 feishu.py 里的 load_dotenv 兜底 —— auth 比 feishu 先 import），
+# SECRET_KEY 就永远是空字符串，表现为：**服务能正常启动，但一登录就 500**
+# （`RuntimeError: SECRET_KEY 环境变量未设置，生产环境禁止使用默认密钥`，
+# 且所有列表接口都拉不到数据、页面显示"暂无数据"）。已实测踩过。
+# 已有环境变量优先（load_dotenv 默认不覆盖），所以 docker/生产注入不受影响。
+try:
+    from pathlib import Path as _Path
+
+    from dotenv import load_dotenv
+
+    load_dotenv(_Path(__file__).resolve().parents[1] / ".env")
+except Exception:  # noqa: BLE001 —— 缺 dotenv 不该影响启动
+    pass
+
+if not os.getenv("SECRET_KEY"):
+    print("[启动告警] 未读到 SECRET_KEY（应为仓库根 .env 或环境变量）—— 登录会返回 500，"
+          "请在 .env 里配置 SECRET_KEY 后重启。", flush=True)
+
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 

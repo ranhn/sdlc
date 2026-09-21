@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from typing import Any, Optional
 
 from . import dfd_spec as _SPEC
@@ -128,19 +129,54 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
     img_h = max(1, int(height * scale))
 
     # ---------- 2. 字体 ----------
+    #
+    # ⚠️ 生产是 python:3.12-slim 容器，**默认一个字体都没有**。这里曾经只列 Windows 路径，
+    # 结果 Linux 上 _load_font 全部返回 None，而下面每一处画字都被 `if xxx and f_xxx:`
+    # 这样的守卫挡掉 —— 表现为**导出的 Word 里数据流图只有框和线、一个字都没有**
+    # （页面上看不出来：页面是浏览器渲染的，只有导出走这条服务端 PIL 路径）。
+    # 因此：Linux 路径必须在前，且"找不到字体"时要**明确报错**，不能再静默降级。
     font_candidates = [
+        # Linux 容器（见 backend/Dockerfile 里安装的 fonts-noto-cjk）
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        # 轻量替代（fonts-wqy-zenhei / fonts-wqy-microhei，约 5MB）
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        # 拉丁兜底：没有中文字形，但至少保证英文/数字不一起消失
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        # 本地 Windows 开发
         r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\msyhbd.ttc",
         r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\simsun.ttc",
     ]
+    font_state: dict[str, Any] = {"path": None, "warned": False}
 
     def _load_font(size: int):
         for path in font_candidates:
             try:
-                return ImageFont_truetype(path, size)
+                font = ImageFont_truetype(path, size)
             except Exception:
                 continue
+            font_state["path"] = path
+            return font
+        if not font_state["warned"]:
+            font_state["warned"] = True
+            # 一次导出只报一次；把"目录里实际有什么"一并打出来，容器缺字体时一眼定位
+            scanned: list[str] = []
+            for d in ("/usr/share/fonts", "/usr/local/share/fonts"):
+                try:
+                    if os.path.isdir(d):
+                        scanned.append(f"{d} → {sorted(os.listdir(d))[:12]}")
+                except Exception:  # noqa: BLE001
+                    pass
+            logger.error(
+                "DFD 渲染找不到任何可用字体，**导出图将只有图形没有文字**。"
+                "容器需安装中文字体（backend/Dockerfile 已装 fonts-noto-cjk；"
+                "轻量替代 fonts-wqy-zenhei）。扫描结果：%s",
+                scanned or "（/usr/share/fonts 不存在）",
+            )
         return None
 
     def ImageFont_truetype(path: str, size: int):
@@ -155,6 +191,11 @@ def render_dfd_png(record: dict[str, Any]) -> Optional[bytes]:
     f_edge = _load_font(int(12 * scale * _SS))
     f_badge = _load_font(int(11 * scale * _SS))
     f_title = _load_font(int(16 * scale * _SS))
+    # 实际用到哪个字体写一行 INFO（容器里字体装没装、装的是哪个，看日志即可确认）
+    if font_state["path"]:
+        logger.info("DFD 渲染字体：%s（scale=%.2f）", font_state["path"], scale)
+    else:
+        logger.warning("DFD 渲染未加载到字体：图上不会有任何文字（原因见上一条 ERROR）")
 
     # ---------- 2b. 图例预留带 ----------
     # 图例不再叠画在内容左下角（历史版本会盖住节点/边），改为在内容

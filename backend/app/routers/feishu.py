@@ -57,21 +57,42 @@ logger = logging.getLogger(__name__)
 FEISHU_CONCURRENCY = 6
 
 _HTTP_CLIENT: httpx.AsyncClient | None = None
+# 记住这个客户端是在哪个事件循环里建的（见 _client 说明：跨循环复用必崩）
+_HTTP_CLIENT_LOOP: Any = None
 
 
 def _client() -> httpx.AsyncClient:
-    """复用同一个 AsyncClient（连接池）。
+    """复用同一个 AsyncClient（连接池），但**必须绑定当前事件循环**。
 
-    原来每次调用都 `async with httpx.AsyncClient(...)` 新建客户端 —— 等于每个请求
-    重新做一次 TLS 握手，400 次调用就多花好几分钟。
+    为什么要判断循环：httpx.AsyncClient 的连接池与创建它的事件循环绑定，跨循环复用会抛
+    ``RuntimeError: Event loop is closed``（在关闭的循环上 call_soon / 关连接）。
+
+    这不是理论风险，是实测事故：飞书通知原先在**临时线程**里用 ``asyncio.run`` 发，
+    它第一次创建了这个共享客户端 → 客户端绑在"通知线程"的循环上（很快就关闭）→
+    之后**主事件循环里的通讯录同步**复用它，于是"从飞书同步"必失败
+    （时间线：通知功能上线当天，同步开始 100% 失败；此前一直正常）。
+
+    现在按循环缓存：循环变了（新线程 / asyncio.run 新建 / 测试里连续 run）就重建客户端，
+    既保留同循环内复用连接池的收益，又不会跨循环踩雷。
     """
-    global _HTTP_CLIENT
-    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+    global _HTTP_CLIENT, _HTTP_CLIENT_LOOP
+    try:
+        loop: Any = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed or _HTTP_CLIENT_LOOP is not loop:
+        if _HTTP_CLIENT is not None and not _HTTP_CLIENT.is_closed:
+            # 旧客户端的连接绑在已失效的循环上，关闭动作本身也可能抛错 —— 忽略即可
+            try:
+                asyncio.ensure_future(_HTTP_CLIENT.aclose())
+            except Exception:  # noqa: BLE001
+                pass
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=20,
             limits=httpx.Limits(max_connections=FEISHU_CONCURRENCY * 2,
                                 max_keepalive_connections=FEISHU_CONCURRENCY * 2),
         )
+        _HTTP_CLIENT_LOOP = loop
     return _HTTP_CLIENT
 
 
@@ -238,14 +259,38 @@ async def _get_tenant_token(app_id: str, app_secret: str) -> str:
 #     · im:message:send_as_bot —— 以应用身份发送单聊消息（本段用的就是它）
 #     · **「应用能力」里必须启用「机器人」** —— 漏了这一步，权限勾对了、凭证也没问题，
 #       发送仍然固定返回 code=230006 "Bot ability is not activated."（已实测确认）
-#     · 接收人必须在应用的「可用范围」内（否则返回 230002 一类错误）
+#     · 接收人必须在应用的「可用范围」内 —— 否则返回 **230013
+#       "Bot has NO availability to this user."**（实测踩过：给自己发完全正常，
+#       发给不在可用范围的同事全部失败）；**改完可用范围必须发布新版本才生效**。
 #   发消息与通讯录同步是两套独立权限：只有 contact:* 是发不出去的。
+#   常见返回码的人话映射见下面的 FEISHU_SEND_ERROR_HINTS / explain_send_error。
 #   想确认到底卡在哪一步，可直接跑 tests 之外的自检：取 token → 发一条给自己，
 #   打印飞书原始返回（排查顺序：连通性 → 鉴权 → open_id → 机器人能力 → 可用范围）。
 #
 # 为什么单独做 token 缓存（同步逻辑里是每次直取）：通讯录同步一次只取一次 token，
 # 而"按人发消息"是持续发生的高频动作 —— 每条都换 token 既慢又容易撞飞书频控。
 # tenant_access_token 有效期 7200s，这里留 5 分钟安全边界。
+# 常见发送失败返回码 → 人话。日志与"重置密码"的页面回报都拼这一段，
+# 否则管理员只看到一串数字，得去翻文档才知道该改哪里。
+FEISHU_SEND_ERROR_HINTS = {
+    230002: "接收人不在应用可用范围",
+    230006: "应用未启用「机器人」能力：飞书后台 → 应用能力 → 机器人",
+    230013: "机器人对该用户不可用：应用「可用范围」不含此人（改完需发布新版本才生效）",
+    230020: "触发飞书频控，稍后重试",
+    99991672: "权限未开通、或开通后没发布版本（im:message:send_as_bot）",
+}
+
+
+def explain_send_error(code: Any, msg: Any) -> str:
+    """把飞书返回码翻成一句人话（未知码原样返回，绝不编造解释）。"""
+    base = f"飞书发消息失败：code={code} {msg}"
+    try:
+        hint = FEISHU_SEND_ERROR_HINTS.get(int(code))
+    except (TypeError, ValueError):
+        hint = None
+    return f"{base}（{hint}）" if hint else base
+
+
 _TOKEN_CACHE: dict[str, Any] = {"value": "", "expire_at": 0.0}
 
 
@@ -339,7 +384,7 @@ def send_and_wait(receive_id: str, msg_type: str, content: Any) -> dict:
     if data.get("code") != 0:
         raise HTTPException(
             status_code=502,
-            detail=f"飞书发消息失败：code={data.get('code')} {data.get('msg')}",
+            detail=explain_send_error(data.get("code"), data.get("msg")),
         )
     return data.get("data") or {}
 

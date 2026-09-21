@@ -12,6 +12,20 @@
 """
 import os
 
+# ⚠️ 必须在 `from .database` / `from .routers` **之前**加载 .env：
+#   · .database 在 import 时读 DATABASE_URL（决定连哪个 sqlite 文件）；
+#   · .routers.auth → security 在 import 时读 SECRET_KEY（漏了它 → 登录 500）。
+# 本文件也能单独启动（`uvicorn app.app_entry:app --reload`），所以这里同样兜一层；
+# 从 main.py 启动时它已经加载过，load_dotenv 不覆盖已有值，重复调用无副作用。
+try:
+    from pathlib import Path as _Path
+
+    from dotenv import load_dotenv
+
+    load_dotenv(_Path(__file__).resolve().parents[2] / ".env")
+except Exception:  # noqa: BLE001 —— 缺 dotenv 不该影响启动
+    pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

@@ -60,9 +60,13 @@ async function handleLogin() {
     // authApi.login 已经解包 response.data，res 直接是后端返回的 body
     const data = res
     // 登录接口返回 { access_token, token_type, role, full_name, username, must_change_password }
+    // id 必须带上：多处权限判断要用它比对"这条记录是不是我的"
+    //（如修复人能否看到确认/驳回、提交人能否编辑自己提交的漏洞）
     const user = {
+      id: data.id ?? null,
       username: data.username || form.username,
       real_name: data.full_name || form.username,
+      full_name: data.full_name || '',
       role: data.role,
     }
     store.setLogin(data.access_token, user, data.must_change_password)

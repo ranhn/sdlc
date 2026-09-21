@@ -52,6 +52,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         full_name=user.full_name,
         username=user.username,
         must_change_password=user.must_change_password,
+        id=user.id,          # 前端"这条记录是不是我的"判断要用（见 schemas.Token 说明）
     )
 
 

@@ -418,7 +418,9 @@ import { userLabel } from '../utils/userLabel'
 const store = useUserStore()
 const route = useRoute()
 const canExport = computed(() => store.role === 'admin' || store.role === 'secops')
-const currentUserId = computed(() => store.user?.id ?? null)
+// 取 store.userId：带 JWT sub 兜底，老会话也能拿到 id
+//（此前取 store.user.id，导致"提交人可编辑自己的漏洞"这类判断静默失效）
+const currentUserId = computed(() => store.userId)
 const list = ref([])
 const systems = ref([])
 const users = ref([])

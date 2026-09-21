@@ -224,7 +224,10 @@ const store = useUserStore()
 const route = useRoute()
 // 当前登录用户 id：判断"这条漏洞是不是我负责的"（后端按 assignee_id 授权，
 // 前端只是按钮可见性，真正的拦截在服务端）
-const currentUserId = computed(() => store.user?.id ?? null)
+// 取 store.userId（而不是 store.user.id）：后者在老会话里是 undefined
+//（登录接口早期不返回 id），会让 isAssignee() 永远为 false，
+// 表现为修复人看不到「确认 / 驳回」按钮。store.userId 带 JWT sub 兜底。
+const currentUserId = computed(() => store.userId)
 const list = ref([])
 const systems = ref([])
 const loading = ref(false)
