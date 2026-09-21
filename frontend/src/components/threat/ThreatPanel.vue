@@ -1023,7 +1023,6 @@ function locateToCell(t) {
     console.warn('[ThreatPanel] locateToCell: 该威胁没有 _cellId，无法定位', t)
     return
   }
-  console.log('[ThreatPanel] locate-cell emit', { cellId: t._cellId, cellName: t._cellName })
   emit('locate-cell', { cellId: t._cellId, cellName: t._cellName })
 }
 

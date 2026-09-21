@@ -823,7 +823,6 @@ function initGraph() {
   const c = containerRef.value
   const cw = c.clientWidth
   const ch = c.clientHeight
-  console.log('[DfdGraph] initGraph start', { cw, ch, containerClass: c.className })
   // 编辑模式：AI 提取的 DFD 必然有误差，允许用户拖动节点微调布局。
   // 注意：拖拽/连线/删除都需要显式进入编辑模式，避免误操作破坏模型，
   // 也避免"只读时拖了节点没保存"导致页面与后端/导出图不一致。
@@ -876,7 +875,6 @@ function initGraph() {
   // 否则首次 zoomToFit 可能基于 0 viewport 算出 scale=0/NaN，图"看不见"
   if (cw > 0 && ch > 0) {
     graph.resize(cw, ch)
-    console.log('[DfdGraph] initGraph resized', { cw, ch })
   } else {
     console.warn('[DfdGraph] initGraph 容器 0 尺寸,等 ResizeObserver 兜底', { cw, ch })
   }
@@ -1434,11 +1432,6 @@ function render(model) {
   // D2/D5：后端布局提示（标签锚点 / 跨泳道过道错位）。老模型没有这个字段，
   // 此时为 null，addEdge 会退回原有的哈希分散策略，行为与修复前一致。
   currentLayoutHints = diagram.layoutHints || null
-  console.log('[DfdGraph] render start', {
-    cellsCount: cells.length,
-    lanesCount: (diagram.lanes || []).length,
-    firstCell: cells[0] ? { id: cells[0].id, pos: cells[0].position, size: cells[0].size, shape: cells[0].shape } : null,
-  })
   try {
     // 生命周期泳道背景（后端在生命周期泳道布局时输出 diagram.lanes）
     for (const lane of diagram.lanes || []) {
@@ -1461,7 +1454,6 @@ function render(model) {
     boundaryCount.value = graph.getNodes()
       .filter((n) => n.getData?.()?.boundaryDrawable === true).length
     applyBoundaryVisibility()
-    console.log('[DfdGraph] render done, cells in graph:', graph.getCells().length)
   } catch (e) {
     console.error('[DfdGraph] render error:', e, e.stack)
   }
@@ -2557,9 +2549,6 @@ function fitView(retry = 10) {
     console.warn('[DfdGraph] fitView: 0 真实内容节点,图空')
     return
   }
-  console.log('[DfdGraph] fitView start', {
-    retry, rect: { w: rect.width, h: rect.height }, contentCount: contentCells.length,
-  })
   let bbox = null
   for (const c of contentCells) {
     const b = c.getBBox?.()
@@ -2588,9 +2577,6 @@ function fitView(retry = 10) {
   try {
     graph.zoomTo(scale, { absolute: true })
     graph.centerPoint(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2)
-    console.log('[DfdGraph] fitView done', {
-      bbox, fitScale: Number(fitScale.toFixed(3)), scale: Number(scale.toFixed(3)),
-    })
   } catch (e) {
     console.error('[DfdGraph] fitView 缩放失败:', e?.message || e)
   }
