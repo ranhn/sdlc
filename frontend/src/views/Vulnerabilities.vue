@@ -787,12 +787,13 @@ async function submitCreate() {
       await vulnApi.update(editingId.value, payload)
       ElMessage.success('已保存修改')
       createVisible.value = false
-      // 若详情抽屉当前打开的是同一条，刷新详情 + 列表
+      // 详情抽屉开着同一条时刷新详情；**列表始终要刷** —— 原来写成 if/else 只刷一边，
+      // 于是"改了标题/等级/负责人之后，表格里那一行还是旧值"（与这里注释的
+      // "刷新详情 + 列表"自相矛盾，用户反馈的"指派后页面没更新"是同一类漏刷）。
       if (current.value?.id === editingId.value) {
-        openDetail(current.value)
-      } else {
-        load()
+        await openDetail(current.value)
       }
+      load()
     } else {
       await vulnApi.create(payload)
       ElMessage.success('漏洞提交成功')
@@ -890,18 +891,34 @@ function onSourceChange(isExternal) {
 function openReject() { rejectVisible.value = true }
 async function submitReject() {
   if (!rejectReason.value.trim()) return ElMessage.warning('请输入驳回原因')
-  await vulnApi.reject(current.value.id, { reason: rejectReason.value })
-  ElMessage.success('已驳回')
-  rejectVisible.value = false
-  openDetail(current.value)
-  load()
+  try {
+    await vulnApi.reject(current.value.id, { reason: rejectReason.value })
+    ElMessage.success('已驳回')
+    rejectVisible.value = false
+    await openDetail(current.value)
+    load()
+  } catch (e) {
+    // 与 submitAssign 同理：失败必须报出来，否则"点了没反应"（无权限 403 时尤其误导）
+    ElMessage.error(extractErrorMsg(e, '驳回失败'))
+  }
 }
 async function submitAssign() {
   if (assignTo.value == null) return ElMessage.warning('请选择负责人')
-  await vulnApi.assign(current.value.id, { assignee_id: assignTo.value })
-  ElMessage.success('指派成功')
-  assignVisible.value = false
-  openDetail(current.value)
+  try {
+    await vulnApi.assign(current.value.id, { assignee_id: assignTo.value })
+    ElMessage.success('指派成功')
+    assignVisible.value = false
+    // **列表和详情都要刷新**：以前这里只 `openDetail()`（刷新抽屉里的「负责人」），
+    // 表格那一列还是旧的人 —— 用户反馈"指派人之后页面没有立即更新"就是这个
+    // （紧邻的 submitReject 本来就是两样都刷，只有指派漏了）。
+    // 重新拉列表还顺带处理了"在「只看我的」筛选下把漏洞转派给别人后该行应消失"。
+    await openDetail(current.value)
+    load()
+  } catch (e) {
+    // 以前没有 catch：接口失败（例如无权限 403）时既没提示、弹窗也不关，
+    // 只在控制台留一个未处理的 Promise 拒绝，看起来像"没反应"。
+    ElMessage.error(extractErrorMsg(e, '指派失败'))
+  }
 }
 async function openAssign() {
   // 同样先确保人员列表就绪（指派弹窗默认选中"当前负责人"，理由同 openEdit）

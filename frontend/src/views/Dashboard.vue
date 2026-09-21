@@ -84,21 +84,37 @@ const trendRange = ref(30)
 let charts = []
 let trendChart = null
 
+// 卡片悬浮的「口径」说明：**一句话说清算式即可**，不写整段解释
+// （悬停时糊一大片反而没人看，用户反馈"口径说明太长了"）。
 const statCards = reactive([
   { label: '漏洞总数', value: 0, icon: 'Warning', bg: '#eff6ff', color: '#3b82f6' },
-  { label: '待修复', value: 0, icon: 'RemoveFilled', bg: '#fef3c7', color: '#f59e0b' },
-  { label: '高危', value: 0, icon: 'BellFilled', bg: '#fee2e2', color: '#ef4444' },
+  {
+    label: '待修复', value: 0, icon: 'RemoveFilled', bg: '#fef3c7', color: '#f59e0b',
+    tip: '未闭环（不含草稿）',
+  },
+  {
+    label: '高危', value: 0, icon: 'BellFilled', bg: '#fee2e2', color: '#ef4444',
+    // 这张卡取的是"严重 + 高危"两个等级之和，标签只写「高危」容易误解，用短 tip 点明
+    tip: '严重 + 高危',
+  },
   {
     label: '已修复', value: 0, icon: 'CircleCheck', bg: '#dcfce7', color: '#22c55e',
     // 口径与漏洞列表状态列一致：这几种状态都算"已修复"，趋势图「修复」线同口径。
     // （后端还额外把历史遗留的 ignored 一起计入，但页面上不再提这个状态了）
-    tip: '口径：已修复 + 已关闭 + 已驳回（按状态列统计），与趋势图「修复」线一致。',
+    tip: '已修复 + 已关闭 + 已驳回',
   },
   {
     label: '修复率', value: '0%', icon: 'TrendCharts', bg: '#f3e8ff', color: '#8b5cf6',
-    tip: '修复率 = 已修复 + 已关闭 + 已驳回 / 漏洞总数',
+    tip: '已修复 / 漏洞总数',
   },
-  { label: '平均修复时长', value: '0h', icon: 'Timer', bg: '#ecfeff', color: '#06b6d4' },
+  {
+    // 原为「平均修复时长」：样本只来自已闭环的漏洞，闭环量少（甚至为 0）时数字没有意义，
+    // 而显示成 0h 会被读成"修复飞快"（用户反馈"这个数字没有意义"）。换成「待确认」——
+    // 修复人还没受理、卡在整条链路第一步的数量，首页上唯一"需要人去推动"的数字
+    // （与「漏洞修复」页的「确认 / 驳回」同一环）。
+    label: '待确认', value: 0, icon: 'Clock', bg: '#ecfeff', color: '#06b6d4',
+    tip: '状态为待确认的漏洞数',
+  },
 ])
 
 const severityColor = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6' }
@@ -168,7 +184,7 @@ async function loadAndRender(t, top, sev, ty, st) {
     statCards[2].value = o.critical + o.high
     statCards[3].value = o.fixed_total ?? o.closed
     statCards[4].value = o.fix_rate + '%'
-    statCards[5].value = o.avg_fix_hours + 'h'
+    statCards[5].value = o.pending ?? 0
 
     renderTrend(t, trend.data)
 

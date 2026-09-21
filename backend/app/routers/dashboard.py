@@ -33,17 +33,41 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
     high = sum(1 for v in vulns if v.severity == "high" and v.status not in CLOSED_STATUSES)
     fixing = sum(1 for v in vulns if v.status == "fixing")
     closed = sum(1 for v in vulns if v.status in CLOSED_STATUSES)
+    # 流程卡点（首页「待确认」卡片用）：修复人还没确认/驳回的那一批。
+    # 这些卡在整条链路的第一步（「漏洞修复」页的「确认 / 驳回」按钮就是处理它们），
+    # 是最容易被漏掉、也最需要推动的一批，故单独给出而不是并入"待修复"。
+    pending = sum(1 for v in vulns if v.status == "pending")
+    retest = sum(1 for v in vulns if v.status == "retest")
 
     # 修复率 = (已修复 + 已关闭 + 已驳回) / 总数
     fixed_count = sum(1 for v in vulns if v.status in CLOSURE_STATUSES)
     fix_rate = round(fixed_count / total * 100, 1) if total else 0
 
-    # 平均修复时长（小时），取有 fixed_at 的
-    fixed_vulns = [v for v in vulns if v.fixed_at]
-    avg_fix_hours = 0
-    if fixed_vulns:
-        total_hours = sum((v.fixed_at - v.created_at).total_seconds() for v in fixed_vulns if v.fixed_at > v.created_at)
-        avg_fix_hours = round(total_hours / len(fixed_vulns) / 3600, 1)
+    # 平均修复时长（小时）：只对**已闭环**的漏洞统计，取"进入终态"的时间点。
+    #
+    # 以前只认 fixed_at（研发点「修复完成」的那一刻）：
+    #   · 被驳回 / 直接关闭的漏洞没有 fixed_at → 全部被排除在样本外；
+    #   · 一套环境里若没人走过 finish_fix，样本数就是 0，卡片恒显示 **0h** ——
+    #     而 0h 读起来像"修复飞快"，实际是"没有数据"（用户反馈"这个数字没有意义"就是这个）。
+    # 现在与趋势图「修复」线同口径取时间点：fixed_at → closed_at → 流转记录里进入终态的时间；
+    # 并且分母用**真正有时间的条数**（旧写法除以 len(fixed_vulns)，会把被跳过的也算进分母）。
+    #
+    # 说明：这条口径的样本天然等于"已闭环的数量"，闭环量少时数字偏差大，所以首页卡片位
+    # 已改用「待确认」（见 Dashboard.vue）；这个字段保留给报表/后续做"修复时效"专题页。
+    _closure_ids = set(CLOSURE_STATUSES)
+    first_closure_ts: dict[int, datetime] = {}
+    for vid, ts in (db.query(VulnFlow.vuln_id, VulnFlow.created_at)
+                    .filter(VulnFlow.to_status.in_(_closure_ids))
+                    .order_by(VulnFlow.created_at.asc()).all()):
+        first_closure_ts.setdefault(vid, ts)      # 取最早一次进入终态的时间（与趋势图一致）
+    durations = []
+    for v in vulns:
+        if v.status not in _closure_ids or not v.created_at:
+            continue
+        ts = v.fixed_at or v.closed_at or first_closure_ts.get(v.id)
+        if ts and ts > v.created_at:
+            durations.append((ts - v.created_at).total_seconds())
+    avg_fix_hours = round(sum(durations) / len(durations) / 3600, 1) if durations else 0
 
     # 本月新增
     now = nc.utcnow()
@@ -69,6 +93,9 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
         "critical": critical,
         "high": high,
         "fixing": fixing,
+        # 首页「待确认」卡片的取值（流程第一步的卡点数）
+        "pending": pending,
+        "retest": retest,
         "closed": closed,
         # 「已修复」卡片用的口径：已修复 + 已关闭 + 已驳回（与修复率、趋势图一致）
         "fixed_total": fixed_count,
