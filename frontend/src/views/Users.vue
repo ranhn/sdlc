@@ -32,45 +32,55 @@
     </div>
 
     <el-card shadow="never">
-      <!-- 只渲染当前页的 12 条（pagedList），不是全量 1600+ 条 -->
-      <el-table :data="pagedList" v-loading="loading" stripe>
+      <!-- 只渲染当前页的 12 条（pagedList），不是全量 1600+ 条。
+           tight-table（全局样式，见 src/styles/main.css）：单元格不换行 + 内边距 12→6px；
+           配合表级 show-overflow-tooltip —— 姓名/邮箱/部门这些"读全才有意义"的字段都在
+           同一行显示，实在过长的（超长部门名等）截断后 hover 能看全。 -->
+      <el-table :data="pagedList" v-loading="loading" stripe
+                class="tight-table" show-overflow-tooltip>
         <!-- ID 列显示"从 0 开始的连续序号、跨页递增"，而不是数据库主键：
              合并/删除过账号后主键会出现跳号（0,1,2,3,4,8,9…），看起来像缺数据 -->
-        <el-table-column type="index" :index="rowIndex" label="ID" width="60" align="center" />
+        <el-table-column type="index" :index="rowIndex" label="ID" width="56" align="center" />
         <!-- 用户名 = 英文名（飞书同步时写入，如 Tracy.Yang / John Villanueva）。
              不再在名字后面挂「飞书」标签：用户名本来就被挤，而且右边"最近同步"列
              已经有时间/空值可以区分是不是同步来的账号 -->
-        <el-table-column prop="username" label="用户名" min-width="150" />
-        <el-table-column prop="full_name" label="姓名" min-width="110" />
-        <el-table-column prop="email" label="邮箱" min-width="180">
+        <el-table-column prop="username" label="用户名" min-width="140" />
+        <!-- 姓名/邮箱/部门：这三列是"读全才有意义"的文本，宽度按实际内容给足
+             （姓名如 Leigh Ann Bauman ≈117px、邮箱 leihann.bauman@vesync.com ≈205px），
+             以前窄了会折成两行 —— 既读不全、又把行高撑成两行。 -->
+        <el-table-column prop="full_name" label="姓名" min-width="130" />
+        <el-table-column prop="email" label="邮箱" min-width="215">
           <template #default="{ row }"><span class="muted">{{ row.email || '—' }}</span></template>
         </el-table-column>
         <!-- 部门：飞书同步时按部门树自动落库（open_department_id → 本地部门），
-             统一归一到二级部门，名字较长所以给宽一点 -->
-        <el-table-column prop="department_name" label="部门" min-width="150">
+             统一归一到二级部门，名字较长（如 US Product Innovation ≈145px）所以给宽一点 -->
+        <el-table-column prop="department_name" label="部门" min-width="168">
           <template #default="{ row }"><span class="muted">{{ row.department_name || '—' }}</span></template>
         </el-table-column>
-        <el-table-column label="角色" width="120">
+        <!-- 角色/状态/最近同步/操作：都是固定宽度（不参与富余宽度分配），
+             按"标签/时间/三个按钮的实际宽度"给，富余宽度让给姓名/邮箱/部门这些可伸缩列。 -->
+        <el-table-column label="角色" width="96">
           <template #default="{ row }"><el-tag size="small">{{ row.role_name }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="80">
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '启用' : '禁用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近同步" width="160">
+        <el-table-column label="最近同步" width="142">
           <template #default="{ row }"><span class="muted">{{ formatSyncTime(row.last_synced_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="332">
+        <el-table-column label="操作" width="255">
           <template #default="{ row }">
             <template v-if="canTargetUser(row)">
               <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
               <el-button link :type="row.is_active ? 'danger' : 'success'" size="small" @click="toggle(row)">
                 {{ row.is_active ? '禁用' : '启用' }}
               </el-button>
-              <el-button link type="warning" size="small" @click="openChangePassword(row)">改密</el-button>
-              <!-- 「重置密码」= 一键恢复初始口令 + 飞书私信给本人（与「改密」分工不同，
-                   悬浮提示里说清楚，免得管理员分不清该点哪个） -->
+              <!-- 只保留「重置密码」：一键恢复初始口令 + 飞书私信把账号和口令发给本人
+                   （首次登录强制改密）。原来的「改密」（管理员自己拟一个新密码）已删除 ——
+                   两个入口功能重叠、管理员分不清该点哪个；"想指定具体密码"由本人登录后
+                   自助修改满足（顶栏 → 修改密码）。 -->
               <el-tooltip content="恢复为初始密码，并通过飞书私信把账号和密码发给本人（首次登录必须改密）" placement="top" :show-after="200">
                 <el-button link type="warning" size="small" @click="resetPassword(row)">重置密码</el-button>
               </el-tooltip>
@@ -123,11 +133,17 @@
         <div class="stat success"><span class="num">+{{ syncResult.created }}</span><span class="lbl">新建</span></div>
         <div class="stat"><span class="num">{{ syncResult.updated }}</span><span class="lbl">更新</span></div>
         <div class="stat danger" v-if="syncResult.failed > 0"><span class="num">{{ syncResult.failed }}</span><span class="lbl">失败</span></div>
-        <div class="stat" v-if="syncResult.deactivated > 0"><span class="num">{{ syncResult.deactivated }}</span><span class="lbl">停用</span></div>
+        <!-- 停用统计**始终显示**（含 0）：0 有两种含义 —— "本轮确实没人离职" 与
+             "停用环节被安全阀跳过"。原来只在 >0 时显示，后者就彻底看不见了
+             （实测：同步里只要有 1 个失败，整个停用环节就被跳过，而弹窗毫无提示）。 -->
+        <div class="stat"><span class="num">{{ syncResult.deactivated }}</span><span class="lbl">停用</span></div>
         <div class="stat" v-if="syncResult.merged > 0"><span class="num">{{ syncResult.merged }}</span><span class="lbl">合并手工账号</span></div>
         <div class="stat" v-if="syncResult.dept_created > 0"><span class="num">+{{ syncResult.dept_created }}</span><span class="lbl">新建部门</span></div>
         <div class="stat" v-else-if="syncResult.dept_total > 0"><span class="num">{{ syncResult.dept_total }}</span><span class="lbl">飞书部门</span></div>
       </div>
+      <!-- 停用被安全阀跳过时必须说清楚：否则管理员会以为"离职的人已经处理了" -->
+      <el-alert v-if="deactivateSkipped" type="warning" :closable="false" show-icon
+                :title="deactivateSkipped" style="margin-bottom: 10px" />
       <el-table v-if="syncResult?.details?.length" :data="syncResult.details" max-height="240" size="small">
         <el-table-column prop="open_id" label="open_id" />
         <el-table-column prop="error" label="错误" />
@@ -166,20 +182,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showPwd" title="修改密码" width="400px">
-      <el-form :model="pwdForm" label-width="80px">
-        <el-form-item label="用户">
-          <span>{{ pwdForm.username }}</span>
-        </el-form-item>
-        <el-form-item label="新密码" required>
-          <el-input v-model="pwdForm.new_password" type="password" show-password placeholder="至少8位，含大小写字母和数字" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showPwd = false">取消</el-button>
-        <el-button type="primary" @click="submitPassword">确定</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -219,8 +221,17 @@ const feishuEnabled = ref(false)
 const syncing = ref(false)
 const syncDialog = ref(false)
 const syncResult = ref(null)
-const showPwd = ref(false)
-const pwdForm = reactive({ id: null, username: '', new_password: '' })
+/**
+ * 本轮同步是否因**安全阀**跳过了"离职停用"（后端把原因塞在 details[].skipped_deactivate）。
+ *
+ * 为什么要单独提出来展示：后端的设计是"有任何部门拉取失败 / 本轮人数不足库内 50%
+ * 就整个跳过停用" —— 这是对的（宁可不处理，也不能误停全库），但弹窗里原本完全看不到，
+ * 管理员会把"停用 0"读成"没人离职"，从而以为离职账号已经自动禁用了。
+ */
+const deactivateSkipped = computed(
+  () => (syncResult.value?.details || [])
+    .find((d) => d && d.skipped_deactivate)?.skipped_deactivate || '',
+)
 const editVisible = ref(false)
 const editSaving = ref(false)
 const editForm = reactive({
@@ -299,32 +310,12 @@ async function saveEdit() {
   }
 }
 
-function openChangePassword(row) {
-  pwdForm.id = row.id
-  pwdForm.username = row.username
-  pwdForm.new_password = ''
-  showPwd.value = true
-}
-
-async function submitPassword() {
-  if (!pwdForm.new_password || pwdForm.new_password.length < 8) {
-    ElMessage.warning('密码至少8位')
-    return
-  }
-  try {
-    await adminApi.changePassword(pwdForm.id, { new_password: pwdForm.new_password })
-    ElMessage.success('密码重置成功')
-    showPwd.value = false
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '重置失败')
-  }
-}
-
 /**
  * 一键重置为初始口令，并让后端把「账号 + 初始密码」私信给本人。
  *
- * 与「改密」的区别：改密是管理员**自己拟一个新密码**；重置是恢复到初始口令（FEISHU_DEFAULT_PASSWORD），
- * 首登强制改密。后端是**同步发送**，所以这里能拿到确定结果：发出去了 / 没发出去+原因。
+ * 这是**唯一**的密码管理入口（原来的「改密」已删除：与它功能重叠）。重置 = 恢复到初始口令
+ * （FEISHU_DEFAULT_PASSWORD）+ 首次登录强制改密。后端是**同步发送**，所以这里能拿到确定结果：
+ * 发出去了 / 没发出去+原因。
  * 通知没发出去时把口令显示出来，管理员可直接线下告知（口令本来就是默认值）。
  */
 async function resetPassword(row) {

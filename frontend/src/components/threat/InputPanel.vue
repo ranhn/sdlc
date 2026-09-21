@@ -1157,8 +1157,13 @@ onMounted(loadTemplates)
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: hidden;
-  padding: 2px 2px 2px 2px;
+  /* 兜底：屏幕再矮时，上面那些 min-height 之和仍可能超过可用高度。
+     以前这里是 overflow: hidden —— 溢出部分被裁掉且**滚不到**，底部操作条就"消失"了
+     （用户看到的现象）。改成 auto：最差也只是卡片区自己滚动，
+     固定操作条与左侧引导栏始终可见、可点。 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px;
 }
 
 /* —— 输入卡片 —— */
@@ -1306,7 +1311,11 @@ onMounted(loadTemplates)
   background: var(--c-bg);
   transition: border-color 0.16s, box-shadow 0.16s, background 0.16s;
   overflow: hidden;
-  min-height: 96px;
+  /* 下限跟着视口走（原来写死 96px）：768p 笔记本去掉顶栏 + 面包屑 + 页面内边距后
+     可用高度只剩 ~430px，两个文档输入区的最小高度之和就把整页顶出去 ——
+     底部固定操作条被挤出屏幕（用户反馈的"没适配笔记本屏幕"）。
+     9vh：1080p 上仍是 96px（视觉无变化），768p 上降到约 60~69px。 */
+  min-height: clamp(60px, 9vh, 96px);
 }
 .ta-wrap:hover {
   border-color: #cbd5e1;
