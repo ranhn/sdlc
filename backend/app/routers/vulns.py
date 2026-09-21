@@ -1,5 +1,6 @@
 """漏洞管理路由：提交/确认/修复/复测/关闭 + 状态机 + 评论。"""
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -25,11 +26,16 @@ from ..state_machine import STATUS_NAMES, TRANSITIONS, validate_action
 from ..utils import network_clock as nc
 from ..utils.vuln_csv import render_vulns_csv
 from ..utils.vuln_docx import SEV_ZH, render_vulns_docx
+# 飞书消息下发（指派通知）。import 的是模块而不是函数：调用点写成
+# feishu_notify.send_text_in_background(...)，一眼能看出"这里在发飞书"。
+from . import feishu as feishu_notify
 
 # 导出的时间格式化（东八区）与 CSV/DOCX 渲染一起收敛到 utils.vuln_csv /
 # utils.vuln_docx：路由层不再自己拼表格与时间字符串，只负责取数 + 包响应。
 
 router = APIRouter(prefix="/api/vulns", tags=["漏洞管理"])
+
+logger = logging.getLogger(__name__)
 
 # STATUS_NAMES 已收敛到 state_machine（单一来源），此处不再本地维护一份副本。
 
@@ -91,6 +97,177 @@ def _record_flow(db: Session, vuln_id: int, from_status: str | None, to_status: 
         comment=comment,
     ))
     db.commit()
+
+
+def _assign_change_text(db: Session, old_id: int | None, new_id: int | None) -> str:
+    """把「负责人变更」写成一句人话（时间线的 comment 用）。
+
+    为什么要分三种写法：直接拼 `{old} → {new}` 会产出「指派负责人：None → 张三」
+    这种机器味文案，而这条记录是给人看的审计痕迹（漏洞详情「状态流转」区块）。
+      · 原本没有负责人 → 「指派负责人：张三」
+      · 换人           → 「变更负责人：李四 → 张三」
+      · 清空           → 「取消指派：李四 → 未指派」
+    指派不改变状态本身（from == to），因此前端对这类条目只显示一个状态 + 这句说明。
+    """
+    names = _user_names(db, (old_id, new_id))
+    old = names.get(old_id) if old_id is not None else None
+    new = names.get(new_id) if new_id is not None else None
+    if old_id is None and new_id is not None:
+        return f"指派负责人：{new or new_id}"
+    if new_id is None:
+        return f"取消指派：{old or old_id} → 未指派"
+    return f"变更负责人：{old or old_id} → {new or new_id}"
+
+
+def _is_assignee(v: Vuln, user: User) -> bool:
+    """user 是不是这条漏洞的**当前负责人**（修复人）。
+
+    必须同时判 `assignee_id is not None`：未指派时 `v.assignee_id` 与 `user.id`
+    都可能落进"空值比较"的陷阱（历史上踩过 None == None 的坑），漏判会让任何人都
+    把"没主的漏洞"当成自己负责的，从而拿到确认/驳回/转派权限。
+    """
+    return v.assignee_id is not None and user is not None and v.assignee_id == user.id
+
+
+# 等级 → 卡片标题配色。与前端 severityType 同一套观感（红/橙/蓝/灰），
+# 但**取的是深色档**：飞书的 blue/grey 渲染出来很淡，标题栏会显得空、不像"警告"。
+# carmine/red/orange/indigo 更沉，跨端看到同一颜色即代表同一等级。
+_SEV_CARD_TEMPLATE = {
+    "critical": "carmine", "high": "orange", "medium": "indigo", "low": "grey",
+}
+
+
+def _assignee_notice_card(v: Vuln, assignee: User, operator: User, base_url: str,
+                          initial_password: str | None = None) -> dict:
+    """「漏洞已指派给你」的飞书**消息卡片**（纯函数，不含网络调用，便于单测）。
+
+    为什么用卡片而不是纯文本：这条通知的读者是**刚被派活的研发**，他需要在 3 秒内看清
+    "多严重 / 哪个系统 / 点哪里"。纯文本只能靠换行凑结构，链接还是一条裸 URL（移动端
+    尤其不显眼）；卡片能给出等级配色标题 + 双列字段 + 一个明确的主按钮。
+
+    链接用修复页 /vulnerabilities/fix?id=NN（与 CSV/Word 导出同一套 ?id= 语义：管理员被
+    路由守卫留在 /submit、开发落到 /fix，两种角色点开都是这一条漏洞）。
+    base_url 为空（拿不到请求上下文）时**不留死链**，退化成一句文字指引。
+
+    initial_password 非空时追加一块"首次登录"信息（账号 + 初始口令 + 首登必改提示）。
+    传入什么由调用方按 feishu.initial_password_for 判定 —— 已改过密码的账号恒为 None，
+    所以**绝不会把口令发给已在用的账号**。
+    """
+    sev = v.severity or "medium"
+    sev_zh = SEV_ZH.get(sev, sev)
+    status_zh = STATUS_NAMES.get(v.status, v.status or "—")
+    link = f"{base_url.rstrip('/')}/vulnerabilities/fix?id={v.id}" if base_url else ""
+    elements: list[dict] = [
+        feishu_notify.text_div(f"**#{v.id} {v.title}**"),
+        # 2×2 两列网格（1.0 的 fields + is_short）。标签与值写在**同一行**：
+        # 用 `\n` 拆成两行会被当成两个段落、被段间距撑散（上一版截图里最刺眼的问题）。
+        feishu_notify.fields_div(
+            f"**等级**：{sev_zh}",
+            f"**当前状态**：{status_zh}",
+            f"**所属系统**：{v.system.name if v.system else '—'}",
+            f"**负责人**：{assignee.full_name or assignee.username}",
+        ),
+    ]
+    if initial_password:
+        # 只有"飞书同步来、且从没改过密码"的账号才会走到这里：他们手上还没有能用的密码，
+        # 通知必须把账号和初始口令一起给他，否则等于把人派了活却不给他进门的钥匙。
+        elements.append({"tag": "hr"})
+        elements.append(feishu_notify.text_div(
+            "**首次登录**：以下账号密码仅本次下发，登录后会强制要求修改密码"))
+        elements.append(feishu_notify.credentials_div(assignee.username, initial_password))
+    if link:
+        elements += [{"tag": "hr"}, feishu_notify.primary_button("打开漏洞详情", link)]
+    else:
+        elements.append(feishu_notify.text_div("请登录 SDLC 安全平台 →「漏洞修复」处理"))
+    elements.append(feishu_notify.note_div(
+        f"由 {operator.full_name or operator.username} 指派给你"))
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            # 1.0 的 header 没有副标题，等级只能进标题（2.0 才有 subtitle，见 feishu.py 说明）
+            "template": _SEV_CARD_TEMPLATE.get(sev, "indigo"),
+            "title": {"tag": "plain_text", "content": f"漏洞指派 · {sev_zh}"},
+        },
+        "elements": elements,
+    }
+
+
+def _notify_base_url(request: Request | None) -> str:
+    """飞书通知里深链要用的基地址。
+
+    与 CSV/Word 导出的 ``_resolve_base_url`` 有一个**关键区别**：导出文件是操作人自己下载的，
+    用"他此刻访问的地址"永远是对的；而通知是发给**另一个人**的，必须是**别人也点得开**的地址。
+    所以这里让显式配置 ``PUBLIC_BASE_URL`` 优先（生产配成对外域名），没配才退回请求上下文
+    （Referer → Origin → CORS_ORIGINS → 请求自身 host，与导出一致）。
+
+    没配、且解析出来的是回环/内网地址时打一条 WARNING：页面上的现象是"收件人点链接打不开"，
+    这条日志把原因直接指到配置上（实测踩过：本机 127.0.0.1:5173 的链接发给了外部同事）。
+    """
+    import os
+    from urllib.parse import urlsplit
+
+    explicit = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    if request is None:
+        return ""
+    base = _resolve_base_url(request)
+    try:
+        host = (urlsplit(base).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        host = ""
+    # 粗判即可：这些地址只在本机/内网可达，收件人在外面就点不开
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1") or \
+            host.startswith(("127.", "10.", "192.168.", "172.1", "172.2", "172.3")):
+        logger.warning(
+            "指派通知里的链接是内网/本机地址（%s）—— 收件人在别的网络下点不开。"
+            "生产环境请配置 PUBLIC_BASE_URL=https://<对外域名>", base,
+        )
+    return base
+
+
+def _notify_assignee(db: Session, v: Vuln, prev_assignee_id: int | None,
+                     operator: User, request: Request | None = None) -> None:
+    """指派之后给**新负责人**发一条飞书单聊消息（尽力而为：不抛错、不阻塞）。
+
+    三个入口都会调它：提交漏洞时直接指定负责人、编辑表单里改了负责人、指派接口
+    （含安全专家指派与修复人转派）。
+
+    刻意的三条约束：
+      · **只在换人时发**（assignee_id != prev）：重复指派同一个人、编辑时没动负责人，
+        都不再打扰他 —— 与"时间线只在换人时记一条"同一口径；
+      · **取消指派不发**（assignee_id 为空）：没有收件人；
+      · **整体 try 包住 + 发送在后台线程**：飞书挂了/限流/权限没开/接收人不在可用范围，
+        一律不能影响"指派"这个业务动作，也不能让他多等几秒。
+    结果写日志（成功 INFO / 失败 WARNING，含飞书返回码），"他没收到"这类问题可查日志定位。
+    """
+    try:
+        if v.assignee_id is None or v.assignee_id == prev_assignee_id:
+            return
+        if not feishu_notify.notify_enabled():
+            return
+        assignee = db.query(User).filter(User.id == v.assignee_id).first()
+        if not assignee:
+            return
+        open_id = (assignee.feishu_open_id or "").strip()
+        if not open_id:
+            # 手工创建的账号（不是飞书同步来的）没有 open_id，没有可送达的地址。
+            # 记一行日志而不是静默吞掉 —— "为什么他没收到通知"最常见的原因就是这个。
+            logger.info("飞书指派通知跳过：负责人 #%s（%s）无 open_id（非飞书同步账号）",
+                        assignee.id, assignee.full_name or assignee.username)
+            return
+        base_url = _notify_base_url(request)
+        # 该账号还没拿到可用密码（飞书同步来 + 从没改过密码）→ 通知里附上账号与初始口令；
+        # 已改密的账号恒为 None（见 feishu.initial_password_for），不会把口令发给在用账号。
+        initial_password = feishu_notify.initial_password_for(assignee)
+        feishu_notify.send_in_background(
+            open_id,
+            "interactive",                       # 消息卡片：等级配色标题 + 双列字段 + 主按钮
+            _assignee_notice_card(v, assignee, operator, base_url, initial_password),
+            tag=f"漏洞 #{v.id} 指派给 {assignee.full_name or assignee.username}",
+        )
+    except Exception as exc:  # noqa: BLE001 —— 通知是"尽力而为"，绝不打断指派
+        logger.warning("飞书指派通知准备失败（不影响指派）：%s", exc)
 
 
 def _apply_status_filter(query, status: str | None):
@@ -359,7 +536,8 @@ def get_vuln(vuln_id: int, db: Session = Depends(get_db), current: User = Depend
 
 
 @router.post("", response_model=VulnOut, status_code=201)
-def create_vuln(data: VulnCreate, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+def create_vuln(request: Request, data: VulnCreate, db: Session = Depends(get_db),
+                current: User = Depends(get_current_user)):
     v = Vuln(
         title=data.title,
         description=data.description,
@@ -385,12 +563,15 @@ def create_vuln(data: VulnCreate, db: Session = Depends(get_db), current: User =
     db.commit()
     db.refresh(v)
     _record_flow(db, v.id, "draft", "pending", current, "漏洞提交")
+    # 提交表单里就填了「修复负责人」→ 一并通知他（prev=None 表示这是首次指派）
+    if v.assignee_id is not None:
+        _notify_assignee(db, v, None, current, request)
     write_operation_log(db, current, "create_vuln", "vuln", f"提交漏洞 #{v.id} {v.title}")
     return _to_out(v, db)
 
 
 @router.patch("/{vuln_id}", response_model=VulnOut)
-def update_vuln(vuln_id: int, data: VulnUpdate, db: Session = Depends(get_db),
+def update_vuln(vuln_id: int, request: Request, data: VulnUpdate, db: Session = Depends(get_db),
                 current: User = Depends(get_current_user)):
     """编辑漏洞字段。权限：提交人本人 / 管理员 / 安全专家。
 
@@ -410,6 +591,7 @@ def update_vuln(vuln_id: int, data: VulnUpdate, db: Session = Depends(get_db),
 
     # 仅应用显式提供的字段，避免把未传的字段（如 assignee_id=None）误清空。
     updates = data.model_dump(exclude_unset=True)
+    prev_assignee_id = v.assignee_id          # 变更前的人（指派留痕要用）
     # list/dict 字段单独序列化
     if "screenshots" in updates:
         v.screenshots = json.dumps(updates.pop("screenshots"), ensure_ascii=False) if updates["screenshots"] is not None else None
@@ -420,6 +602,15 @@ def update_vuln(vuln_id: int, data: VulnUpdate, db: Session = Depends(get_db),
 
     db.commit()
     db.refresh(v)
+    # 编辑表单里带了「修复负责人」，改它同样是指派动作 → 一并写时间线。
+    # 只在"显式传了 assignee_id 且真的变了"时记，避免每次编辑都往时间线里刷一条。
+    if "assignee_id" in updates and prev_assignee_id != v.assignee_id:
+        _record_flow(
+            db, v.id, v.status, v.status, current,
+            _assign_change_text(db, prev_assignee_id, v.assignee_id) + "（编辑时变更）",
+        )
+        # 编辑表单里改了负责人 = 一次指派动作 → 同样通知新负责人
+        _notify_assignee(db, v, prev_assignee_id, current, request)
     write_operation_log(
         db, current, "update_vuln", "vuln",
         f"编辑漏洞 #{v.id}「{v.title}」（{role_code}）",
@@ -428,25 +619,39 @@ def update_vuln(vuln_id: int, data: VulnUpdate, db: Session = Depends(get_db),
 
 
 @router.post("/{vuln_id}/assign", response_model=VulnOut)
-def assign_vuln(vuln_id: int, data: VulnAssign, db: Session = Depends(get_db),
+def assign_vuln(vuln_id: int, request: Request, data: VulnAssign, db: Session = Depends(get_db),
                 current: User = Depends(get_current_user)):
+    """指派 / 转派负责人。权限：安全专家（admin/secops）**或该漏洞当前负责人本人**。
+
+    为什么给负责人开这个口：「漏洞修复」页只显示"指派给我"的漏洞，修复人遇到
+    "不该我修 / 不熟这块 / 需要转给模块负责人"时，此前页面上没有任何入口，只能线下
+    找人改。这里给的是**转派**能力，判定仍是"仅当前负责人本人"，不按角色放开 ——
+    否则任意 dev 都能改别人漏洞的负责人。
+    """
     v = db.query(Vuln).filter(Vuln.id == vuln_id).first()
     if not v:
         raise HTTPException(status_code=404, detail="漏洞不存在")
-    if current.role is None or current.role.code not in ("admin", "secops"):
-        raise HTTPException(status_code=403, detail="仅安全专家可指派")
-    if not db.query(User).filter(User.id == data.assignee_id).first():
-        raise HTTPException(status_code=400, detail="负责人不存在")
+    role_code = current.role.code if current.role else "user"
+    if role_code not in ("admin", "secops") and not _is_assignee(v, current):
+        raise HTTPException(status_code=403, detail="仅安全专家或该漏洞负责人（修复人）可指派")
     assignee = db.query(User).filter(User.id == data.assignee_id).first()
+    if not assignee:
+        raise HTTPException(status_code=400, detail="负责人不存在")
+    prev_assignee_id = v.assignee_id          # 变更前的人（时间线文案要用）
     v.assignee_id = data.assignee_id
     db.commit()
     db.refresh(v)
-    # 详情里同时记录「指派给 谁(中文名)[ID]」，便于审计日志辨识接收人
-    assignee_desc = (
-        f"{assignee.username}({assignee.full_name})[ID={assignee.id}]"
-        if assignee
-        else f"ID={data.assignee_id}"
+    # 时间线留痕：此前这里只写操作日志，详情「状态流转」里看不到任何指派记录
+    # （用户反馈"每次指派的记录应该在下面打印出来"）。指派不改状态，from/to 都填
+    # 当前状态，具体变更写在 comment 里（前端对 from==to 的条目只显示一个状态）。
+    _record_flow(
+        db, v.id, v.status, v.status, current,
+        _assign_change_text(db, prev_assignee_id, v.assignee_id),
     )
+    # 飞书通知新负责人（后台线程发送：飞书侧的问题不影响本次指派，见 _notify_assignee）
+    _notify_assignee(db, v, prev_assignee_id, current, request)
+    # 详情里同时记录「指派给 谁(中文名)[ID]」，便于审计日志辨识接收人
+    assignee_desc = f"{assignee.username}({assignee.full_name})[ID={assignee.id}]"
     write_operation_log(
         db, current, "assign_vuln", "vuln",
         f"指派漏洞 #{v.id}「{v.title}」给 {assignee_desc}",
@@ -461,8 +666,14 @@ def vuln_action(vuln_id: int, action: str, data: VulnStatusAction,
     if not v:
         raise HTTPException(status_code=404, detail="漏洞不存在")
     role_code = current.role.code if current.role else "user"
-    if not validate_action(action, v.status, role_code):
-        raise HTTPException(status_code=403, detail=f"当前状态({STATUS_NAMES.get(v.status, v.status)})下，角色无权执行[{action}]操作")
+    # 第二条授权通道：该漏洞的负责人（修复人）本人可对自己的漏洞走 ASSIGNEE_ACTIONS
+    # （确认/驳回）—— 修复人页面上的「确认」「驳回」按钮就是走这里。
+    if not validate_action(action, v.status, role_code, is_assignee=_is_assignee(v, current)):
+        raise HTTPException(
+            status_code=403,
+            detail=(f"当前状态({STATUS_NAMES.get(v.status, v.status)})下，角色无权执行"
+                    f"[{action}]操作；若该漏洞由你负责，需先由安全专家将该漏洞指派给你"),
+        )
 
     to_status = TRANSITIONS[action]
     from_status = v.status
@@ -494,8 +705,9 @@ def reject_vuln(vuln_id: int, data: VulnReject, db: Session = Depends(get_db),
     if not v:
         raise HTTPException(status_code=404, detail="漏洞不存在")
     role_code = current.role.code if current.role else "user"
-    if not validate_action("reject", v.status, role_code):
-        raise HTTPException(status_code=403, detail="无权限驳回")
+    # 与 confirm 同一条通道：负责人（修复人）本人驳回自己负责的漏洞（误报/环境问题等）
+    if not validate_action("reject", v.status, role_code, is_assignee=_is_assignee(v, current)):
+        raise HTTPException(status_code=403, detail="仅安全专家或该漏洞负责人（修复人）可驳回")
     v.status = "rejected"
     v.rejection_reason = data.reason
     db.commit()

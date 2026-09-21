@@ -13,12 +13,21 @@
 
 关键流转（动作）：
 - submit     draft -> pending        提交人
-- confirm    pending -> confirmed   安全专家
-- reject     pending -> rejected    安全专家（驳回）
+- confirm    pending -> confirmed   安全专家 / **该漏洞负责人（修复人）本人**
+- reject     pending -> rejected    安全专家 / **该漏洞负责人（修复人）本人**（驳回）
 - start_fix  confirmed -> fixing    修复人
 - finish_fix fixing -> retest       修复人
 - pass_retest retest -> fixed       复测人
 - close      fixed -> closed        安全专家
+
+关于「负责人（修复人）也能确认/驳回」（见 ASSIGNEE_ACTIONS）：
+    修复人页面（前端「漏洞修复」）只列出"指派给我"的漏洞，他在拿到一条漏洞时先要判断
+    "这条到底成不成立"——成立则确认后进入修复，不成立（误报/环境问题/已修复）则驳回并写明
+    原因。此前 confirm/reject 只给 admin|secops，修复人在自己页面上**既确认不了也驳回不了**，
+    只能线下找安全专家，链路卡在第一步。
+    放开方式刻意**不按角色**（不是"dev/tester 都能确认"）：只有该漏洞的 assignee 本人
+    对这些动作生效，避免任意研发改别人漏洞的状态。判定在路由层做（要看 assignee_id），
+    状态机这里只声明"哪些动作允许负责人走"。
 
 关于 ignored：**已从状态机移除动作**。页面上从来没有"忽略"入口（详情里的状态操作只有
 确认/修复/复测/关闭/指派/驳回），实测库里也没有该状态的数据，留着动作只会让人能从 API
@@ -69,6 +78,17 @@ ACTION_RULES = {
     "close":         {"from": [VulnState.FIXED], "roles": ["admin", "secops"]},
 }
 
+# 「负责人（修复人）本人」额外可以执行的动作 —— 角色列表之外的第二条授权通道。
+#
+# 为什么是这两个：修复人拿到漏洞后首先要下"成不成立"的判断（确认 = 成立并开始处置；
+# 驳回 = 误报/环境问题/重复，需写明原因）。后续的修复动作（start_fix/finish_fix）
+# 本来就已经对 dev/tester 开放，不需要在这里重复声明。
+#
+# 为什么不放进 ACTION_RULES["roles"]：那样等于"任意 dev/tester 能确认/驳回任何漏洞"，
+# 权限放得比需求大得多。这里只管"是否允许负责人走这个动作"，"是不是负责人"由路由层
+# 用 assignee_id 判定后传进来（validate_action 的 is_assignee 参数）。
+ASSIGNEE_ACTIONS = frozenset({"confirm", "reject"})
+
 TRANSITIONS = {
     "submit": VulnState.PENDING,
     "confirm": VulnState.CONFIRMED,
@@ -80,10 +100,19 @@ TRANSITIONS = {
 }
 
 
-def validate_action(action: str, current_status: str, role_code: str) -> bool:
+def validate_action(action: str, current_status: str, role_code: str,
+                    *, is_assignee: bool = False) -> bool:
+    """该角色（或该漏洞的负责人本人）能否在当前状态下执行 action。
+
+    is_assignee 为关键字参数、默认 False：老调用方（以及历史测试）行为完全不变。
+    路由层按 `v.assignee_id == current.id` 传入 —— 注意"未指派"时两者都是 None，
+    绝不能算作负责人，否则任何人都能把没主漏洞当自己的（调用方要判 assignee_id 非空）。
+    """
     rule = ACTION_RULES.get(action)
     if not rule:
         return False
     if current_status not in rule["from"]:
         return False
-    return role_code in rule["roles"]
+    if role_code in rule["roles"]:
+        return True
+    return bool(is_assignee and action in ASSIGNEE_ACTIONS)

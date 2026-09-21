@@ -350,7 +350,12 @@
             <div class="flow-head">
               <span>{{ fmt(f.created_at) }}</span>
               <span>{{ f.operator_name || '—' }}</span>
-              <span>
+              <!-- from == to：状态没变的操作（如「指派负责人」）—— 只显示一个状态，
+                   否则会读成"待确认 → 待确认"这种没信息量的箭头；变更内容在 comment 里。 -->
+              <span v-if="f.from_status && f.from_status === f.to_status">
+                <b>{{ statusNames[f.to_status] || f.to_status }}</b>
+              </span>
+              <span v-else>
                 {{ statusNames[f.from_status] || f.from_status || '—' }} →
                 <b>{{ statusNames[f.to_status] || f.to_status }}</b>
               </span>
@@ -870,6 +875,16 @@ async function doAction(action) {
     ElMessage.error(extractErrorMsg(e))
   }
 }
+/**
+ * 「漏洞来源」切换：切回「内部提交」时清掉外部来源。
+ *
+ * 这个 handler 此前**只出现在模板里、脚本里没有定义**（点单选按钮只会往控制台抛错），
+ * 结果是"先选外部报告填了 CNVD 编号、再改回内部提交"时，那个编号会跟着内部漏洞一起提交。
+ */
+function onSourceChange(isExternal) {
+  if (!isExternal) createForm.external_source = ''
+}
+
 function openReject() { rejectVisible.value = true }
 async function submitReject() {
   if (!rejectReason.value.trim()) return ElMessage.warning('请输入驳回原因')

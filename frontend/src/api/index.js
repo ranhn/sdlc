@@ -85,6 +85,9 @@ export const adminApi = {
   toggleUser: (id) => http.post(`/users/${id}/toggle`),
   deleteUser: (id) => http.delete(`/users/${id}`),
   changePassword: (id, data) => http.post(`/users/${id}/change-password`, data),
+  // 一键重置为**初始口令**：后端会同步把「账号 + 初始密码」私信发给本人，
+  // 响应里回报是否发出（notified/error/password），前端据此提示管理员。
+  resetPassword: (id) => http.post(`/users/${id}/reset-password`),
 }
 
 // ---------- 飞书同步 ----------

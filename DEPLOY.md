@@ -150,6 +150,9 @@ crontab -e
 | `MAX_UPLOAD_SIZE_MB` | - | 上传文件大小上限，默认 50 |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | - | 威胁建模 AI 配置 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | - | 飞书用户同步 |
+| `FEISHU_NOTIFY` | - | 飞书指派通知开关，默认 `1`；设 `0` 关闭。需开通 `im:message:send_as_bot` 权限 + 启用「机器人」应用能力并发布版本 |
+| `PUBLIC_BASE_URL` | - | 飞书通知深链用的对外地址（如 `https://sdlc.example.com`）。不配则取操作人访问地址，可能内网不可达 |
+| `FEISHU_DEFAULT_PASSWORD` | - | 飞书同步账号的初始密码（默认 `Aa123456`）。仅作用于从没登录过的账号，指派通知会随卡片发给本人，首登强制改密 |
 
 ## 故障排查
 

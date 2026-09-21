@@ -61,7 +61,7 @@
         <el-table-column label="最近同步" width="160">
           <template #default="{ row }"><span class="muted">{{ formatSyncTime(row.last_synced_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="260">
+        <el-table-column label="操作" width="332">
           <template #default="{ row }">
             <template v-if="canTargetUser(row)">
               <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
@@ -69,6 +69,11 @@
                 {{ row.is_active ? '禁用' : '启用' }}
               </el-button>
               <el-button link type="warning" size="small" @click="openChangePassword(row)">改密</el-button>
+              <!-- 「重置密码」= 一键恢复初始口令 + 飞书私信给本人（与「改密」分工不同，
+                   悬浮提示里说清楚，免得管理员分不清该点哪个） -->
+              <el-tooltip content="恢复为初始密码，并通过飞书私信把账号和密码发给本人（首次登录必须改密）" placement="top" :show-after="200">
+                <el-button link type="warning" size="small" @click="resetPassword(row)">重置密码</el-button>
+              </el-tooltip>
               <el-button link type="danger" size="small" @click="del(row)">删除</el-button>
             </template>
             <el-tag v-else-if="row.role_code === 'admin'" size="small" type="info" effect="plain">仅超级管理员可操作</el-tag>
@@ -310,6 +315,40 @@ async function submitPassword() {
     await adminApi.changePassword(pwdForm.id, { new_password: pwdForm.new_password })
     ElMessage.success('密码重置成功')
     showPwd.value = false
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '重置失败')
+  }
+}
+
+/**
+ * 一键重置为初始口令，并让后端把「账号 + 初始密码」私信给本人。
+ *
+ * 与「改密」的区别：改密是管理员**自己拟一个新密码**；重置是恢复到初始口令（FEISHU_DEFAULT_PASSWORD），
+ * 首登强制改密。后端是**同步发送**，所以这里能拿到确定结果：发出去了 / 没发出去+原因。
+ * 通知没发出去时把口令显示出来，管理员可直接线下告知（口令本来就是默认值）。
+ */
+async function resetPassword(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定把「${row.full_name || row.username}」的密码重置为初始密码吗？`
+      + '重置后会通过飞书私信把账号和初始密码发给本人，他首次登录必须修改密码。',
+      '重置初始密码',
+      { confirmButtonText: '重置并通知本人', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return          // 用户点了取消：什么都不做（ElMessageBox 取消是 reject，不是异常）
+  }
+  try {
+    const res = await adminApi.resetPassword(row.id)
+    const data = res.data || {}
+    if (data.notified) {
+      ElMessage.success('已重置为初始密码，并已通过飞书私信通知本人')
+    } else {
+      ElMessage.warning(
+        `已重置为初始密码（${data.password || '默认口令'}），但飞书通知未发出：`
+        + `${data.error || '未知原因'}`,
+      )
+    }
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '重置失败')
   }

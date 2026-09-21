@@ -149,6 +149,111 @@ def test_reject_records_reason():
     assert v.status == "rejected" and v.rejection_reason == "误报，环境问题"
 
 
+# ============ 负责人（修复人）权限：确认 / 驳回 / 转派 ============
+# 背景：修复人页面（前端「漏洞修复」）只显示"指派给我"的漏洞，但此前 confirm/reject
+# 只对 admin|secops 开放、assign 也只对 admin|secops 开放 —— 修复人在自己页面上既
+# 确认不了也驳回不了，遇到"不该我修"也没有转派入口。现在按**负责人本人**最小放开，
+# 下面这几条把"放开了什么"和"没放开什么"都钉住。
+def _assign(client, vid: int, assignee_id: int) -> None:
+    """管理员把漏洞指派给某人（走真实接口，顺带覆盖 assign 自己的权限判定）。"""
+    r = client.post(f"/api/vulns/{vid}/assign", json={"assignee_id": assignee_id})
+    assert r.status_code == 200, r.text
+
+
+def _users(db):
+    return (db.query(User).filter(User.username == "admin").first(),
+            db.query(User).filter(User.username == "dev1").first())
+
+
+def test_assignee_can_confirm_own_vuln():
+    """被指派的修复人能对自己负责的漏洞「确认」（此前只有 admin/secops 能确认）。"""
+    db, client = _setup()
+    admin, dev = _users(db)
+    CURRENT["user"] = admin
+    vid = _new_vuln(client)              # pending
+    _assign(client, vid, dev.id)
+
+    CURRENT["user"] = dev
+    r = client.post(f"/api/vulns/{vid}/action/confirm", json={"comment": "已确认，安排修复"})
+    assert r.status_code == 200, f"负责人应能确认，实际 {r.status_code}: {r.text}"
+    assert r.json()["status"] == "confirmed"
+
+
+def test_assignee_can_reject_own_vuln():
+    """负责人能驳回自己负责的漏洞，驳回原因照常落库（"误报"是修复人最常见的结论）。"""
+    db, client = _setup()
+    admin, dev = _users(db)
+    CURRENT["user"] = admin
+    vid = _new_vuln(client)
+    _assign(client, vid, dev.id)
+
+    CURRENT["user"] = dev
+    r = client.post(f"/api/vulns/{vid}/reject", json={"reason": "误报：测试环境未部署该接口"})
+    assert r.status_code == 200, f"负责人应能驳回，实际 {r.status_code}: {r.text}"
+    db.expire_all()
+    v = db.get(Vuln, vid)
+    assert v.status == "rejected"
+    assert v.rejection_reason == "误报：测试环境未部署该接口"
+
+
+def test_assignee_can_transfer_assignment():
+    """负责人可把漏洞**转派**给别人（页面上那个「指派」按钮），转派后不再归自己。"""
+    db, client = _setup()
+    admin, dev = _users(db)
+    dev2 = User(username="dev2", password_hash="x", full_name="研发小李",
+                role_id=dev.role_id, is_active=True)
+    db.add(dev2)
+    db.commit()
+
+    CURRENT["user"] = admin
+    vid = _new_vuln(client)
+    _assign(client, vid, dev.id)
+
+    CURRENT["user"] = dev
+    r = client.post(f"/api/vulns/{vid}/assign", json={"assignee_id": dev2.id})
+    assert r.status_code == 200, f"负责人应能转派，实际 {r.status_code}: {r.text}"
+    db.expire_all()
+    assert db.get(Vuln, vid).assignee_id == dev2.id, "转派后负责人没变"
+
+
+def test_assignee_privilege_is_scoped_to_own_vuln():
+    """负责人特权**只对自己负责的漏洞**生效：别人的漏洞仍 403（三条动作一起验）。"""
+    db, client = _setup()
+    admin, dev = _users(db)
+    CURRENT["user"] = admin
+    vid = _new_vuln(client)              # 不指派给任何人
+    _assign(client, vid, admin.id)       # 挂到管理员名下，确保"有主但不是 dev"
+
+    CURRENT["user"] = dev
+    for path, payload in ((f"/api/vulns/{vid}/action/confirm", {}),
+                          (f"/api/vulns/{vid}/reject", {"reason": "误报"}),
+                          (f"/api/vulns/{vid}/assign", {"assignee_id": dev.id})):
+        r = client.post(path, json=payload)
+        assert r.status_code == 403, f"{path} 应 403，实际 {r.status_code}: {r.text}"
+    db.expire_all()
+    assert db.get(Vuln, vid).status == "pending", "被拒的动作竟然改了状态"
+
+
+def test_unassigned_vuln_grants_no_assignee_power():
+    """**没人负责**的漏洞不产生任何"负责人特权"。
+
+    这条钉的是最容易写错的实现细节：`v.assignee_id is None` 时若只做 `==` 比较
+    （或忘了判空），"无主漏洞"就会被判成"人人都是负责人"，等于把确认/驳回/转派
+    开给全站。_is_assignee 里必须同时判 assignee_id 非空。
+    """
+    db, client = _setup()
+    admin, dev = _users(db)
+    CURRENT["user"] = admin
+    vid = _new_vuln(client)              # assignee_id 为 None
+
+    CURRENT["user"] = dev
+    r1 = client.post(f"/api/vulns/{vid}/action/confirm", json={})
+    r2 = client.post(f"/api/vulns/{vid}/reject", json={"reason": "误报"})
+    r3 = client.post(f"/api/vulns/{vid}/assign", json={"assignee_id": admin.id})
+    assert (r1.status_code, r2.status_code, r3.status_code) == (403, 403, 403), \
+        f"无主漏洞竟给出负责人权限：{r1.status_code},{r2.status_code},{r3.status_code}"
+
+
 # ============ 运行器 ============
 def _main() -> int:
     cases = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

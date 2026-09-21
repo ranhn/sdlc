@@ -478,6 +478,74 @@ def test_sync_skips_deactivation_when_fetch_looks_truncated():
     assert any("skipped_deactivate" in d for d in res.details), res.details
 
 
+# ============ 初始口令（要发给本人，所以必须是"已知值"） ============
+
+def test_sync_sets_default_initial_password_for_new_users():
+    """新建账号的初始口令 = 默认值，且首登强制改密。
+
+    为什么不能用随机口令：库里只有哈希，指派通知要"把账号密码发给本人"，就必须有一个
+    双方都知道的值 —— 历史那种"随机且从不下发"的口令，等于这些同事没有可用的密码。
+    """
+    from app.security import verify_password
+
+    db = _make_db()
+    admin = _wire_sync(db, {"od-rnd": [{"open_id": "ou_p1", "name": "新同学"}]})
+    asyncio.run(feishu.sync_users(db=db, current=admin))
+
+    u = db.query(User).filter(User.feishu_open_id == "ou_p1").first()
+    assert verify_password("Aa123456", u.password_hash), "初始口令不是默认值"
+    assert u.must_change_password is True, "首登必须强制改密"
+    assert feishu.initial_password_for(u) == "Aa123456", "应能取出初始口令用于通知"
+
+
+def test_sync_aligns_password_only_for_never_logged_in_accounts():
+    """老账号对齐默认口令，但**只动从没登录过的**；已改过密码的绝不碰。
+
+    两种账号都在同一批同步里，用来锁死"判定口径 = must_change_password"这条线：
+    它是唯一能区分"这人还没拿到密码"与"这人已经自己设过密码"的标记。
+    """
+    from app.security import hash_password, verify_password
+
+    db = _make_db()
+    admin = _wire_sync(db, {"od-rnd": [
+        {"open_id": "ou_fresh", "name": "没登录过"},
+        {"open_id": "ou_used", "name": "已经改过密"},
+    ]})
+    asyncio.run(feishu.sync_users(db=db, current=admin))
+
+    # 造出历史状态：两人当初都是"随机口令"，区别只在于后者已经自己改过密码
+    fresh = db.query(User).filter(User.feishu_open_id == "ou_fresh").first()
+    used = db.query(User).filter(User.feishu_open_id == "ou_used").first()
+    fresh.password_hash = hash_password("random_nobody_knows")
+    used.password_hash = hash_password("MyOwnPwd!2026")
+    used.must_change_password = False
+    db.commit()
+
+    asyncio.run(feishu.sync_users(db=db, current=admin))
+    db.refresh(fresh)
+    db.refresh(used)
+
+    assert verify_password("Aa123456", fresh.password_hash), "从没登录过的账号没对齐默认口令"
+    assert feishu.initial_password_for(fresh) == "Aa123456"
+    assert verify_password("MyOwnPwd!2026", used.password_hash), "已改密的账号被改掉了（会把人锁在门外）"
+    assert feishu.initial_password_for(used) is None, "已改密还给出初始口令"
+
+
+def test_initial_password_skipped_for_manual_accounts():
+    """手工账号不给初始口令：它的密码是管理员设的（管理员知道），发默认值反而是错的。"""
+    db = _make_db()
+    role = Role(name="研发人员", code="dev")
+    db.add(role)
+    db.flush()
+    manual = User(username="manual_user", password_hash="x", full_name="手工账号",
+                  role_id=role.id, must_change_password=True)   # 连标记为真都不给
+    db.add(manual)
+    db.commit()
+
+    assert manual.feishu_open_id is None
+    assert feishu.initial_password_for(manual) is None
+
+
 # ============ 运行器 ============
 
 def _main():

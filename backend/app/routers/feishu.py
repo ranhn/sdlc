@@ -10,11 +10,14 @@
 """
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
+import threading
+import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -43,6 +46,8 @@ except Exception:  # noqa: BLE001  —— 缺 dotenv 也不该影响服务启动
 router = APIRouter(prefix="/api/admin/feishu", tags=["飞书同步"])
 
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
+
+logger = logging.getLogger(__name__)
 
 # 并发度：公司有 400+ 部门，而这个接口**只返回部门直属成员**（实测
 # /users/find_by_department 也一样，没有"含子部门"的省事写法），所以必须逐个部门拉。
@@ -99,6 +104,118 @@ def _get_config():
     }
 
 
+# ===================== 初始密码 =====================
+
+# 飞书同步账号的初始密码（可用 FEISHU_DEFAULT_PASSWORD 覆盖）。
+#
+# 为什么是"固定默认口令"而不是每人一个随机值：库里的 password_hash 是**单向**的，
+# 改密之后连管理员也拿不到明文 —— 所以"把账号密码发给本人"这件事只有一种实现路径：
+# 把密码设成一个**双方都知道的值**。历史行为是随机口令且从不下发，结果是那些从没登录过的
+# 同事手里**根本没有可用的密码**（他自己不知道、我们也取不出来）。
+#
+# 三个护栏（缺一不可）：
+#   1) 只作用于 must_change_password=True 的账号 —— 即"从没改过密码、没人成功登录过"。
+#      已改过密码的账号一律不碰，否则等于把在职同事锁在门外；
+#   2) 首次登录**强制改密**：登录接口返回 must_change_password，前端弹窗不放行，
+#      改完清标记（changing 后本模块再也发不出这个口令，因为库里没有明文）；
+#   3) 只在**单聊**里发给本人，不写进日志明文、不进群。
+DEFAULT_INITIAL_PASSWORD = "Aa123456"
+
+
+def default_password() -> str:
+    """初始密码口径：FEISHU_DEFAULT_PASSWORD 优先，未配置用 DEFAULT_INITIAL_PASSWORD。
+
+    公开（非下划线）是因为管理端"重置密码"入口也要用它 —— 两处必须同源，
+    否则同步建号的口令与管理员重置出来的口令会不一致，通知里发的就成假的了。
+    """
+    return os.getenv("FEISHU_DEFAULT_PASSWORD", "").strip() or DEFAULT_INITIAL_PASSWORD
+
+
+def initial_password_for(user) -> Optional[str]:
+    """这个账号**现在能拿到的初始密码**；拿不到（不该发）返回 None。
+
+    两种返回 None 的情况，理由不同：
+      · 已改过密码（must_change_password=False）→ 明文只在他脑子里，我们发不出来，
+        更不该替他重置；
+      · 手工创建的账号（没有 feishu_open_id）→ 它的初始密码是管理员设的（管理员知道），
+        给它发"默认口令"反而是错的：那个口令根本不是它的密码。
+    只有"飞书同步来的 + 从没改过密码"的账号，初始口令才由本模块统一指定。
+    """
+    if not getattr(user, "must_change_password", False):
+        return None
+    if not (getattr(user, "feishu_open_id", "") or "").strip():
+        return None
+    return default_password()
+
+
+# ===================== 卡片构件（消息卡片 1.0） =====================
+#
+# ⚠️ 实测结论：**本环境（租户/客户端）不支持卡片 JSON 2.0**。同一时段用最小样例对照过：
+#     · 2.0（`{"schema":"2.0","header":{...},"body":{"elements":[...]}}`）→ 飞书把整卡降级成
+#       `{"tag":"img",...}` + "请升级至最新版本客户端，以查看内容"，**正文全丢**；
+#     · 1.0（顶层 elements + div/lark_md）→ 正常解析渲染。
+#   （两次都是 code=0，所以"接口成功"不代表"客户端看得见"——验收必须看 message 的渲染体。）
+#   因此全项目统一用 **1.0**。等客户端全线升级后再切 2.0，那时能多拿到三样东西：
+#   header 的 subtitle（副标题）、column_set（真列布局）、primary_filled（实心按钮）。
+#
+# 1.0 下把版式做紧的两个要点：
+#   1) 并列信息走 `div.fields` + `is_short`（飞书自动排两列），不要多个 div 堆叠；
+#   2) **标签与值写在同一行**（`**等级**：高危`）—— 用 `\n` 拆成两行会被当成两个段落，
+#      段间距会把卡片撑得又空又散（这是上一版截图里最刺眼的问题）。
+
+def fields_div(*cells: str) -> dict:
+    """两列网格：`fields` + `is_short`（飞书按两列排；给 4 段即 2×2）。"""
+    return {
+        "tag": "div",
+        "fields": [{"is_short": True, "text": {"tag": "lark_md", "content": c}}
+                   for c in cells],
+    }
+
+
+def text_div(content: str) -> dict:
+    """一段 markdown 文本（1.0 的正文元素）。"""
+    return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+
+
+def primary_button(label: str, url: str) -> dict:
+    """跳转按钮（1.0：action + button.url）。"""
+    return {"tag": "action", "actions": [{
+        "tag": "button",
+        "text": {"tag": "lark_md", "content": label},
+        "type": "primary",
+        "url": url,
+    }]}
+
+
+def note_div(content: str) -> dict:
+    """底部灰色小字。"""
+    return {"tag": "note", "elements": [{"tag": "lark_md", "content": content}]}
+
+
+def credentials_div(username: str, password: str) -> dict:
+    """「账号 / 初始密码」两列 —— 漏洞指派卡与管理端重置卡**共用同一版式**。"""
+    return fields_div(f"**账号**：`{username}`", f"**初始密码**：`{password}`")
+
+
+def credentials_card(username: str, password: str, base_url: str, *,
+                     reason: str | None = None) -> dict:
+    """「账号 + 初始口令」卡片：管理端「重置密码」后私信本人（与漏洞指派卡同一套观感）。"""
+    elements: list[dict] = [
+        text_div(reason or "你的账号已初始化，请用下面的凭据登录"),
+        credentials_div(username, password),
+    ]
+    if base_url:
+        elements += [{"tag": "hr"},
+                     primary_button("打开登录页", f"{base_url.rstrip('/')}/login")]
+    elements.append(note_div("首次登录会强制要求修改密码"))
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "indigo",
+                   "title": {"tag": "plain_text", "content": "账号初始化"}},
+        "elements": elements,
+    }
+
+
 # ===================== 飞书 API 调用 =====================
 
 async def _get_tenant_token(app_id: str, app_secret: str) -> str:
@@ -109,6 +226,157 @@ async def _get_tenant_token(app_id: str, app_secret: str) -> str:
     if data.get("code") != 0:
         raise HTTPException(status_code=502, detail=f"飞书鉴权失败：{data.get('msg', 'unknown')}")
     return data["tenant_access_token"]
+
+
+# ===================== 单聊消息下发（漏洞指派通知） =====================
+#
+# 为什么放在这个模块：App 凭证读取（_get_config）、httpx 连接池（_client）、
+# tenant_access_token 解析都在这里，复用同一套配置与客户端即可，不必再写第二份
+# "飞书调用"实现（本项目对同一件事的两份实现很敏感）。
+#
+# ⚠️ 需要在飞书开放平台「权限管理」里开通并**发布版本**后才生效：
+#     · im:message:send_as_bot —— 以应用身份发送单聊消息（本段用的就是它）
+#     · **「应用能力」里必须启用「机器人」** —— 漏了这一步，权限勾对了、凭证也没问题，
+#       发送仍然固定返回 code=230006 "Bot ability is not activated."（已实测确认）
+#     · 接收人必须在应用的「可用范围」内（否则返回 230002 一类错误）
+#   发消息与通讯录同步是两套独立权限：只有 contact:* 是发不出去的。
+#   想确认到底卡在哪一步，可直接跑 tests 之外的自检：取 token → 发一条给自己，
+#   打印飞书原始返回（排查顺序：连通性 → 鉴权 → open_id → 机器人能力 → 可用范围）。
+#
+# 为什么单独做 token 缓存（同步逻辑里是每次直取）：通讯录同步一次只取一次 token，
+# 而"按人发消息"是持续发生的高频动作 —— 每条都换 token 既慢又容易撞飞书频控。
+# tenant_access_token 有效期 7200s，这里留 5 分钟安全边界。
+_TOKEN_CACHE: dict[str, Any] = {"value": "", "expire_at": 0.0}
+
+
+def notify_enabled() -> bool:
+    """是否启用飞书消息通知。
+
+    两个条件同时满足才发：① 配了 App 凭证（没配就是没接入，静默跳过）；
+    ② 没有被 FEISHU_NOTIFY=0/false 显式关掉（出问题时的应急开关，不用改代码）。
+    """
+    raw = str(os.getenv("FEISHU_NOTIFY", "1")).strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    cfg = _get_config()
+    return bool(cfg["app_id"] and cfg["app_secret"])
+
+
+async def _tenant_token_cached() -> str:
+    """带缓存地取 tenant_access_token（见上方说明）。"""
+    cfg = _get_config()
+    app_id, app_secret = cfg["app_id"], cfg["app_secret"]
+    if not app_id or not app_secret:
+        raise HTTPException(status_code=400,
+                            detail="飞书配置未启用（缺少 FEISHU_APP_ID / FEISHU_APP_SECRET）")
+    now = time.time()
+    if _TOKEN_CACHE["value"] and now < float(_TOKEN_CACHE["expire_at"]):
+        return str(_TOKEN_CACHE["value"])
+    url = f"{FEISHU_BASE}/auth/v3/tenant_access_token/internal"
+    r = await _client().post(url, json={"app_id": app_id, "app_secret": app_secret})
+    data = r.json()
+    if data.get("code") != 0:
+        raise HTTPException(status_code=502, detail=f"飞书鉴权失败：{data.get('msg', 'unknown')}")
+    _TOKEN_CACHE["value"] = data["tenant_access_token"]
+    _TOKEN_CACHE["expire_at"] = now + max(60, int(data.get("expire", 7200)) - 300)
+    return str(_TOKEN_CACHE["value"])
+
+
+def _sync_client() -> httpx.Client:
+    """发消息专用的一次性同步客户端（**不复用** _client() 那个连接池）。
+
+    为什么不复用：_client() 里的 AsyncClient 是给通讯录同步用的，它跑在 uvicorn 的
+    事件循环里；而通知/密码推送是在**临时线程**里发的 —— AsyncClient 绑定事件循环，
+    跨循环复用会在连接回收时偶发 "Event loop is closed"。消息量极小（一次一两条），
+    短连接的开销可以忽略，换来的是"任何线程里都能安全发"。
+    """
+    return httpx.Client(timeout=20)
+
+
+def _sync_tenant_token() -> str:
+    """同步版取 token（与异步版**共用同一个 _TOKEN_CACHE** —— 缓存的是数据，与事件循环无关）。"""
+    cfg = _get_config()
+    app_id, app_secret = cfg["app_id"], cfg["app_secret"]
+    if not app_id or not app_secret:
+        raise HTTPException(status_code=400,
+                            detail="飞书配置未启用（缺少 FEISHU_APP_ID / FEISHU_APP_SECRET）")
+    now = time.time()
+    if _TOKEN_CACHE["value"] and now < float(_TOKEN_CACHE["expire_at"]):
+        return str(_TOKEN_CACHE["value"])
+    with _sync_client() as c:
+        r = c.post(f"{FEISHU_BASE}/auth/v3/tenant_access_token/internal",
+                   json={"app_id": app_id, "app_secret": app_secret})
+    data = r.json()
+    if data.get("code") != 0:
+        raise HTTPException(status_code=502, detail=f"飞书鉴权失败：{data.get('msg', 'unknown')}")
+    _TOKEN_CACHE["value"] = data["tenant_access_token"]
+    _TOKEN_CACHE["expire_at"] = now + max(60, int(data.get("expire", 7200)) - 300)
+    return str(_TOKEN_CACHE["value"])
+
+
+def send_and_wait(receive_id: str, msg_type: str, content: Any) -> dict:
+    """**同步**发一条消息并返回飞书结果；失败抛 HTTPException（含飞书返回码）。
+
+    msg_type：``text`` 纯文本 / ``interactive`` 消息卡片（content 传卡片 dict）。
+    content 收 dict、在这里统一字符串化 —— 飞书要求 content 是**字符串化的 JSON**
+    （不是对象），漏了这层会报 code=230001 invalid content。
+
+    给"管理员当面对着一个人操作"的场景用（重置密码）：他要的是**确定答案**
+    （发出去了没 / 失败原因是什么），所以这里等结果并把错误抛回去，而不是丢后台线程。
+    """
+    token = _sync_tenant_token()
+    with _sync_client() as c:
+        r = c.post(
+            f"{FEISHU_BASE}/im/v1/messages",
+            # receive_id_type 必须与 receive_id 的**内容**一致：本地存的是 open_id
+            # （User.feishu_open_id，同步时用 user_id_type=open_id 拉的）
+            params={"receive_id_type": "open_id"},
+            headers={"Authorization": f"Bearer {token}"},
+            json={"receive_id": receive_id, "msg_type": msg_type,
+                  "content": json.dumps(content, ensure_ascii=False)},
+        )
+    data = r.json()
+    if data.get("code") != 0:
+        raise HTTPException(
+            status_code=502,
+            detail=f"飞书发消息失败：code={data.get('code')} {data.get('msg')}",
+        )
+    return data.get("data") or {}
+
+
+def send_in_background(receive_id: str, msg_type: str, content: Any, *, tag: str = "") -> None:
+    """在后台线程里发一条消息：**不阻塞调用方，失败也不影响调用方的业务动作**。
+
+    全项目**唯一的发送出口** —— 调用点同步、可被测试替换（线上真发发生在线程里）。
+
+    为什么是线程而不是 BackgroundTasks / 把端点改成 async：
+      · 调用方（漏洞指派/创建/编辑）都是**同步端点**（同步 SQLAlchemy Session），
+        改成 async 会把阻塞的 DB 调用搬进事件循环；
+      · 飞书这一跳可能慢、可能被限流、权限没开时会直接失败 —— 这些都不该让
+        "指派负责人"这个业务动作变慢或失败。
+    失败只写 WARNING 日志（含飞书返回码，直接对上排查手册）：
+      230006 = 没启用「机器人」应用能力（权限勾了也会卡在这）；
+      230002 = 接收人不在可用范围；99991672 = 权限未开通/未发布版本。
+    """
+    if not receive_id or not content:
+        return
+    label = f"（{tag}）" if tag else ""
+
+    def _run() -> None:
+        try:
+            send_and_wait(receive_id, msg_type, content)
+            logger.info("飞书通知已发送%s → %s", label, receive_id)
+        except Exception as exc:  # noqa: BLE001 —— 后台线程里的任何失败都不能冒泡
+            logger.warning("飞书通知发送失败%s → %s：%s", label, receive_id, exc)
+
+    threading.Thread(target=_run, daemon=True, name="feishu-notify").start()
+
+
+def send_text_in_background(receive_id: str, text: str, *, tag: str = "") -> None:
+    """纯文本发送（自检脚本、临时通知用）。业务通知请用 send_in_background 发卡片。"""
+    if not text:
+        return
+    send_in_background(receive_id, "text", {"text": text}, tag=tag)
 
 
 async def _list_feishu_dept_users(token: str, department_id: str, page_size: int = 50) -> list:
@@ -501,12 +769,11 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
         (u.username or "").lower() for u in db.query(User).all()
     }
 
-    # 新建账号的初始密码：**整批共用同一个随机口令的哈希**。
-    # 为什么不给每人单独生成：bcrypt 单次实测 186ms，1600 个新用户就是 ~300s 纯 CPU，
-    # 而且它是同步调用，会**阻塞事件循环**——同步期间整个后端（含健康检查）无响应。
-    # 这个口令本来就不下发给任何人（首登强制改密：must_change_password=True），
-    # "每人一个随机值"与"整批一个随机值"在安全性上没有实际差别，却省掉 5 分钟。
-    batch_pwd_hash = hash_password(secrets.token_urlsafe(12))
+    # 新建账号的初始密码：**整批共用一个哈希**（口令口径见 DEFAULT_INITIAL_PASSWORD 说明）。
+    # 为什么不给每人单独哈希：bcrypt 单次实测 186ms，1600 个新用户就是 ~300s 纯 CPU，
+    # 而且它是同步调用、会**阻塞事件循环**（同步期间整个后端含健康检查都无响应）。
+    batch_pwd_hash = hash_password(default_password())
+    aligned_password = 0   # 顺带把"从没登录过的老账号"对齐到默认口令，最后写进操作日志
 
     # 2) 逐个部门拉**直属**用户：只取一级部门会漏掉全部子部门同事
     target_depts = [n["open_department_id"] for n in dept_tree] or ["0"]
@@ -618,6 +885,13 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
                     existing.email = email or existing.email
                     existing.department_id = dept_id or existing.department_id
                     existing.last_synced_at = now
+                    # 初始口令对齐：历史同步建号用的是**随机且从不下发**的口令，从没登录过的
+                    # 同事手里等于没有可用密码（指派通知里也就发不出账号密码）。这里把这类账号
+                    # 对齐成默认口令 —— 判定口径与"改名"一致：must_change_password=True
+                    # （从没改过密码、没人成功用它登录过）。已改密的账号一律不碰。
+                    if existing.must_change_password:
+                        existing.password_hash = batch_pwd_hash
+                        aligned_password += 1
                     # 用户名改成英文名（产品要求：列表不再单独展示英文名，用户名就是它）。
                     # 只改**自动生成且从没登录过**的账号：username 仍是 fs_<open_id 尾8>
                     # 且 must_change_password=True（说明没改过密码、没人用这个账号登录过）。
@@ -682,6 +956,7 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
         f"飞书同步: 部门 {result.dept_total} 个（新建 {result.dept_created} / 匹配 {result.dept_matched}）, "
         f"用户 总数 {result.total}, 新建 {result.created}, 更新 {result.updated}, "
         f"改名 {result.renamed}, 合并手工账号 {result.merged}, "
+        f"初始口令对齐 {aligned_password}, "
         f"停用 {result.deactivated}, 失败 {result.failed}",
     )
     return result

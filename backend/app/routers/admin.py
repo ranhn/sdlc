@@ -22,6 +22,8 @@ from ..schemas import (
     ChangePasswordIn,
 )
 from ..security import get_current_user, hash_password, write_operation_log
+# 飞书：初始口令口径（default_password）与发消息都得跟同步/通知共用同一份实现
+from . import feishu as feishu_notify
 
 router = APIRouter(prefix="/api", tags=["管理"])
 
@@ -252,6 +254,80 @@ def change_user_password(user_id: int, data: ChangePasswordIn, db: Session = Dep
     db.commit()
     write_operation_log(db, current, "change_password", "admin", f"重置用户 {user.username} 密码")
     return {"message": "密码重置成功"}
+
+
+@router.post("/users/{user_id}/reset-password")
+def reset_user_password(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """一键把账号重置为**初始口令**，并当场私信本人（与上面 change-password 分工不同）。
+
+    · change-password：管理员自己拟一个新密码 —— 能不能告诉本人、怎么告诉，全靠线下；
+    · 本接口：恢复到**初始口令**（取自 FEISHU_DEFAULT_PASSWORD，与"从飞书同步"建号同源），
+      并把账号+口令**同步**发到本人飞书私信，首登强制改密。
+
+    两个刻意的设计：
+      1) **同步发送**（漏洞通知是丢后台线程的）：管理员是当面对着一个人在操作，他要的是
+         确定答案 —— "发出去了没、失败原因是什么"，所以这里等结果并如实回报；
+      2) **通知成败不影响"已重置"**：响应里分三种情况回报，失败时把初始口令回给管理员，
+         便于线下告知（口令本来就是默认值，不算额外泄露）。
+    """
+    require_admin(current)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_can_target_admin(current, user, "重置密码")
+    if user.id == current.id:
+        raise HTTPException(status_code=400, detail="不能在这里重置自己的密码（请用右上角「修改密码」）")
+
+    import os
+
+    password = feishu_notify.default_password()      # 与同步建号同源，通知里发的才是真的
+    user.password_hash = hash_password(password)
+    user.must_change_password = True                 # 重置后同样强制首登改密
+    db.commit()
+    db.refresh(user)
+
+    # 登录链接的基地址：与通知同一口径（显式配置优先，其次前端白名单第一条）
+    base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+        base = cors[0].rstrip("/") if cors else ""
+
+    notified, error = False, None
+    open_id = (user.feishu_open_id or "").strip()
+    if not open_id:
+        error = "该账号没有飞书 open_id（手工账号），初始口令需线下告知本人"
+    elif not feishu_notify.notify_enabled():
+        error = "飞书通知未启用（未配 FEISHU_APP_ID/SECRET，或 FEISHU_NOTIFY=0）"
+    else:
+        try:
+            feishu_notify.send_and_wait(
+                open_id,
+                "interactive",
+                feishu_notify.credentials_card(
+                    user.username, password, base,
+                    reason=f"{current.full_name or current.username} 为你重置了密码，"
+                           f"请用下面的凭据登录",
+                ),
+            )
+            notified = True
+        except Exception as exc:  # noqa: BLE001 —— 通知失败不影响"已重置"这个事实
+            error = str(getattr(exc, "detail", None) or exc)
+
+    write_operation_log(
+        db, current, "reset_password", "admin",
+        f"重置用户 {user.username} 密码为初始口令（飞书通知："
+        f"{'已发送' if notified else '未发送 - ' + str(error)}）",
+    )
+    return {
+        "message": "已重置为初始密码" + ("，并已通过飞书私信通知本人" if notified else ""),
+        "notified": notified,
+        "error": error,
+        "password": password,     # 通知失败时管理员可直接线下告知
+    }
 
 
 # ============ 系统资产 ============

@@ -104,6 +104,149 @@ def test_update_user_changes_role_and_keeps_untouched_fields():
     assert r2.json()["email"] is None       # 显式传空 → 清空邮箱
 
 
+# ============ 一键重置为初始口令 + 飞书私信通知本人 ============
+def _stub_feishu(*, enabled=True, send_error=None, sent=None):
+    """把飞书发送换成本地替身（不发真实请求），返回 (恢复函数, sent 列表)。
+
+    显式控制 notify_enabled：本机 .env 里可能配了真实飞书凭证，那会让"未启用飞书"
+    这条分支测不出来（会真的尝试发送）。
+    """
+    fe = admin_router.feishu_notify
+    orig_enabled, orig_send = fe.notify_enabled, fe.send_and_wait
+    box = sent if sent is not None else []
+
+    def _send(receive_id, msg_type, content):
+        if send_error is not None:
+            raise send_error
+        box.append({"to": receive_id, "msg_type": msg_type, "content": content})
+        return {"message_id": "om_test"}
+
+    fe.notify_enabled = lambda: enabled
+    fe.send_and_wait = _send
+
+    def restore():
+        fe.notify_enabled, fe.send_and_wait = orig_enabled, orig_send
+
+    return restore, box
+
+
+def _card_text(card) -> str:
+    """卡片 JSON 里所有文案拍平（断言关键字用，不绑死结构）。"""
+    out: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "content" and isinstance(v, str):
+                    out.append(v)
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(card)
+    return "\n".join(out)
+
+
+def test_reset_password_sets_default_and_notifies_via_feishu():
+    """重置 = 口令恢复默认值 + 强制首登改密 + 当场把账号口令私信给本人。"""
+    from app.security import verify_password
+
+    db, roles, dept, client = _setup()
+    CURRENT["user"] = db.query(User).filter(User.username == "admin").first()
+    tracy = db.query(User).filter(User.username == "Tracy.Yang").first()
+    restore, sent = _stub_feishu()
+    try:
+        r = client.post(f"/api/users/{tracy.id}/reset-password")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["notified"] is True, body
+        assert body["password"] == "Aa123456", body
+    finally:
+        restore()
+
+    db.refresh(tracy)
+    assert verify_password("Aa123456", tracy.password_hash), "口令没重置成默认值"
+    assert tracy.must_change_password is True, "重置后应强制首登改密"
+
+    assert len(sent) == 1, f"应发 1 条，实际 {len(sent)}"
+    assert sent[0]["to"] == "ou_tracy", sent[0]
+    assert sent[0]["msg_type"] == "interactive", "应发卡片"
+    text = _card_text(sent[0]["content"])
+    assert "Tracy.Yang" in text and "Aa123456" in text, text
+
+
+def test_reset_password_reports_when_account_has_no_feishu():
+    """手工账号（无 open_id）：照样重置，但如实回报"没发出去 + 原因"，并回传口令。"""
+    from app.security import verify_password
+
+    db, roles, dept, client = _setup()
+    CURRENT["user"] = db.query(User).filter(User.username == "admin").first()
+    secops = db.query(User).filter(User.username == "secops1").first()   # 无 feishu_open_id
+    restore, sent = _stub_feishu()
+    try:
+        r = client.post(f"/api/users/{secops.id}/reset-password")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["notified"] is False and body["error"], body
+        assert "飞书" in body["error"], body
+        assert body["password"] == "Aa123456", "失败时也要把口令回给管理员（便于线下告知）"
+    finally:
+        restore()
+
+    assert sent == [], "没有 open_id 不该尝试发送"
+    db.refresh(secops)
+    assert verify_password("Aa123456", secops.password_hash), "重置本身必须成功"
+
+
+def test_reset_password_surfaces_feishu_failure_but_keeps_reset():
+    """飞书侧报错（权限没开等）：错误原样回报给管理员，但**重置已经生效**。"""
+    from fastapi import HTTPException
+
+    from app.security import verify_password
+
+    db, roles, dept, client = _setup()
+    CURRENT["user"] = db.query(User).filter(User.username == "admin").first()
+    tracy = db.query(User).filter(User.username == "Tracy.Yang").first()
+    restore, sent = _stub_feishu(
+        send_error=HTTPException(status_code=502, detail="飞书发消息失败：code=230006 Bot ability"))
+    try:
+        r = client.post(f"/api/users/{tracy.id}/reset-password")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["notified"] is False, body
+        assert "230006" in (body["error"] or ""), body
+    finally:
+        restore()
+
+    assert sent == []
+    db.refresh(tracy)
+    assert verify_password("Aa123456", tracy.password_hash), "通知失败不该回滚密码重置"
+    assert tracy.must_change_password is True
+
+
+def test_reset_password_permissions():
+    """权限与自锁：非管理员 403、secops 不能重置管理员、不能重置自己。"""
+    db, roles, dept, client = _setup()
+    admin = db.query(User).filter(User.username == "admin").first()
+    secops = db.query(User).filter(User.username == "secops1").first()
+    tracy = db.query(User).filter(User.username == "Tracy.Yang").first()
+    restore, sent = _stub_feishu()
+    try:
+        CURRENT["user"] = tracy                      # 普通权限
+        assert client.post(f"/api/users/{tracy.id}/reset-password").status_code == 403
+
+        CURRENT["user"] = secops                     # secops 动 admin
+        assert client.post(f"/api/users/{admin.id}/reset-password").status_code == 403
+
+        CURRENT["user"] = admin                      # 重置自己
+        assert client.post(f"/api/users/{admin.id}/reset-password").status_code == 400
+    finally:
+        restore()
+    assert sent == [], f"被拦下的请求不该发消息：{sent}"
+
+
 def test_empty_update_is_noop():
     db, roles, dept, client = _setup()
     CURRENT["user"] = db.query(User).filter(User.username == "admin").first()

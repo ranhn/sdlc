@@ -129,6 +129,13 @@
           <el-descriptions-item label="提交时间">{{ fmt(current.created_at) }}</el-descriptions-item>
         </el-descriptions>
 
+        <!-- 驳回原因：与「提交漏洞」页一致 —— 被驳回的漏洞最该先看到"为什么驳回"。
+             修复人在这一页驳回自己的漏洞后，这里也能直接看到结论（此前只写进 DB）。 -->
+        <div v-if="current.status === 'rejected' && current.rejection_reason" class="reject-banner">
+          <b>驳回原因</b>
+          <span>{{ current.rejection_reason }}</span>
+        </div>
+
         <div class="sec-title">漏洞描述</div>
         <el-text>{{ current.description || '无' }}</el-text>
 
@@ -143,12 +150,19 @@
           fit="cover" class="shot" />
 
         <!-- 状态操作 -->
+        <!-- 修复人（该漏洞负责人）在这里就能走完整条链路：拿到漏洞先「确认」成立或
+             「驳回」误报，再「开始修复 / 修复完成」；不该自己修时用「指派」转派。
+             这些按钮的可见性由 can() 判定（角色 ∪ 负责人本人），与后端
+             state_machine.ASSIGNEE_ACTIONS + assign_vuln 的授权口径一致。 -->
         <div class="sec-title">修复操作</div>
         <div class="actions">
+          <el-button v-if="can('confirm')" type="success" size="small" @click="doAction('confirm')">确认</el-button>
           <el-button v-if="can('start_fix')" type="warning" size="small" @click="doAction('start_fix')">开始修复</el-button>
           <el-button v-if="can('finish_fix')" type="success" size="small" @click="doAction('finish_fix')">修复完成</el-button>
           <el-button v-if="can('pass_retest')" type="success" size="small" @click="doAction('pass_retest')">复测通过</el-button>
           <el-button v-if="can('close')" type="primary" size="small" @click="doAction('close')">关闭</el-button>
+          <el-button v-if="can('assign')" type="info" size="small" @click="openAssign">指派</el-button>
+          <el-button v-if="can('reject')" type="danger" size="small" plain @click="openReject">驳回</el-button>
         </div>
 
         <!-- 流程图 -->
@@ -169,6 +183,31 @@
         </div>
       </template>
     </el-drawer>
+
+    <!-- 指派弹窗（与「提交漏洞」页同一形态：先确保人员列表就绪，默认选中当前负责人） -->
+    <el-dialog v-model="assignVisible" title="指派负责人" width="400px">
+      <el-select v-model="assignTo" placeholder="选择负责人" style="width: 100%" filterable :loading="usersLoading">
+        <!-- label 必须传：Element 的本地过滤只比对 label，不传就退化成比对数字 id，
+             搜任何名字都显示"无匹配数据"（详见 utils/userLabel.js） -->
+        <el-option v-for="u in users" :key="u.id" :value="u.id" :label="userLabel(u)">
+          <span style="display: inline-block; width: 160px">{{ u.username }}</span>
+          <span>{{ u.full_name || '—' }}</span>
+        </el-option>
+      </el-select>
+      <template #footer>
+        <el-button @click="assignVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitAssign">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 驳回弹窗（原因必填：后端 VulnReject.reason 是必填项） -->
+    <el-dialog v-model="rejectVisible" title="驳回漏洞" width="400px">
+      <el-input v-model="rejectReason" type="textarea" :rows="3" placeholder="请输入驳回原因（如：误报 / 环境未部署 / 已修复）" />
+      <template #footer>
+        <el-button @click="rejectVisible = false">取消</el-button>
+        <el-button type="danger" @click="submitReject">确定驳回</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -176,12 +215,16 @@
 import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { vulnApi, systemApi } from '../api'
+import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 import { fmtDateTime } from '../utils/time'
+import { userLabel } from '../utils/userLabel'
 
 const store = useUserStore()
 const route = useRoute()
+// 当前登录用户 id：判断"这条漏洞是不是我负责的"（后端按 assignee_id 授权，
+// 前端只是按钮可见性，真正的拦截在服务端）
+const currentUserId = computed(() => store.user?.id ?? null)
 const list = ref([])
 const systems = ref([])
 const loading = ref(false)
@@ -216,22 +259,41 @@ const statusNames = {
 const statusType = { draft: 'info', pending: 'warning', confirmed: 'primary', fixing: 'warning', retest: 'warning', fixed: 'success', closed: 'success', rejected: 'danger', ignored: 'info' }
 const severityName = { critical: '严重', high: '高危', medium: '中危', low: '低危' }
 const severityType = { critical: 'danger', high: 'warning', medium: '', low: 'info' }
+// 各动作允许的角色（与后端 state_machine.ACTION_RULES 保持一致）。
+// confirm / reject / assign 的角色里**只有** admin|secops —— 修复人是靠下面
+// assigneeActions 那条"负责人本人"通道拿到的，不是靠角色（后端同理）。
 const actionRoles = {
+  confirm: ['admin', 'secops'], reject: ['admin', 'secops'],
   start_fix: ['admin', 'secops', 'dev'], finish_fix: ['admin', 'secops', 'dev', 'tester'],
   pass_retest: ['admin', 'secops', 'tester'], close: ['admin', 'secops'],
+  assign: ['admin', 'secops'],
 }
 // 各动作允许的前置状态（与后端 state_machine.ACTION_RULES 保持一致）
 const actionFrom = {
+  confirm: ['pending'],
+  reject: ['pending'],
   start_fix: ['confirmed'],
   finish_fix: ['fixing'],
   pass_retest: ['retest'],
   close: ['fixed'],
+  assign: ['pending', 'confirmed', 'fixing', 'retest', 'fixed'],
 }
+// 「负责人（修复人）本人」额外可用的动作，对应后端 state_machine.ASSIGNEE_ACTIONS
+// + assign_vuln 的授权（该漏洞 assignee_id == 当前用户）。
+const assigneeActions = ['confirm', 'reject', 'assign']
 const flowMap = { pending: 1, confirmed: 2, fixing: 3, retest: 4, fixed: 5, closed: 6 }
+
+/** 我是不是当前这条漏洞的负责人（修复人）。 */
+function isAssignee() {
+  if (!current.value || currentUserId.value == null) return false
+  return current.value.assignee_id != null && current.value.assignee_id === currentUserId.value
+}
 
 function can(action) {
   if (!current.value) return false
-  if (!actionRoles[action]?.includes(store.role)) return false
+  const byRole = actionRoles[action]?.includes(store.role) === true
+  const byAssignee = isAssignee() && assigneeActions.includes(action)
+  if (!byRole && !byAssignee) return false
   if (actionFrom[action] && !actionFrom[action].includes(current.value.status)) return false
   return true
 }
@@ -242,6 +304,33 @@ const current = ref(null)
 const comments = ref([])
 const newComment = ref('')
 const flowActive = computed(() => (current.value ? flowMap[current.value.status] || 0 : 0))
+
+// 指派 / 驳回弹窗状态（与「提交漏洞」页同形态）
+const assignVisible = ref(false)
+const assignTo = ref(null)
+const rejectVisible = ref(false)
+const rejectReason = ref('')
+const users = ref([])
+const usersLoading = ref(false)
+let usersLoaded = false
+
+/**
+ * 指派弹窗的人员列表**按需加载**：飞书同步后公司 1600+ 人，全量约 580KB，
+ * 而这一页只有指派弹窗用得到 —— 用只返回 id/用户名/姓名的 /users/pick（约 60KB）。
+ * （与「提交漏洞」「系统资产」两页同一套做法与理由）
+ */
+async function ensureUsers() {
+  if (usersLoaded) return
+  usersLoaded = true
+  usersLoading.value = true
+  try {
+    users.value = (await adminApi.userPicks()).data || []
+  } catch {
+    usersLoaded = false   // 失败允许下次重试
+  } finally {
+    usersLoading.value = false
+  }
+}
 
 async function openDetail(row) {
   const res = await vulnApi.detail(row.id)
@@ -278,6 +367,46 @@ async function doAction(action) {
 }
 
 function fmt(d) { return fmtDateTime(d) }
+
+function openReject() { rejectVisible.value = true }
+async function submitReject() {
+  if (!rejectReason.value.trim()) return ElMessage.warning('请输入驳回原因')
+  try {
+    await vulnApi.reject(current.value.id, { reason: rejectReason.value })
+    ElMessage.success('已驳回')
+    rejectVisible.value = false
+    rejectReason.value = ''
+    openDetail(current.value)
+    load()          // 驳回后状态变了，列表里的状态列要同步
+  } catch (e) {
+    ElMessage.error(extractErrorMsg(e, '驳回失败'))
+  }
+}
+
+async function openAssign() {
+  // 先确保人员列表就绪再回填当前负责人：Element 解析"已选项显示名"时要能在选项里
+  // 找到这个人（本地过滤模式），顺序反了会短暂显示成数字 id。
+  await ensureUsers()
+  assignTo.value = current.value?.assignee_id ?? null
+  assignVisible.value = true
+}
+
+/**
+ * 转派负责人。转派成功后这条漏洞就不再属于"指派给我"——列表里会消失，
+ * 所以这里必须 load()（否则用户会看到一条"已经不是我的"记录留在列表里）。
+ */
+async function submitAssign() {
+  if (assignTo.value == null) return ElMessage.warning('请选择负责人')
+  try {
+    await vulnApi.assign(current.value.id, { assignee_id: assignTo.value })
+    ElMessage.success('指派成功')
+    assignVisible.value = false
+    await openDetail(current.value)   // 详情里的「负责人」要立刻变成新人
+    load()
+  } catch (e) {
+    ElMessage.error(extractErrorMsg(e, '指派失败'))
+  }
+}
 
 /**
  * 拉取"指派给我"的漏洞列表。
@@ -338,6 +467,14 @@ onMounted(async () => {
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 驳回原因：贴在顶部信息区下面，红底一眼可见（与「提交漏洞」页同一样式） */
+.reject-banner {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 10px; padding: 8px 12px;
+  background: #fef0f0; border: 1px solid #fbc4c4; border-radius: 8px;
+  font-size: 13px; line-height: 1.5; color: #b91c1c; word-break: break-word;
+}
+.reject-banner b { flex-shrink: 0; }
 .comment { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; }
 .comment-input { display: flex; gap: 8px; }
 </style>
