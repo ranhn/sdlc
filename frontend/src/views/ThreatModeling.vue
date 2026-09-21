@@ -704,6 +704,30 @@ const currentUser = computed(() => ({
 // 点击 DFD 节点后，右侧只显示该组件的威胁；点空白处恢复全量列表。
 const selectedCellId = ref(null)
 
+/**
+ * 选中信任边界时，威胁要取界内成员元素的（边界本身不挂威胁）。
+ *
+ * 与画布上的成员判定同口径：元素的中心点落在边界矩形内即算成员
+ * （DfdGraph.boundaryChildrenBBox 用的是同一条规则，边界框宽度也由它算）。
+ * 不这么做的话，点选一个边界会显示"暂无威胁记录"，与悬浮浮层给的聚合数字自相矛盾。
+ */
+function boundaryMemberCells(bCell, cells) {
+  const bp = bCell?.position
+  const bs = bCell?.size
+  if (!bp || !bs) return []
+  return cells.filter((c) => {
+    if (c.id === bCell.id) return false
+    if (c.shape === 'tm.BoundaryBox' || c.shape === 'tm.Text') return false
+    if (c.source && c.target) return false          // 数据流不是容器成员
+    const p = c.position
+    if (!p) return false
+    const sz = c.size || { width: 180, height: 60 }
+    const cx = p.x + sz.width / 2
+    const cy = p.y + sz.height / 2
+    return cx >= bp.x && cx <= bp.x + bs.width && cy >= bp.y && cy <= bp.y + bs.height
+  })
+}
+
 /** 把选中元素的信息 + 其威胁装成 ThreatPanel 期望的结构 */
 const selectedThreatsPayload = computed(() => {
   const id = selectedCellId.value
@@ -711,18 +735,28 @@ const selectedThreatsPayload = computed(() => {
   const cells = store.model?.detail?.diagrams?.[0]?.cells || []
   const cell = cells.find((c) => String(c.id) === String(id))
   if (!cell) return null
+  const isBoundary = cell.shape === 'tm.BoundaryBox'
+  // 边界：摊平界内每个成员的威胁（_cellName 记"谁挂的"，面板上的"挂载在 XX"才指得准）
+  const sources = isBoundary
+    ? boundaryMemberCells(cell, cells).map((m) => ({ cell: m, kind: m.shape }))
+    : [{ cell, kind: cell.kind || cell.data?.kind || '' }]
   return {
     cellId: cell.id,
     cellName: cell.data?.name || '未命名元素',
-    // 注入 _cellId / _cellName / _cellKind��ThreatPanel 的"定位"按钮与
+    // 边界容器：面板标题与计数口径都要说清"这是界内合计"
+    isBoundary,
+    memberCount: isBoundary ? sources.length : 0,
+    // 注入 _cellId / _cellName / _cellKind：ThreatPanel 的"定位"按钮与
     // "挂载在 XX" chip 依赖这三个字段；否则走 selectedThreats 分支时
     // 会因 v-if="t._cellId" 不成立而整块不渲染。
-    threats: (cell.threats || []).map((t) => ({
-      ...t,
-      _cellName: cell.data?.name || '',
-      _cellId: cell.id,
-      _cellKind: cell.kind || cell.data?.kind || '',
-    })),
+    threats: sources.flatMap(({ cell: src, kind }) =>
+      (src.threats || []).map((t) => ({
+        ...t,
+        _cellName: src.data?.name || '',
+        _cellId: src.id,
+        _cellKind: kind || '',
+      })),
+    ),
   }
 })
 

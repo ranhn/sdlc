@@ -22,32 +22,32 @@
            第 1 排的节点高亮开关保留。 -->
       <div class="legend-row">
         <span class="lg-item">
-          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" />
+          <svg width="24" height="10" viewBox="0 0 24 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="24" y2="5" stroke="#16a34a" stroke-width="2.4" />
           </svg>
           <span class="lg-label">加密流</span>
         </span>
         <span class="lg-item">
-          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" />
+          <svg width="24" height="10" viewBox="0 0 24 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="24" y2="5" stroke="#ea580c" stroke-width="2.4" />
           </svg>
           <span class="lg-label">公网流</span>
         </span>
         <span class="lg-item">
-          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="36" y2="5" stroke="#475569" stroke-width="2" stroke-dasharray="6 4" />
+          <svg width="24" height="10" viewBox="0 0 24 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="24" y2="5" stroke="#475569" stroke-width="2" stroke-dasharray="6 4" />
           </svg>
           <span class="lg-label">跨边界</span>
         </span>
         <span class="lg-item">
-          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="36" y2="5" stroke="#16a34a" stroke-width="2.4" stroke-dasharray="6 4" />
+          <svg width="24" height="10" viewBox="0 0 24 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="24" y2="5" stroke="#16a34a" stroke-width="2.4" stroke-dasharray="6 4" />
           </svg>
           <span class="lg-label">跨边界+加密</span>
         </span>
         <span class="lg-item">
-          <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-            <line x1="0" y1="5" x2="36" y2="5" stroke="#ea580c" stroke-width="2.4" stroke-dasharray="6 4" />
+          <svg width="24" height="10" viewBox="0 0 24 10" aria-hidden="true">
+            <line x1="0" y1="5" x2="24" y2="5" stroke="#ea580c" stroke-width="2.4" stroke-dasharray="6 4" />
           </svg>
           <span class="lg-label">跨边界+公网</span>
         </span>
@@ -199,6 +199,10 @@
           <span class="tt-title">{{ t.title }}</span>
         </div>
         <div v-if="tooltip.threats.length > 5" class="tt-more">… 等 {{ tooltip.threats.length }} 条威胁，点击节点查看全部</div>
+        <!-- 信任边界：威胁不属于边界本身，数字是界内成员之和 —— 标明口径 -->
+        <div v-if="tooltip.aggregated" class="tt-more">
+          信任边界不挂威胁 · 以上为界内 {{ tooltip.memberCount }} 个元素的威胁合计
+        </div>
       </div>
       <div v-else class="tt-empty">暂无威胁</div>
     </div>
@@ -1135,10 +1139,40 @@ function isLaneNode(node) {
   return d.lane === true || d.crossMarker === true
 }
 
+/**
+ * 模型里按 cell.id 找元素。
+ *
+ * 为什么要这层兜底：悬浮浮层原先只认 `node.data.tdCell`，而部分节点创建时
+ * 并没有挂它（tm.Text 装饰文本就是典型，见 addTextNode），于是浮层退化成
+ * 读"节点的空 data"，表现为标题显示兜底值「组件」、威胁数恒为 0 与
+ * 「暂无威胁」——即使该元素在模型里挂着威胁（用户反馈的正是这个）。
+ */
+function findModelCell(id) {
+  if (!id) return null
+  const cells = props.model?.detail?.diagrams?.[0]?.cells || []
+  return cells.find((c) => String(c.id) === String(id)) || null
+}
+
+/** 元素显示名。模型里名字存在 cell.data.name（cells 没有顶层 name 字段）。 */
+function cellDisplayName(cell) {
+  return cell?.data?.name || cell?.name || ''
+}
+
 function showTooltip(node) {
   if (isLaneNode(node)) return
-  const cell = node?.getData?.()?.tdCell || node?.data?.tdCell || node?.getData?.()
-  const threats = (cell?.threats || []).filter((t) => !t.outOfScope)
+  const nodeData = node?.getData?.() || {}
+  const cell = nodeData.tdCell || findModelCell(node?.id)
+  // 装饰性文本（tm.Text）不是元素、不承载威胁 —— 弹一个"0 威胁"只会误导，
+  // 直接不弹浮层。真正的元素（外部实体/处理/数据存储/AI 组件/边界/数据流）都有 tdCell。
+  if (!cell || cell.shape === 'tm.Text') return
+  // 边界容器本身从不挂威胁（威胁挂在组件/数据流上），直接显示 0 会被读成
+  // "这个安全域没风险"。用户看边界的直觉恰恰是"这一圈范围内的组件有多少风险"，
+  // 所以这里聚合**落在边界内的成员元素**上的未缓解威胁（成员判定与画边界同一套）。
+  const isBoundary = cell.shape === 'tm.BoundaryBox'
+  const boundaryMembers = isBoundary ? (boundaryLayout(cell).members || []) : []
+  const threats = isBoundary
+    ? boundaryMembers.flatMap((m) => (m.threats || []).filter((t) => !t.outOfScope))
+    : (cell?.threats || []).filter((t) => !t.outOfScope)
   const rect = containerRef.value?.getBoundingClientRect?.()
   const bbox = node.getBBox?.() || { x: 0, y: 0, width: 0, height: 0 }
   let left = bbox.x + bbox.width + 14
@@ -1156,8 +1190,12 @@ function showTooltip(node) {
   }
   tooltip.value = {
     visible: true,
-    name: cell?.name || node.label || '组件',
+    // 名字优先取模型里的 data.name（唯一权威来源）→ 节点标签 → 最后才兜底
+    name: cellDisplayName(cell) || node?.attr?.('label/text') || '组件',
     threats,
+    // 边界容器时数字来自"成员威胁之和"，浮层里要写清口径（否则会被当成边界自身的威胁）
+    aggregated: isBoundary,
+    memberCount: boundaryMembers.length,
     style: { left: `${left}px`, top: `${top}px` },
   }
 }
@@ -1873,7 +1911,7 @@ function boundaryLayout(cell) {
   // _boundary_children_bbox 同口径。不再以 cell.children 为权威：建模产物里
   // children 经常是空的（LLM 不填这个字段），按它判"空边界"会让画布上一个
   // 信任边界都不画、导出图却画着 2 个 —— 同一份结果两端不一致（用户反馈）。
-  const { box: innerBox, count: memberCount } = boundaryChildrenBBox(cell)
+  const { box: innerBox, count: memberCount, members } = boundaryChildrenBBox(cell)
   const rect = { x0: pos.x, y0: pos.y, x1: pos.x + size.width, y1: pos.y + size.height }
   if (innerBox) {
     // 水平：内容两侧各留 PAD_X，并**钳在所在泳道带的左右边界内**。
@@ -1912,7 +1950,7 @@ function boundaryLayout(cell) {
       rect.y1 = fy1
     }
   }
-  return { rect, memberCount }
+  return { rect, memberCount, members }
 }
 
 /** 与给定内容范围垂直重叠最多的泳道带（判定用原始几何，见 laneBands）。
@@ -1936,9 +1974,11 @@ function laneBandFor(box) {
 function boundaryChildrenBBox(bCell) {
   const bp = bCell.position
   const bs = bCell.size
-  if (!bp || !bs) return { box: null, count: 0 }
+  if (!bp || !bs) return { box: null, count: 0, members: [] }
   let box = null
   let count = 0
+  // members 供"边界悬浮时聚合成员威胁"复用同一套成员判定（见 showTooltip）
+  const members = []
   for (const c of allCellsRef) {
     if (c.id === bCell.id) continue
     if (c.shape === 'tm.BoundaryBox' || c.shape === 'tm.Text') continue
@@ -1950,13 +1990,14 @@ function boundaryChildrenBBox(bCell) {
     const cy = p.y + sz.height / 2
     if (cx >= bp.x && cx <= bp.x + bs.width && cy >= bp.y && cy <= bp.y + bs.height) {
       count += 1
+      members.push(c)
       box = box
         ? { x0: Math.min(box.x0, p.x), y0: Math.min(box.y0, p.y),
             x1: Math.max(box.x1, p.x + sz.width), y1: Math.max(box.y1, p.y + sz.height) }
         : { x0: p.x, y0: p.y, x1: p.x + sz.width, y1: p.y + sz.height }
     }
   }
-  return { box, count }
+  return { box, count, members }
 }
 
 // —— 跨信任边界落点标记（与后端 PNG 的 crossMarker 同款红方块）——
@@ -2431,8 +2472,9 @@ function selectEdge(edgeId) {
     crossesTrustBoundary: cell.data?.crossesTrustBoundary === true,
     protocol: cell.data?.protocol || '',
     dataClassification: cell.data?.dataClassification || '',
-    sourceName: src?.getData()?.tdCell?.name || cell.source?.cell || '?',
-    targetName: dst?.getData()?.tdCell?.name || cell.target?.cell || '?',
+    // 同上的取名口径：cell.data.name 才是权威，原先只读 tdCell.name 会退化成显示 cell id
+    sourceName: cellDisplayName(src?.getData()?.tdCell) || cellDisplayName(findModelCell(cell.source?.cell)) || cell.source?.cell || '?',
+    targetName: cellDisplayName(dst?.getData()?.tdCell) || cellDisplayName(findModelCell(cell.target?.cell)) || cell.target?.cell || '?',
     openThreats,
     mitigated,
     notes: cell.data?.description || '',
@@ -2610,9 +2652,22 @@ defineExpose({ fitView, nodeLegend, activeHighlight, toggleHighlight })
 .legend-row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
+  /* 一排到底，不折行：这一排是"线型图例 + 档位 + 开关"，本来就要并排对照；
+     折行后线型与档位各占一行、还挤掉画布高度，反而更难读（用户反馈"看着很丑"）。
+     真窄到放不下时横向滚动兜底（滚动条隐藏，拖拽/触控板可滑）。 */
+  flex-wrap: nowrap;
+  gap: 8px;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.legend-row::-webkit-scrollbar {
+  display: none;
+}
+/* 不压缩：宁可整体横向滚动，也不要把图例文字挤成"…"或换行 */
+.legend-row > * {
+  flex-shrink: 0;
 }
 /* 浮在画布右上角的纠错提示按钮：绝对定位，不占任何行高度；
    无内容时不渲染（模板里 v-if），不需要为空占位。 */

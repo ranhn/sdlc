@@ -383,6 +383,81 @@ class ThreatModelBuilder:
         start = self.MARGIN + max(0.0, (span - row_w) / 2.0)
         return self._row_positions(ids, start, gap)
 
+    def _owner_gutter_width(self) -> float:
+        """相邻「边界带」之间的最小空隙：两个容器各留 BOUNDARY_PAD + 24px 观感余量。
+
+        容器框 = 成员外框 ± BOUNDARY_PAD，因此两条带之间留 2×PAD 就足以让两个框
+        不相交；再加 24px 避免贴在一起看不出是两圈。
+        """
+        return self.BOUNDARY_PAD * 2 + 24.0
+
+    def _owner_group_runs(
+        self, ids: list[str], owner_of: dict[str, str]
+    ) -> list[tuple[str, list[str]]]:
+        """把一行按"所属边界"切成连续段（B0 已保证同边界相邻，这里只做兜底切分）。"""
+        groups: list[tuple[str, list[str]]] = []
+        for cid in ids:
+            owner = owner_of.get(cid, "")
+            if groups and groups[-1][0] == owner:
+                groups[-1][1].append(cid)
+            else:
+                groups.append((owner, [cid]))
+        return groups
+
+    def _owner_band_extra(self, ids: list[str], owner_of: dict[str, str]) -> float:
+        """一行里"域间空隙"占用的额外宽度（供画布宽度预算使用）。"""
+        groups = len(self._owner_group_runs(ids, owner_of))
+        return max(0, groups - 1) * (self.BOUNDARY_PAD * 2)
+
+    def _place_row_in_bands(
+        self, ids: list[str], canvas_width: float, owner_of: dict[str, str]
+    ) -> list[float]:
+        """一行内按「所属信任边界」分组、**紧凑**铺开（组间只留必要空隙）。
+
+        【与"全局分带网格"的取舍 —— 用户反馈驱动的修正】
+        曾把所有泳道**共用同一组 x 区间**，好处是同一域在所有泳道对齐、跨泳道容器
+        框不重叠；代价是某泳道没有该域成员时**那一整段就是空白** —— 组件被推到很远、
+        连线拉得极长，整张图"到处是空"，用户反馈"飘逸有点远"。
+        现在改为**每行紧凑**：各域按排名顺序从左侧依次占位，组间只留
+        2×BOUNDARY_PAD（两个容器框不重叠的最低要求）；剩余空间按组宽比例摊开填满
+        泳道，与原来的等距铺开观感一致。
+        代价：同一域在不同泳道的 x 区间不再完全对齐，跨泳道的两个容器框**可能**
+        仍有重叠（度量 boundary_overlap 会如实报出）—— "紧凑"与"对齐"是一对固有
+        矛盾，这里选择**观感优先**（重叠只是虚线框相压，而空白会毁掉整张图的可读性）。
+
+        返回的 x 顺序与入参 ids 顺序一致（段是连续切分，拼回即原序）。
+        """
+        groups = self._owner_group_runs(ids, owner_of)
+        if len(groups) <= 1:
+            return self._spread_row_positions(ids, canvas_width)
+
+        # 域内保持内容宽（组内间距 H_GAP）；多余空间只加在**域间**，且封顶
+        # 2×BOUNDARY_PAD + H_GAP×H_GAP_SPREAD_MAX —— 与单域行 _spread_row_positions
+        # 的间距上限（H_GAP×4.5）口径一致，避免"多域行被摊得很开、单域行很紧"。
+        # 曾有版本按**带宽比例**摊开，单节点域被居中在一个膨胀的带里 → 两个域之间
+        # 出现上千像素空白（实测 1138px），正是用户反馈的"飘逸"。
+        widths = [self._row_width(g) for _, g in groups]
+        base_gutter = self.BOUNDARY_PAD * 2
+        cap_gutter = base_gutter + self.H_GAP * self.H_GAP_SPREAD_MAX
+        gaps = len(groups) - 1
+        avail = max(sum(widths) + base_gutter * gaps, canvas_width - self.MARGIN * 2)
+        extra = max(0.0, avail - sum(widths) - base_gutter * gaps)
+        gutter = min(cap_gutter, base_gutter + (extra / gaps if gaps else 0.0))
+
+        used = sum(widths) + gutter * gaps
+        xs: list[float] = []
+        cursor = self.MARGIN + max(0.0, (canvas_width - self.MARGIN * 2 - used) / 2.0)
+        for (_, group), w in zip(groups, widths):
+            if len(group) == 1:
+                xs.append(cursor)                       # 单节点域：贴域左侧（不居中于带内）
+            else:
+                span_w = sum(self._w_of(c) for c in group)
+                gap = min(self.H_GAP * self.H_GAP_SPREAD_MAX,
+                          max(self.H_GAP, (w - span_w) / (len(group) - 1)))
+                xs.extend(self._row_positions(group, cursor, gap))
+            cursor += w + gutter
+        return xs
+
 
     def build(
         self,
@@ -436,6 +511,10 @@ class ThreatModelBuilder:
             if outer is not None:
                 components = list(components) + [outer]
 
+        # 生命周期兜底（见 _ensure_lifecycles 说明）：必须在 _layout 之前 —— 泳道布局
+        # 靠 lifecycle 决定是否启用，全缺时会退到明显更差的 Kahn 分层布局。
+        components = self._ensure_lifecycles(components, flows)
+
         # 为每个组件分配位置（自动布局）
         layout = self._layout(components, flows)
         # 生命周期泳道元数据（无 lifecycle 字段时 _layout 不输出）
@@ -446,7 +525,22 @@ class ThreatModelBuilder:
         # 组件 → 所属 trustboundary 的映射；用于计算每条数据流的「跨边界」语义。
         # 渲染层会把 crossesTrustBoundary===true 的边画成中虚线，与加密/公网形成
         # 三种视觉区分：实线绿(加密) / 实线橙(公网) / 中虚线灰黑(跨边界)。
-        boundary_membership = self._compute_boundary_membership(components, flows)
+        #
+        # 【必须是**同一份**事实，不能另算一套】
+        # 历史实现这里调 _compute_boundary_membership(components, flows)：它复刻了
+        # Kahn 拓扑分层 + 关键词推断；而**泳道布局**的分区用的是**泳道序号**当 layer
+        # 依据（见 _layout_lifecycle_lanes 的 B 段）—— 同一个组件可能被判到不同边界，
+        # 于是 crossesTrustBoundary 与「画出来的边界成员 / Word 报告 / 前端下拉」不一致：
+        # 虚线画错、红方块落错、报告"所属边界"列与图不符。
+        # 实测用 5 份真实结构在当前代码上重建（lane 布局）：不一致 42/120 条流
+        # （模型2 20/38、模型3 10/19、模型1 9/26、模型5 3/16、模型4 0/21）。
+        # 现在直接由布局落盘的分区推导 —— 与写进 cell.data.boundaryMembers 的是同一个
+        # 来源，因此「标记 == 成员」恒成立（回归测试 test_boundary_partition 守）。
+        boundary_membership: dict[str, str] = {
+            member_id: bid
+            for bid, members in (boundary_members or {}).items()
+            for member_id in (members or [])
+        }
 
         cells = []
         id_to_cell_id: dict[str, str] = {}
@@ -543,6 +637,39 @@ class ThreatModelBuilder:
             "数据流分层：重要流 %d 条 / 次要流 %d 条（共 %d）",
             primary_n, len(flow_cells) - primary_n, len(flow_cells),
         )
+
+        # 3.3 数据流预算自检：flows 条数应 <= 组件数 × 1.5（提示词里写的硬约束）。
+        # 为什么**只告警、不裁剪**：裁流等于从模型里删元素，会连带删掉挂在流上的威胁，
+        # 而且模型内容是用户资产、不可逆；先让超预算在日志与质量报告里可见，取舍留给人。
+        # 实测存量结果中最差的一份是 13 个非边界组件 / 38 条流 = 2.92×，其交叉
+        # （3.55/条流）也是全部结果里最差的 —— 两者是同一件事的两面。
+        n_internal = sum(1 for c in components if c.get("type") != "trustboundary")
+        budget_ratio = len(flow_cells) / max(1, n_internal)
+        if budget_ratio > 1.5:
+            logger.warning(
+                "数据流超预算：%d 条流 / %d 个组件 = %.2f×（预算 ≤1.5×）。"
+                "接近或超过通常意味着在画调用链而不是数据流图：画布交叉变多、"
+                "威胁清单与报告元素表同步变冗长。",
+                len(flow_cells), n_internal, budget_ratio,
+            )
+
+        # 3.4 信任边界粒度自检：最大边界若包住绝大多数内部组件，说明"分域"没做实。
+        # 直接后果是"几乎所有数据流都被判为跨边界"→ 次要流占比虚高、主图/全部分层失去
+        # 区分度（实测 5 份真实结构：最大边界覆盖 12/13 个内部组件，次要流占比 21%~63%，
+        # 而口径目标是 ≤15%）。只告警，不裁剪也不重组 —— 边界划分属模型语义，
+        # 交提示词与 AI 自查去改（见 document_analyzer 信任边界规范）。
+        _real_boundaries = [m for bid, m in (boundary_members or {}).items()
+                            if not str(bid).startswith("outer-boundary-")]
+        _internal_n = sum(1 for c in components if c.get("type") != "trustboundary")
+        if _real_boundaries and _internal_n >= 5:
+            _biggest = max(len(m or []) for m in _real_boundaries)
+            if _biggest >= 0.8 * _internal_n:
+                logger.warning(
+                    "信任边界粒度过粗：最大边界包含 %d/%d 个组件（≥80%%）。"
+                    "分域没做实会让绝大多数数据流都被判为跨边界，主图/全部分层的"
+                    "区分度随之下降。",
+                    _biggest, _internal_n,
+                )
 
         # 3.5/3.6 layoutHints 几何（route + 标签落点）统一由模块级
         # recompute_layout_hints 在 diagram 组装后重算——用户编辑
@@ -833,6 +960,15 @@ class ThreatModelBuilder:
         flows: list[dict[str, Any]],
     ) -> dict[str, str]:
         """推断每个组件所属的信任边界，返回 {component_id: boundary_id}。
+
+        ⚠️ **已停用**：build() 不再调用本方法。跨边界标记（crossesTrustBoundary）
+        现在直接由布局落盘的分区（cell.data.boundaryMembers 的同一个来源）推导 ——
+        本方法复刻的是 Kahn 拓扑分层，而泳道布局的分区用**泳道序号**当 layer 依据，
+        两者对同一组件可能判到不同边界，曾导致 42/120 条流的 crossesTrustBoundary
+        与画出来的边界成员不一致（虚线画错、红方块落错、报告"所属边界"与图不符）。
+        保留仅供历史对照与排查，**勿在新代码中调用**；确有需要请在 build() 里复用
+        布局产物。回归测试 test_build_does_not_recompute_boundary_membership 会拦住
+        任何重新引入的调用。
 
         用于「跨边界」数据流标记：当一条流的两端属于不同 trustboundary（或一
         端在边界内、一端在边界外）时，该流在 DFD 上以中虚线（'7 5'）渲染，
@@ -1137,6 +1273,148 @@ class ThreatModelBuilder:
         target = max(sorted(boundary_inner), key=lambda b: len(boundary_inner[b]))
         boundary_inner[target] = list(boundary_inner[target]) + orphans
 
+    # 信任边界容器的内边距：与前端 DfdGraph.boundaryLayout / 后端 dfd_renderer
+    # 收缩成员包围盒用的 PAD_X / PAD_Y 保持一致（都是 26）。
+    # 一致的意义：模型矩形 == 渲染矩形，两端不再依赖"收缩兜底"来救火。
+    BOUNDARY_PAD = 26.0
+
+    # 名字关键词 → 生命周期阶段：**仅在** LLM 与自查阶段都没给出标注时兜底使用。
+    # 顺序即优先级（先匹配先返回）。随后一律过 _normalize_roles 收敛，因此不会出现
+    # "服务落进存储泳道"这类类型↔阶段不自洽（该矩阵已有穷举回归测试守着）。
+    _LIFECYCLE_NAME_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("transit", ("网关", "接入", "转发", "代理", "负载均衡", "cdn", "消息队列", "总线",
+                     "gateway", "proxy", "queue", "kafka")),
+        ("store", ("数据库", "存储", "缓存", "仓库", "归档库", "数据湖", "对象存储", "向量",
+                   "db", "redis", "mysql", "postgres", "sqlserver", "mongodb", "s3",
+                   "oss", "cache", "bucket")),
+        ("collect", ("采集", "上报", "传感器", "手环", "摄像头", "埋点", "穿戴",
+                     "collect", "sensor", "device", "ingest")),
+        ("exchange", ("第三方", "通知", "回调", "短信", "邮件", "推送", "外部平台", "合作方",
+                      "支付", "银行", "物流", "webhook", "twilio", "sms", "email")),
+        ("use", ("看板", "报表", "前端", "客户端", "门户", "控制台", "运营",
+                 "app", "h5", "dashboard", "console", "portal")),
+        ("process", ("服务", "引擎", "计算", "分析", "推理", "模型", "检测", "风控",
+                     "编排", "agent", "service", "engine", "model")),
+    )
+
+    def _guess_lifecycle(self, name: str, ctype: str) -> str:
+        """按组件类型 + 名字关键词猜一个生命周期阶段（兜底推断的第一层）。"""
+        text = str(name or "").lower()
+        if ctype in ("datastore", "vectorstore", "trainingdata", "store"):
+            return "store"
+        if ctype in ("actor", "externalentity"):
+            # 外部实体：天然是交互端点 —— 通知/支付/物流这类"下游通道"判 exchange，
+            # 其余（用户/设备/浏览器）按采集侧起点判 collect。
+            return "exchange" if any(
+                k in text for k in ("通知", "短信", "邮件", "推送", "支付", "银行",
+                                    "物流", "回调", "外部", "twilio", "sms", "email")
+            ) else "collect"
+        for stage, kws in self._LIFECYCLE_NAME_HINTS:
+            if any(k in text for k in kws):
+                return stage
+        return "process"
+
+    def _ensure_lifecycles(
+        self, components: list[dict[str, Any]], flows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """组件缺 lifecycle 时补全，避免退回到观感明显更差的 Kahn 分层布局。
+
+        为什么值得单独做这一步（依据：用 5 份真实结构在当前代码上重建 10 次）：
+          · 泳道路径：交叉 0.77~2.74 条/流、span 3.9~4.7；
+          · Kahn 路径（lifecycle 全缺时的回退）：交叉 1.50~6.03 条/流、span 6.0~8.0。
+        两者的差别只在"有没有生命周期分带"，因此宁可**推断**也不要掉进回退路径。
+
+        规则不在这里另写一套：直接复用 dfd_reviewer._normalize_roles —— 纯编程、零
+        LLM、且已有类型↔阶段穷举矩阵的回归测试守着（datastore→store/delete、
+        actor→collect/exchange、process 不得落 store/delete、store 名的 process 例外…）。
+        已带有效标注时原样尊重，不覆盖 LLM / 自查阶段的结论。
+        """
+        has_valid = any(
+            (c.get("lifecycle") or "").strip().lower() in LIFECYCLE_LABELS
+            for c in components
+            if c.get("type") != "trustboundary"
+        )
+        if has_valid:
+            return components
+
+        try:                                    # 延迟导入：避免与 dfd_reviewer 形成导入环
+            from .dfd_reviewer import DFDReviewer
+
+            # 两层：先按类型 + 名字关键词猜阶段，再过 _normalize_roles 收敛。
+            # 为什么不能只用归一化：那套规则是"纠正"语义（大量 process 统一收敛到
+            # use），只靠它会只剩 3 条泳道、画布反而变宽（实测长宽比 3.3~3.9 超标）；
+            # 反过来只用关键词也不行 —— 归一化负责兜住"类型↔阶段自洽"这条硬约束
+            # （存储类只落 store/delete、外部实体只落 collect/exchange、
+            # process 不得落 store/delete，已有穷举矩阵测试）。
+            guessed = [
+                ({**c, "lifecycle": self._guess_lifecycle(
+                    c.get("name") or "", c.get("type") or "")}
+                 if (c.get("lifecycle") or "").strip().lower() not in LIFECYCLE_LABELS
+                 else c)
+                for c in components
+            ]
+            normalized = DFDReviewer(llm=None)._normalize_roles(
+                [dict(c) for c in guessed], flows
+            )
+        except Exception as exc:                # noqa: BLE001 —— 兜底失败不影响建模
+            logger.warning("生命周期兜底推断失败（将回退 Kahn 布局）：%s", exc)
+            return components
+
+        inferred = {c.get("id"): (c.get("lifecycle") or "") for c in normalized}
+        out = []
+        for c in components:
+            lc = (inferred.get(c.get("id")) or "").strip().lower()
+            out.append({**c, "lifecycle": lc if lc in LIFECYCLE_LABELS else ""})
+        filled = sum(1 for c in out if c.get("lifecycle"))
+        logger.info(
+            "生命周期兜底：按类型/角色补出 %d 个组件的阶段（原标记为空），改用泳道布局",
+            filled,
+        )
+        return out
+
+    def _boundary_container_box(
+        self, inner: list[str], positions: dict[str, dict]
+    ) -> dict[str, Any]:
+        """信任边界容器矩形：按成员**真实外框**算，中心也用外框中心。
+
+        Kahn 分层布局与生命周期泳道布局共用这一段，避免两条路径各写一份、各漂一次
+        （以前就是两份几乎相同、也同样有 bug 的代码）。
+
+        修的两个叠加缺陷：
+          1) 旧公式取成员**中心**的 min/max，右侧却补 `_w_of(inner[-1]) / 2` ——
+             隐含「最后一个成员就是最靠右的那个，且宽度等于基准宽」两个假设。
+             成员宽度按名称动态取值 150~280px、顺序按参与流数+名字排，假设不成立
+             → 框比内容窄。
+          2) `_make_component_cell` 组装 cell 时用 `containerCenter - size / 2` 反算
+             左上角，而旧 `containerCenter` 传的是成员中心的**平均值**（注释写的是
+             "bbox 中心"，与实现不符）→ 框还会被整体平移。
+        两者叠加的直接现象就是「成员节点伸出容器边框」（布局度量 member_outside）。
+
+        为什么必须让它恒成立：前端与后端渲染器的收缩规则是「内容 ± 26，垂直方向
+        **只缩不涨**」（用 Math.max/min 夹住模型矩形）。模型框偏窄或偏移时，渲染端
+        不会替你补，而是**原样画出来** —— 用户看到节点压在虚线上、探出框外。
+
+        返回的 x/y/width/height 与 center 自洽：center - size / 2 == (x, y)，
+        因此 `_make_component_cell` 的反算不会移动矩形（成员恒在框内）。
+        """
+        pad = self.BOUNDARY_PAD
+        lefts = [float(positions[k]["x"]) for k in inner]
+        tops = [float(positions[k]["y"]) for k in inner]
+        rights = [float(positions[k]["x"]) + self._w_of(k) for k in inner]
+        bottoms = [float(positions[k]["y"]) + self.NODE_HEIGHT for k in inner]
+        minx, maxx = min(lefts) - pad, max(rights) + pad
+        miny, maxy = min(tops) - pad, max(bottoms) + pad
+        # 最小尺寸（历史观感下限）：向两侧均摊地撑开，保持成员仍然居中在框内
+        width = max(260.0, maxx - minx)
+        height = max(160.0, maxy - miny)
+        return {
+            "x": minx - (width - (maxx - minx)) / 2,
+            "y": miny - (height - (maxy - miny)) / 2,
+            "width": width,
+            "height": height,
+            "center": ((minx + maxx) / 2, (miny + maxy) / 2),
+        }
+
     def _layout(
         self,
         components: list[dict[str, Any]],
@@ -1268,47 +1546,131 @@ class ThreatModelBuilder:
         for lid in layer_buckets:
             layer_buckets[lid].sort(key=_group_key)
 
-        # --- 布局参数 ---
-        # D1: 每层宽度按节点真实宽度累加（该分支同样存在长名称节点重叠问题）
-        per_layer_w = {
-            l: self._row_width(layer_buckets[l]) for l in layer_buckets
-        }
-        per_layer_max = max(per_layer_w.values(), default=self.NODE_WIDTH)
-        # 画布宽度：按最宽层铺开，并为信任边界容器与单节点层锯齿偏移留足横向空间
-        # P1-2 同 lifecycle 布局：用 boundary 数量做横向预算（容器可达 1200px+）
-        boundary_reserve_main = len(boundary_ids) * 240 + 240
-        canvas_width = max(per_layer_max, self.NODE_WIDTH * 3) + self.MARGIN * 2 + boundary_reserve_main
-
         positions: dict[str, dict] = {}
         n_layers = max_layer + 1
         layer_gap = max(self.V_GAP * 1.6,
                         min(self.V_GAP * 3.2, 320 / max(1, n_layers) + self.V_GAP * 1.4))
-        row_h = self.NODE_HEIGHT + layer_gap
+        row_h = self.NODE_HEIGHT + layer_gap                 # 层与层之间的行距
+        sub_row_h = self.NODE_HEIGHT + self.V_GAP * 1.4      # 同层折行后，行与行之间的行距
 
-        # --- C. 坐标分配：每层横向居中铺开 + 单节点层锯齿偏移 ---
+        # --- 画布尺寸（按内容 + 目标长宽比）与**宽层折行** ---
+        #
+        # 历史实现是 `最宽层 + margin*2 + boundary_reserve`，其中
+        # boundary_reserve = len(boundary_ids) * 240 + 240 —— 按边界**数量**线性预留、
+        # 与边界实际宽度无关（泳道布局里已修掉同一个问题，原因见那边的长注释）。
+        # 3 个边界就要多留 960px，于是每层节点被居中在一条过宽的画布里。
+        # 容器宽度由成员包围盒 + padding 算出（_boundary_container_box），不必提前预留。
+        #
+        # 但只把预留去掉还不够：Kahn 分层只看拓扑，会出现"某层 8 个节点、其余层 1~2 个"
+        # 的极端分布（实测 12 节点 / 4 层：一层 8 个、横向 2232px）→ 单行铺开时画布必然
+        # 又宽又扁（长宽比 3.74、目标 ≤2.6），节点间距也极不均衡（span_ratio 7.46、
+        # 目标 ≤3.0）。因此把**超过可用宽度的层折成多行**再铺开：
+        #   · 行数取"最小可行数"，行内按原顺序**均衡**切分 —— 顺序承载"外部实体贴边、
+        #     处理居中"的语义，不能打乱；
+        #   · 折行只改同一层内部的 y 分布，不改变 layer_of；边界成员推断用的是 layer_of
+        #     （与坐标无关），分区与跨边界结论因此不受影响（有回归测试守）。
+        def _min_row_width(ids: list[str]) -> float:
+            """一行放下这些节点所需的最小宽度（节点宽 + 最小间距）。"""
+            return sum(self._w_of(c) for c in ids) + max(0, len(ids) - 1) * self.H_GAP
+
+        def _wrap_layer(ids: list[str], usable: float) -> list[list[str]]:
+            """一层按可用宽度折成多行：最小可行行数 + 均衡切分，保持原顺序。"""
+            if not ids:
+                return []
+            need = _min_row_width(ids)
+            if len(ids) == 1 or need <= usable:
+                return [list(ids)]
+            nrows = min(len(ids), max(1, -(-int(need) // max(1, int(usable)))))
+            per = -(-len(ids) // nrows)          # 向上取整，行宽尽量均匀
+            return [list(ids[i:i + per]) for i in range(0, len(ids), per)]
+
+        def _rows_height(rows: dict[int, list[list[str]]]) -> float:
+            """当前行划分下画布的总高度。"""
+            total_rows = sum(len(r) for r in rows.values())
+            return (self.MARGIN * 2 + self.NODE_HEIGHT
+                    + max(0, total_rows - 1) * sub_row_h
+                    + max(0, n_layers - 1) * (row_h - sub_row_h))
+
+        def _row_widths(rows: dict[int, list[list[str]]]) -> tuple[float, float]:
+            """(最宽行放下所需的最小宽度, 最宽行按最大间距摊开后的宽度)。"""
+            w_min = max(
+                (_min_row_width(row) for rs in rows.values() for row in rs),
+                default=float(self.NODE_WIDTH),
+            )
+            w_spread = max(
+                (
+                    sum(self._w_of(c) for c in row)
+                    + max(0, len(row) - 1) * self.H_GAP * self.H_GAP_SPREAD_MAX
+                    for rs in rows.values() for row in rs
+                ),
+                default=0.0,
+            )
+            return w_min, w_spread
+
+        # 折行决策**只看目标宽度**（高 × 目标长宽比）。这里不能先把"未折行时最宽那层"
+        # 当成画布宽下限：那样画布一开始就被撑到最宽，`usable` 永远大于该层需要的宽度，
+        # 折行永远不触发（第一版就踩了这个坑，实测画布仍 2470px）。
+        # 行数影响高度、高度影响目标宽度、宽度又影响行数 —— 迭代到稳定为止；每轮都是
+        # 确定性纯函数，因此收敛结果可复现（实测 2~3 轮稳定）。
+        layer_rows: dict[int, list[list[str]]] = {
+            lid: [list(ids)] for lid, ids in layer_buckets.items()
+        }
+        for _ in range(4):
+            usable = max(
+                self.NODE_WIDTH + self.H_GAP,
+                _rows_height(layer_rows) * self.CANVAS_ASPECT_TARGET - self.MARGIN * 2,
+            )
+            new_rows = {lid: _wrap_layer(ids, usable) for lid, ids in layer_buckets.items()}
+            if new_rows == layer_rows:
+                break
+            layer_rows = new_rows
+
+        # 收敛后的最终尺寸：高度按行划分算；宽度取「最宽行 + margin」这个**绝不裁内容**的
+        # 下限，与目标长宽比做夹取。
+        canvas_h = _rows_height(layer_rows)
+        _row_w_min, _row_w_spread = _row_widths(layer_rows)
+        content_w_min = max(
+            _row_w_min + self.MARGIN * 2 + 24.0,
+            self.NODE_WIDTH * 2 + self.MARGIN * 2,
+        )
+        content_w_max = _row_w_spread + self.MARGIN * 2 + 24.0
+        canvas_width = max(
+            content_w_min,
+            min(canvas_h * self.CANVAS_ASPECT_TARGET,
+                max(content_w_min, content_w_max)),
+        )
+
+        # --- C. 坐标分配：每层按行**等距铺开** + 单节点层锯齿偏移 ---
         # 核心：兄弟节点（同层）横向并排，分叉/汇聚自然呈现。
         # 防竖线：当某层只有一个节点（链式路径上的中间节点）时，把它在水平方向
         # 左右交替偏移，使『A→B→C→…』不再是竖直一条线，而是左右锯齿 + 斜向边。
-        # 偏移基于层号奇偶（确定性），多节点层保持居中。
+        # 偏移基于层号奇偶（确定性），并把结果**夹在画布内**（早期靠 boundary_reserve
+        # 兜住，现在不留那份余量）。
+        # 铺开用 _spread_row_positions：固定 H_GAP + 整体居中会让组件全挤在画布中间
+        # 一条窄带里，与泳道布局的观感不一致。
+        y_cursor = self.MARGIN
         for lid in sorted(layer_buckets.keys()):
-            nodes = layer_buckets[lid]
-            n = len(nodes)
-            if n == 0:
+            rows = layer_rows.get(lid) or []
+            if not rows:
+                y_cursor += row_h      # 空层保留纵向间距（与旧实现一致）
                 continue
-            layer_total_w = self._row_width(nodes)
-            start_x = (canvas_width - layer_total_w) / 2
-            # 单节点层：左右锯齿偏移（防竖线）。偏移量适度，避免边过长/重叠。
-            if n == 1 and n_layers >= 3:
-                zig = (self._w_of(nodes[0]) * 0.85 + self.H_GAP * 0.5)
-                start_x += zig if lid % 2 == 1 else -zig
-            y = self.MARGIN + lid * row_h
-            x_list = self._row_positions(nodes, start_x)
-            for col, cid in enumerate(nodes):
-                positions[cid] = {
-                    "x": x_list[col],
-                    "y": y,
-                    "layer": lid,
-                }
+            for nodes in rows:
+                x_list = self._spread_row_positions(nodes, canvas_width)
+                if len(nodes) == 1 and len(rows) == 1 and n_layers >= 3:
+                    zig = (self._w_of(nodes[0]) * 0.85 + self.H_GAP * 0.5)
+                    x_list = [
+                        min(max(x_list[0] + (zig if lid % 2 == 1 else -zig), self.MARGIN),
+                            max(self.MARGIN,
+                                canvas_width - self.MARGIN - self._w_of(nodes[0]))),
+                    ]
+                for col, cid in enumerate(nodes):
+                    positions[cid] = {
+                        "x": x_list[col],
+                        "y": y_cursor,
+                        "layer": lid,
+                    }
+                y_cursor += sub_row_h
+            y_cursor += row_h - sub_row_h     # 层与层之间多留一点，保持"层"的读感
 
         # --- D. 信任边界容器化：推断内含组件 → bbox 包裹 ---
         # 内含组件直接取其已分配的 position，计算 bbox 中心与尺寸（确定性）。
@@ -1343,23 +1705,16 @@ class ThreatModelBuilder:
                 continue
 
             boundary_inner[cid] = inner
-            xs = [positions[k]["x"] + self._w_of(k) / 2 for k in inner]
-            ys = [positions[k]["y"] + self.NODE_HEIGHT / 2 for k in inner]
-            cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
-            minx = min(xs) - self.H_GAP * 1.4
-            maxx = max(xs) + self.H_GAP * 1.4 + self._w_of(inner[-1]) / 2
-            miny = min(ys) - self.V_GAP * 1.4
-            maxy = max(ys) + self.V_GAP * 1.4 + self.NODE_HEIGHT
+            # 容器矩形按成员真实外框算（见 _boundary_container_box 说明）：
+            # 中心也用外框中心，否则组装 cell 时的 center - size / 2 反算会把框平移。
+            box = self._boundary_container_box(inner, positions)
             positions[cid] = {
-                "x": minx,
-                "y": miny,
+                "x": box["x"],
+                "y": box["y"],
                 "layer": min((layer_of.get(k, 0) for k in inner), default=0),
                 "container": True,
-                "containerSize": {
-                    "width": max(260, maxx - minx),
-                    "height": max(160, maxy - miny),
-                },
-                "containerCenter": (cx, cy),
+                "containerSize": {"width": box["width"], "height": box["height"]},
+                "containerCenter": box["center"],
             }
 
         # 成员分区结果随 layout 一起返回（与 _lanes 同样的私有键）：
@@ -1371,40 +1726,68 @@ class ThreatModelBuilder:
         }
 
         # --- E. 信任边界垂直避让：不同边界容器互不重叠 ---
-        # 信任边界是水平条带容器。若相邻边界的 y 区间重叠，把后一个边界
-        # 连同其内含组件（children）整体下移，既消除容器重叠，又保持
-        # children 始终位于容器内部。按 min layer 排序保证条带顺序稳定。
+        # 信任边界是水平条带容器。若与已放置的边界在 x 上重叠、y 上又压着，就把当前
+        # 边界连同其内含组件（children）整体下移，既消除容器重叠，又保持 children
+        # 始终位于容器内部。按 min layer 排序保证条带顺序稳定。
+        #
+        # 【为什么必须与**所有已放置**的边界比较，而不是只看前一个】
+        # 排序键是容器的 min layer，同层的多个边界谁上谁下并不由排序决定 ——
+        # 只看相邻对就会漏掉"被更靠前的大容器整个包住"的情况。实测 12 节点 / 3 边界
+        # 的真实模型：排序 [健康云(layer0), 手机端应用(layer1), 第三方平台接口(layer1)]，
+        # 相邻比较只检查 (健康云,手机端) 与 (手机端,第三方) 两对 —— 后者水平不相交直接
+        # 跳过 —— 于是 (健康云,第三方) 这一对从未被比较，「第三方平台接口信任边界」
+        # 100% 落在「健康云服务侧信任边界」里（度量 boundary_overlap 报出）。
         _bd_order = sorted(
             [cid for cid in boundary_ids if cid in positions],
             key=lambda cid: positions[cid].get("layer", 0),
         )
-        for i in range(1, len(_bd_order)):
-            prev, cur = _bd_order[i - 1], _bd_order[i]
-            pp, cp = positions[prev], positions[cur]
-            p_h = pp.get("containerSize", {}).get("height", 0)
+        _placed: list[str] = []
+        for cur in _bd_order:
+            cp = positions[cur]
             c_h = cp.get("containerSize", {}).get("height", 0)
-            p_bottom = pp["y"] + p_h
-            c_top = cp["y"]
-            # 垂直重叠且水平也重叠才避让（避免水平并排的边界被强行拉开）
-            px0, px1 = pp["x"], pp["x"] + pp.get("containerSize", {}).get("width", 0)
-            cx0, cx1 = cp["x"], cp["x"] + cp.get("containerSize", {}).get("width", 0)
-            overlap_x = min(px1, cx1) - max(px0, cx0) > 10
-            if overlap_x and c_top < p_bottom + self.V_GAP * 0.5:
-                delta = (p_bottom + self.V_GAP * 0.5) - c_top
-                # 注意：泳道布局（_layout_lifecycle_lanes）里的同款避让有
-                # 「children 不得推出所属 swimlane」的 clamp；但**本函数是普通
-                # Kahn 分层布局，作用域内没有 lane_top/lane_h**，不能照抄那套
-                # clamp（会 NameError）。非泳道布局本无泳道边界，全量下移即可。
-                bounded_delta = delta
+            cx0 = cp["x"]
+            cx1 = cx0 + cp.get("containerSize", {}).get("width", 0)
+            # 需要让开的"最低下沿"：所有 x 上有重叠的已放置边界的下沿 + 半个 V_GAP
+            need_bottom = cp["y"]
+            for prev in _placed:
+                pp = positions[prev]
+                pp_h = pp.get("containerSize", {}).get("height", 0)
+                pp_x0 = pp["x"]
+                pp_x1 = pp_x0 + pp.get("containerSize", {}).get("width", 0)
+                if min(pp_x1, cx1) - max(pp_x0, cx0) <= 10:
+                    continue          # 水平不相交 → 无需避让（避免并排边界被强行拉开）
+                need_bottom = max(
+                    need_bottom, pp["y"] + pp_h + self.V_GAP * 0.5
+                )
+            # 注意：泳道布局（_layout_lifecycle_lanes）里的同款避让有
+            # 「children 不得推出所属 swimlane」的 clamp；但**本函数是普通
+            # Kahn 分层布局，作用域内没有 lane_top/lane_h**，不能照抄那套
+            # clamp（会 NameError）。非泳道布局本无泳道边界，全量下移即可。
+            delta = max(0.0, need_bottom - cp["y"])
+            if delta > 0:
                 for kid in boundary_inner.get(cur, []):
                     kp = positions.get(kid)
                     if kp and "edge_jitter" not in kp:
-                        positions[kid] = dict(kp, y=kp["y"] + bounded_delta)
+                        positions[kid] = dict(kp, y=kp["y"] + delta)
                 # 边界自身 y 及中心同步下移（与 children 等量）
-                cp["y"] += bounded_delta
+                cp["y"] += delta
                 cc = cp.get("containerCenter")
                 if cc:
-                    cp["containerCenter"] = (cc[0], cc[1] + bounded_delta)
+                    cp["containerCenter"] = (cc[0], cc[1] + delta)
+            _placed.append(cur)
+
+        # --- 边界下移导致的画布高度变化：同步放宽画布 ---
+        # 避让会把某个边界及其 children 推到原来画布之外（这正是"让开"的代价），
+        # 这里按最终内容外框把画布高度/宽度补齐，避免出现负坐标或内容被裁。
+        _all_bottoms = [
+            p["y"] + (p.get("containerSize") or {}).get("height", self.NODE_HEIGHT)
+            if p.get("container")
+            else p["y"] + self.NODE_HEIGHT
+            for p in positions.values()
+            if isinstance(p, dict) and "y" in p
+        ]
+        if _all_bottoms:
+            canvas_h = max(canvas_h, max(_all_bottoms) + self.MARGIN)
 
         # --- 跨层长边抖动：让斜线/折角线明显（可选，保持轻微错位） ---
         for f in flows:
@@ -1510,9 +1893,25 @@ class ThreatModelBuilder:
 
         visible = [k for k in lane_keys if buckets[k]]
 
-        # --- B0. 泳道内顺序：参与流数降序 + 名字 + 稳定哈希（确定性） ---
+        # --- B0. 泳道内顺序：同一信任边界的成员先聚成**连续段**，
+        #          段内按参与流数降序 + 名字 + 稳定哈希（确定性） ---
         # 顺序必须在**任何宽度/几何计算之前**定下来：x 由行内顺序决定，
         # 进而决定 bbox、画布宽度与所有路由。
+        #
+        # 【为什么把"所属边界"放进排序第一位】
+        # 各边界的成员散布在同一批泳道、x 位置互相交错时，每个边界容器的包围盒
+        # 都会横跨整条泳道 → 两个容器大面积重叠（用户看到两个虚线框叠在一起，
+        # 正是"显示 3 个边界、看着只有 1 个"那类反馈的来源）。把成员排成连续段后，
+        # 同一信任边界的组件在画布上成列，读图时一眼能看出"这一圈是一域"。
+        # 实测（12 节点 / 3 边界的真实模型，泳道布局）：
+        #   · 交叉 5 → 2、span_ratio 5.81 → 5.05、fill 77.6% → 80.5%（三项都变好）
+        #   · 容器重叠 93% → 80%（**只能缓解、不能消除** —— 见下方"残余"说明）
+        # 残余原因：泳道布局按生命周期分带，各边界成员仍可能横跨同一批泳道；
+        # 尤其当一个边界的成员集中在一列、另一个横跨两列时，小框会被大框包住
+        # 而右侧多出 padding 宽度（本例 39px）→ 度量的"完全包含"排除不成立，仍计为
+        # 重叠。彻底消除要在 X 方向按边界**分带**（各边界占互不重叠的列区间），
+        # 那是排布层的一次改版，收益与风险都要单独评估，这里不顺手做。
+        # 段内仍沿用原顺序（度数/名字/哈希），跨段才引入边界这一级。
         #
         # 【实测记录 · 为什么不用"邻居重心法"重排】
         # 曾试过按"邻居在对面泳道的平均位置"重排（Sugiyama 重心法，上下交替
@@ -1524,9 +1923,21 @@ class ThreatModelBuilder:
         # 通道选择才是交叉的主导因素，直线代理量根本测不准。
         # 交叉的真正改善改在路由层做（plan_edge_routes 的单调局部重路由，
         # 实测 62 → 47），排布层保持原样。
+        _bd_sorted = sorted(
+            boundary_ids, key=lambda b: (str(b).startswith("outer-boundary-"), str(b))
+        )
+        _owner_of: dict[str, str] = {}
+        for _bid in _bd_sorted:
+            for _cid in self._infer_boundary_children(
+                comp_by_id, comp_type, flows, _bid, lane_of
+            ):
+                # setdefault：真边界先于外层兜底边界处理，成员归属以真边界为准
+                _owner_of.setdefault(_cid, _bid)
+        _owner_rank = {bid: i for i, bid in enumerate(_bd_sorted)}
         for k in visible:
             buckets[k].sort(
                 key=lambda cid: (
+                    _owner_rank.get(_owner_of.get(cid, ""), len(_owner_rank)),
                     -degree.get(cid, 0),
                     str(comp_by_id.get(cid, {}).get("name") or ""),
                     _stable_rank(cid),
@@ -1534,8 +1945,12 @@ class ThreatModelBuilder:
             )
 
         # D1：每行宽度按节点真实宽度累加（长名称节点更宽，不再用统一 col_width）
+        # 每行宽度 = 节点总宽 + 域间空隙（见 _place_row_in_bands 的紧凑策略）。
+        # 这里**不**用"全局分带网格"的宽度当预算 —— 那会把没有该域成员的泳道也撑到
+        # 最宽，整张图到处留白（用户反馈"飘逸"）。
         per_lane_w = {
-            k: self._row_width(buckets[k]) for k in visible
+            k: self._row_width(buckets[k]) + self._owner_band_extra(buckets[k], _owner_of)
+            for k in visible
         }
         per_lane_max = max(per_lane_w.values(), default=self.NODE_WIDTH)
         # 画布宽度 = 最宽泳道的节点内容宽 + 两侧 margin + 少量余量。
@@ -1586,27 +2001,18 @@ class ThreatModelBuilder:
             y += lane_h + lane_gap
         canvas_h = y - lane_gap + self.MARGIN
 
-        # --- 画布横向铺开：把"瘦高"的泳道带撑成横版，让组件分布到整块画布 ---
-        # 泳道数量决定画布高度（lane_h + lane_gap 逐道累加），宽度若只按最宽
-        # 一行内容取，画布长宽比会明显偏"瘦高"：前端适配时缩放比由高度决定，
-        # 于是左右各空一大片（截图里的"泳道左右两片空白"）。
-        # 做法：在**内容能承受**的范围内把画布拉宽到目标长宽比 ——
-        #   · 下限 content_w_min：绝不能小于最宽一行 + margin（否则内容溢出）；
-        #   · 上限 content_w_max：最宽一行按 H_GAP_SPREAD_MAX 摊开的宽度
-        #     （再多就是无意义的空白，观感反而更散）。
-        # 行内节点随后由 _spread_row_positions 等距铺开填满这段宽度。
-        _widest_row = max((buckets[k] for k in visible), key=len, default=[])
-        _widest_sum = sum(self._w_of(cid) for cid in _widest_row)
-        content_w_max = (
-            _widest_sum
-            + max(0, len(_widest_row) - 1) * self.H_GAP * self.H_GAP_SPREAD_MAX
-            + self.MARGIN * 2 + 24.0
-        )
-        canvas_width = max(
-            content_w_min,
-            min(canvas_h * self.CANVAS_ASPECT_TARGET,
-                max(content_w_min, content_w_max)),
-        )
+        # --- 画布宽度 = **内容宽**（最宽一行的自然宽度 + margin + 余量）---
+        #
+        # 历史上这里还有一步"按目标长宽比把画布拉宽到 canvas_h × 1.45"，理由是让
+        # 组件分布到整块画布、避免"全挤在中间一条窄带"。但配合"行内铺开填满画布"
+        # 之后，实际效果是**每行节点被强行拉开**：实测 5 泳道 / 14 组件的真实模型，
+        # 画布被撑到 2254px（内容只需约 1410px），行内节点间距 190px、数据处理一行
+        # 里出现近千像素空白 —— 用户直接反馈"飘逸有点远"。
+        # 而且这一步对长宽比**没有任何帮助**：aspect = 长边/短边，内容本来就很宽时
+        # 再变宽只会更差；只有"又高又窄"的内容才可能受益，而那类内容撑开后的收益
+        # 也远小于"节点被拉散"的代价。
+        # 因此画布按内容取，行内铺开填满的也是这块**紧凑**的画布。
+        canvas_width = content_w_min
 
         # y 错位最大幅度 = (lane_h - NODE_HEIGHT) / 2 * 0.65
         # 留 35% 缓冲，确保节点 y 始终落在所属 swimlane 矩形内，
@@ -1619,9 +2025,10 @@ class ThreatModelBuilder:
             # 这里**不能**再按流数重排，否则重心法的结果会被抹掉。
             ids = buckets[k]
             n = len(ids)
-            # B. 行内等距铺开：把本行组件分布到整条泳道宽度上（不再是固定
-            #    60px 间距 + 整体居中 —— 那会让组件全挤在画布中间一小段）。
-            xs = self._spread_row_positions(ids, canvas_width)
+            # B. 行内铺开：按域分组、**紧凑**排列（见 _place_row_in_bands 的取舍说明）。
+            #    不用全局共用区间 —— 那会让缺成员的泳道整段留白、连线被拉得极长
+            #    （用户反馈"飘逸有点远"）；紧凑铺开则各域挨着放、空隙只留必要的。
+            xs = self._place_row_in_bands(ids, canvas_width, _owner_of)
             center_y = lane_top[k] + (lane_h - self.NODE_HEIGHT) / 2
             # D4: 同泳道内 Y 交错。原实现只用「入流/出流」方向决定单一偏移，
             # 相邻节点常拿到相同偏移值 → 同一水平线；且标签行高固定，视觉呆板。
@@ -1706,23 +2113,15 @@ class ThreatModelBuilder:
                 continue
 
             boundary_inner[cid] = inner
-            xs = [positions[k]["x"] + self._w_of(k) / 2 for k in inner]
-            ys = [positions[k]["y"] + self.NODE_HEIGHT / 2 for k in inner]
-            cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
-            minx = min(xs) - self.H_GAP * 1.4
-            maxx = max(xs) + self.H_GAP * 1.4 + self._w_of(inner[-1]) / 2
-            miny = min(ys) - self.V_GAP * 1.4
-            maxy = max(ys) + self.V_GAP * 1.4 + self.NODE_HEIGHT
+            # 与 Kahn 布局共用同一段几何计算（见 _boundary_container_box 说明）
+            box = self._boundary_container_box(inner, positions)
             positions[cid] = {
-                "x": minx,
-                "y": miny,
+                "x": box["x"],
+                "y": box["y"],
                 "layer": min((lane_of.get(k, 0) for k in inner), default=0),
                 "container": True,
-                "containerSize": {
-                    "width": max(260, maxx - minx),
-                    "height": max(160, maxy - miny),
-                },
-                "containerCenter": (cx, cy),
+                "containerSize": {"width": box["width"], "height": box["height"]},
+                "containerCenter": box["center"],
             }
 
         # 成员分区结果随 layout 返回（同 Kahn 布局，见那里的说明）
@@ -1730,7 +2129,14 @@ class ThreatModelBuilder:
             cid: list(boundary_inner.get(cid) or []) for cid in boundary_ids
         }
 
-        # --- D. 信任边界垂直避让（与 Kahn 布局一致） ---
+        # --- D. 信任边界垂直避让（与 Kahn 布局的 E 段同源，但这里**只看相邻一对**） ---
+        # 为什么这里不改成"与所有已放置边界比较"（Kahn 布局已改成那样）：
+        #   · 本布局的边界锚在泳道上，继续下推会被下面的 clamp（children 不得推出所属
+        #     swimlane）吃掉，推不动；
+        #   · 泳道布局里两个容器大面积重叠的真正原因是成员在 x 上交错（同一批泳道里
+        #     两个边界各占一列、包围盒互相覆盖），y 方向推解决不了 —— 治本要在 X 方向
+        #     按边界分带（见 B0 段的残余说明）。
+        # 因此保留相邻比较，不改。
         _bd_order = sorted(
             [cid for cid in boundary_ids if cid in positions],
             key=lambda cid: positions[cid].get("layer", 0),

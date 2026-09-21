@@ -16,6 +16,19 @@
     8. edge_crossing     数据流线段互相穿插（真交叉）总处数   → 越小越好（见下）
     9. canvas_aspect     画布长宽比（长边/短边）            → <= 2.6
 
+**目标值口径（哪些是硬要求、哪些只是参考）**：
+    · 硬指标（必须为 0，有回归测试守）：成员越框 / 节点重叠 / 边界重叠 /
+      边穿节点 / 路径重合；
+    · 达标线（当前代码在 5 份真实结构上 5/5 达标）：fill_ratio >= 0.75、
+      canvas_aspect <= 2.6；
+    · 参考值：max_span_ratio <= 3.0 与"次要流占比 <= 15%" —— 合成图可达，
+      但真实模型（含外部实体、跨泳道长边）实测分别是 4.7~9.6 与 21%~63%，
+      属**目标标定偏严**。报告里已标成"参考"，评价真实图请看**趋势**
+      （同一模型改动前后是否变好），不要用它们判定失败。
+    另附两条根因指标：flow_budget_ratio（流数/节点数，超 1.5 疑似画调用链）、
+    boundary_granularity（最大边界覆盖内部组件的比例，接近 100% 说明分域过粗，
+    它正是"次要流占比偏高"和"主图收不起来"的根因）。
+
 关于指标 8（为什么单列一条）：
     布线器现在的代价函数是字典序 (穿节点, 与已布路径重合, 拐点, 长度)，
     **没有任何一项惩罚"线交叉"** —— 于是会出现"穿节点 0、重合 0、绕远比 1.14
@@ -1417,6 +1430,50 @@ def metric_flow_noise_ratio(diagram: dict) -> float:
     return round(noise / len(edges), 3)
 
 
+def metric_boundary_granularity(diagram: dict) -> float:
+    """最大信任边界覆盖的**内部组件**占比（0~1；越小说明"分域"越做实）。
+
+    口径：内部组件 = 既不是边界容器、也不是外部实体（tm.Actor）的节点 —— 外部实体
+    本就在信任边界之外；分子取成员最多的那个可绘制边界。占比接近 1 说明所有组件挤在
+    一个域里，直接后果是"几乎所有流都跨边界"→ 次要流占比虚高、主图/全部分层失去
+    区分度。实测 5 份真实结构：最大边界覆盖 12/13 个内部组件（0.92），对应次要流
+    占比 21%~63%（口径目标是 ≤15%）。model_builder 另有同口径的 logger.warning。
+    """
+    internal = [
+        c for c in node_cells(diagram)
+        if not is_boundary(c) and c.get("shape") not in ("tm.Actor", "tm.Text")
+    ]
+    if not internal:
+        return 0.0
+    counts = []
+    for b in boundary_cells(diagram):
+        members = (b.get("data") or {}).get("boundaryMembers")
+        if members is None:
+            # 老模型没有 boundaryMembers（该字段是后加的）：退回**几何包含**
+            # （节点中心落在边界矩形内即算成员）—— 与前端 DfdGraph.boundaryChildrenBBox、
+            # 后端 dfd_renderer._boundary_child_count 同一口径。
+            br = rect_of(b)
+            members = [c for c in internal
+                       if rect_contains_point(br, center_of(rect_of(c)))]
+        counts.append(len(members))
+    return round((max(counts) if counts else 0) / len(internal), 2)
+
+
+def metric_flow_budget_ratio(diagram: dict) -> float:
+    """数据流条数 / 非边界节点数（提示词里的预算是 ≤1.5）。
+
+    为什么单列一条：flows 超过组件数 × 1.5 通常意味着"在画调用链而不是数据流图"，
+    后果是画布交叉变多、威胁清单与报告元素表变冗长。实测存量结果里最差的一份是
+    13 个非边界节点 / 38 条流 = 2.92×，其交叉（3.55/条流）也是全部结果里最差的。
+    这里只**度量**不裁剪 —— 删流会连带删掉挂在流上的威胁，取舍交给人（model_builder
+    另有同口径的 logger.warning 自检）。
+    """
+    n_nodes = sum(1 for c in node_cells(diagram) if not is_boundary(c))
+    if n_nodes <= 0:
+        return 0.0
+    return round(len(edge_cells(diagram)) / n_nodes, 2)
+
+
 def metric_flow_dup_pairs(diagram: dict) -> int:
     """同 (源, 目标) 出现多条同向流的对数（反向的请求/响应不算）。"""
     seen: dict[tuple[str, str], int] = {}
@@ -1456,6 +1513,10 @@ def evaluate(record: dict) -> Optional[dict[str, Any]]:
         "primary_flows": metric_primary_flows(d),
         "flow_noise_ratio": metric_flow_noise_ratio(d),
         "flow_dup_pairs": metric_flow_dup_pairs(d),
+        # 数据流预算（见 metric_flow_budget_ratio）：只度量、不裁剪
+        "flow_budget_ratio": metric_flow_budget_ratio(d),
+        # 信任边界粒度（见 metric_boundary_granularity）：解释"次要流占比为何偏高"
+        "boundary_granularity": metric_boundary_granularity(d),
     }
 
 
@@ -1476,9 +1537,9 @@ def format_report(name: str, m: dict[str, Any]) -> str:
             lines.append(f"       - {it}")
         if len(items) > 5:
             lines.append(f"       ... ���有 {len(items) - 5} 项")
-    lines.append(f"  span_ratio={m['span_ratio']:.2f} (目标<=3.0)  "
+    lines.append(f"  span_ratio={m['span_ratio']:.2f} (参考<=3.0)  "
                  f"fill_ratio={m['fill_ratio']:.1%} (目标>=75%)  "
-                 f"aspect={m['canvas_aspect']:.2f}")
+                 f"aspect={m['canvas_aspect']:.2f} (目标<=2.6)")
     # 交叉数：单列一行（它不是 0/1 缺陷，而是越小越好的观感指标）+ 前 3 对明细
     cross = int(m.get("edge_crossing") or 0)
     n_edges = max(1, int(m.get("n_edges") or 1))
@@ -1488,7 +1549,19 @@ def format_report(name: str, m: dict[str, Any]) -> str:
     # 源头降噪三项：次要流占比 / 同向重复对流 / 重要流数（降噪不得减少最后一项）
     lines.append(
         f"  重要流={m.get('primary_flows', 0)}  次要流占比={float(m.get('flow_noise_ratio') or 0):.0%} "
-        f"(目标<=15%)  同向重复对流={m.get('flow_dup_pairs', 0)} (目标0)"
+        f"(参考<=15%)  同向重复对流={m.get('flow_dup_pairs', 0)} (目标0)"
+    )
+    # 数据流预算：超预算时直接标出来（只提示，不裁剪）
+    _budget = float(m.get("flow_budget_ratio") or 0)
+    lines.append(
+        f"  流数/节点数={_budget:.2f} (预算<=1.5)"
+        + ("  ← 超预算：疑似在画调用链而非数据流图" if _budget > 1.5 else "")
+    )
+    # 信任边界粒度：解释"次要流占比为什么偏高"的根因指标
+    _gran = float(m.get("boundary_granularity") or 0)
+    lines.append(
+        f"  最大边界覆盖内部组件={_gran:.0%}"
+        + ("  ← 分域过粗：多数流会被判为跨边界，主图区分度下降" if _gran >= 0.8 else "")
     )
     return "\n".join(lines)
 

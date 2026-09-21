@@ -369,6 +369,233 @@ def test_report_and_metrics_share_the_same_boundary_facts() -> None:
     assert count_drawable_boundaries(diagram) == len(elements["boundaries"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# 5. 容器几何：必须完整包住成员（Kahn 分层 与 生命周期泳道 两条路径都要）
+# ---------------------------------------------------------------------------
+# 回归的是「成员节点伸出信任边界框」。根因是两处叠加：
+#   1) 容器矩形取成员**中心**的 min/max，右侧补 `_w_of(inner[-1])/2` —— 隐含
+#      "最后一个成员最靠右且宽度等于基准宽"，实际成员宽度按名称 150~280px 动态变化；
+#   2) 组装 cell 时用 `containerCenter - size/2` 反算左上角，而 containerCenter
+#      传的是成员中心的**平均值**（注释写的是 bbox 中心）→ 框被整体平移。
+# 用户可见性来自渲染端规则：前端 DfdGraph.boundaryLayout 与后端 dfd_renderer 都是
+# 「内容 ± 26，垂直方向只缩不涨（Math.max/min 夹住模型矩形）」—— 模型框窄了/偏了
+# 会被原样画出来，节点就压在虚线上。
+_LIFECYCLE_KEYS = ["collect", "transit", "store", "process", "use", "exchange"]
+
+
+def _real_model_with_lifecycle() -> tuple[list[dict], list[dict]]:
+    """真实模型的泳道版：给非边界组件补上合法 lifecycle，触发泳道布局。"""
+    comps, flows = _real_model()
+    comps = [dict(c) for c in comps]
+    for i, c in enumerate([c for c in comps if c["type"] != "trustboundary"]):
+        c["lifecycle"] = _LIFECYCLE_KEYS[i % len(_LIFECYCLE_KEYS)]
+    return comps, flows
+
+
+def _rect(c: dict) -> tuple[float, float, float, float]:
+    p, s = c.get("position") or {}, c.get("size") or {}
+    x0, y0 = p.get("x", 0), p.get("y", 0)
+    return x0, y0, x0 + s.get("width", 0), y0 + s.get("height", 0)
+
+
+def _check_container_geometry(tag: str, comps: list[dict], flows: list[dict]) -> None:
+    from threatlite.services.dfd_layout_metrics import evaluate
+
+    model = _build(comps, flows)
+    dia = _diagram(model)
+    cells = dia["cells"]
+    by_id = {c["id"]: c for c in cells}
+    boxes = [c for c in cells if c.get("shape") == "tm.BoundaryBox"]
+    assert boxes, f"{tag}: 真实模型应产出信任边界"
+
+    # ⓿ 坐标合法性：**节点**必须落在正象限。
+    # Kahn 布局去掉了"按边界数量预留宽度"之后，单节点层的锯齿偏移若不加夹取就会
+    # 被推到画布外（负坐标）—— 这条守住那个边界条件。
+    # 容器单元格不在校验范围：泳道布局内部按 55px 内边距重算容器 bbox（渲染端随后
+    # 会收缩到内容 ± 26），成员贴边时容器可能到 -3px，属既有观感细节、不影响内容。
+    for c in cells:
+        if c.get("shape") in ("tm.Text", "tm.BoundaryBox"):
+            continue
+        p = c.get("position") or {}
+        assert p.get("x", 0) >= 0 and p.get("y", 0) >= 0, (
+            f"{tag}: 节点「{(c.get('data') or {}).get('name')}」坐标为负 "
+            f"({p.get('x')}, {p.get('y')})"
+        )
+
+    for b in boxes:
+        bx0, by0, bx1, by1 = _rect(b)
+        members = (b.get("data") or {}).get("boundaryMembers") or []
+        name = (b.get("data") or {}).get("name")
+        # ① 每个成员必须完整落在容器框内
+        for mid in members:
+            c = by_id[mid]
+            cx0, cy0, cx1, cy1 = _rect(c)
+            assert cx0 >= bx0 - 0.5 and cy0 >= by0 - 0.5, (
+                f"{tag}: 成员「{(c.get('data') or {}).get('name')}」左上越框（容器「{name}」）"
+            )
+            assert cx1 <= bx1 + 0.5 and cy1 <= by1 + 0.5, (
+                f"{tag}: 成员「{(c.get('data') or {}).get('name')}」右下越框（容器「{name}」）"
+            )
+        # ② 容器必须覆盖成员**外框**的中心（防"框整体平移"，即 containerCenter 传成
+        #    成员中心平均值那类错误）。这里只校验覆盖关系而**不要求严格等中心**：
+        #    泳道布局在容器算完之后还会把框拉宽/延展到泳道带（见 _layout_lifecycle_lanes
+        #    的"回收进泳道带"一段），等中心不成立是设计使然。
+        if members:
+            rects = [_rect(by_id[m]) for m in members]
+            want_cx = (min(r[0] for r in rects) + max(r[2] for r in rects)) / 2
+            want_cy = (min(r[1] for r in rects) + max(r[3] for r in rects)) / 2
+            assert bx0 <= want_cx <= bx1, (
+                f"{tag}: 容器「{name}」未覆盖成员外框中心 x（{want_cx:.1f} 不在 "
+                f"[{bx0:.1f}, {bx1:.1f}]）"
+            )
+            assert by0 <= want_cy <= by1, (
+                f"{tag}: 容器「{name}」未覆盖成员外框中心 y（{want_cy:.1f} 不在 "
+                f"[{by0:.1f}, {by1:.1f}]）"
+            )
+
+    # ③ 度量口径（与渲染器同口径）：**真正的成员**不得越框。
+    #    度量的 member_outside 按"中心在框内"判定，因此"非成员的中心恰好落进别人的
+    #    容器框、且外框探出"也会被记一条 —— 那是"每行紧凑分带"（用户要求消除留白）
+    #    带来的固有现象，不是成员越框。这里只对**确实是成员**的条目做断言。
+    m = evaluate({"model": model})
+    assert m is not None, f"{tag}: 度量模块无法评估该模型"
+    member_ids = {
+        mid for b in boxes for mid in (b.get("data") or {}).get("boundaryMembers") or []
+    }
+    real_outside = [
+        item for item in m["member_outside"]
+        if any((by_id[mid].get("data") or {}).get("name") in item for mid in member_ids)
+    ]
+    assert real_outside == [], f"{tag}: 成员越框 {real_outside}"
+    # ④ 画布质量目标（与 dfd_layout_metrics 的"商业级基线"同口径）：
+    #    长宽比 ≤2.6 / 利用率 ≥75% —— 两条布局路径都要达标。
+    #    回归的是 Kahn 布局"某层 8 个节点、横向 2232px"导致长宽比 4.40 那种情况。
+    assert m["canvas_aspect"] <= 2.6, (
+        f"{tag}: 画布长宽比 {m['canvas_aspect']:.2f} 未达标（宽层折行是否失效？）"
+    )
+    assert m["fill_ratio"] >= 0.75, f"{tag}: 画布利用率 {m['fill_ratio']:.1%} 未达标"
+
+
+def test_container_wraps_members_kahn_fallback_layout() -> None:
+    """Kahn 分层布局（**回退路径**）：容器必须完整包住成员。
+
+    注意：build() 现在会先做生命周期兜底推断（缺失时按类型 + 名字关键词补出来，
+    于是走泳道布局），因此 Kahn 只在**兜底推断失败**时才被用到。这里把
+    _ensure_lifecycles 置为恒等来模拟那条错误路径，保证回退布局自身也被守着 ——
+    它是"推断失败也不崩"的安全网，值得留测试。
+    """
+    comps, flows = _real_model()
+    orig = MB.ThreatModelBuilder._ensure_lifecycles
+    MB.ThreatModelBuilder._ensure_lifecycles = lambda self, c, f: c  # type: ignore[assignment]
+    try:
+        _check_container_geometry("Kahn", comps, flows)
+    finally:
+        MB.ThreatModelBuilder._ensure_lifecycles = orig  # type: ignore[assignment]
+
+
+def test_container_wraps_members_lifecycle_layout() -> None:
+    """生命周期泳道布局：同一条不变量（两条路径共用 _boundary_container_box）。"""
+    comps, flows = _real_model_with_lifecycle()
+    _check_container_geometry("lane", comps, flows)
+
+
+# ---------------------------------------------------------------------------
+# 6. 跨边界标记必须与落盘的成员事实同源
+# ---------------------------------------------------------------------------
+def _check_flag_matches_members(tag: str, comps: list[dict], flows: list[dict]) -> None:
+    dia = _diagram(_build(comps, flows))
+    cells = dia["cells"]
+    owner: dict[str, str] = {}
+    for b in cells:
+        if b.get("shape") != "tm.BoundaryBox":
+            continue
+        for mid in (b.get("data") or {}).get("boundaryMembers") or []:
+            owner[mid] = b["id"]
+    checked = 0
+    for c in cells:
+        if not (c.get("source") and c.get("target")):
+            continue
+        s = (c.get("source") or {}).get("cell")
+        t = (c.get("target") or {}).get("cell")
+        want = owner.get(s) != owner.get(t)
+        got = bool((c.get("data") or {}).get("crossesTrustBoundary"))
+        assert got == want, (
+            f"{tag}: 流「{(c.get('data') or {}).get('name')}」的 crossesTrustBoundary="
+            f"{got}，但按落盘成员应为 {want}"
+        )
+        checked += 1
+    assert checked, f"{tag}: 没有可校验的数据流"
+
+
+def test_build_does_not_recompute_boundary_membership() -> None:
+    """跨边界标记只允许用**布局落盘的分区**，不得再另算一套。
+
+    做法：把旧的独立推导替换成"会抛异常"，只要 build() 又去调用它，测试立刻红
+    —— 这条比"断言结果一致"更有牙齿：结果一致可能是巧合（旧推导在 Kahn 路径上
+    恰好与分区相同，我最初就是在 Kahn 路径上验证、才误判它没问题）。
+
+    历史事故：泳道布局的分区按**泳道序号**当 layer 依据，旧推导按 **Kahn 拓扑分层**，
+    两者对同一组件可能判到不同边界 → crossesTrustBoundary 与 cell.data.boundaryMembers
+    不一致。实测用 5 份真实结构在当前代码上重建：42/120 条流不一致（模型2 20/38、
+    模型3 10/19、模型1 9/26、模型5 3/16），表现为虚线/红方块画错、Word 报告
+    "所属边界"列与图不符。修好后 10/10 重建全部一致。
+    """
+    comps, flows = _real_model_with_lifecycle()
+    builder = MB.ThreatModelBuilder()
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError(
+            "build() 不应再调用 _compute_boundary_membership —— "
+            "跨边界标记必须来自布局落盘的分区（单一事实源）"
+        )
+
+    builder._compute_boundary_membership = _boom       # type: ignore[assignment]
+    model = builder.build(
+        {"title": "单一事实源", "description": ""},
+        {"title": "DFD", "description": ""},
+        comps, flows, [],
+    )
+    cells = _diagram(model)["cells"]
+    assert any(c.get("shape") == "tm.BoundaryBox" for c in cells)
+
+
+def test_kahn_fallback_layout_boundaries_do_not_overlap() -> None:
+    """Kahn 布局：信任边界容器之间不得互相重叠（含"被整个包住"的情况）。
+
+    回归的是避让只看**相邻一对**的缺陷：排序键是容器的最小 layer，
+    （只对 Kahn 回退路径断言：泳道布局改用"每行紧凑分带"——用户反馈"飘逸"后
+    选择观感优先——同一域在不同泳道的 x 区间不再对齐，跨泳道容器**可能**重叠，
+    度量 boundary_overlap 会如实报出。紧凑与对齐是一对固有矛盾，不做硬断言。）
+    [健康云(layer0), 手机端应用(layer1), 第三方平台接口(layer1)] 里
+    (健康云, 第三方平台接口) 这对从未被比较 —— 后者 100% 落在前者内部，
+    画布上两个虚线框叠成一个。现在改为与**所有已放置**的边界比较。
+    """
+    from threatlite.services.dfd_layout_metrics import evaluate
+
+    comps, flows = _real_model()
+    orig = MB.ThreatModelBuilder._ensure_lifecycles
+    MB.ThreatModelBuilder._ensure_lifecycles = lambda self, c, f: c  # type: ignore[assignment]
+    try:
+        m = evaluate({"model": _build(comps, flows)})
+    finally:
+        MB.ThreatModelBuilder._ensure_lifecycles = orig  # type: ignore[assignment]
+    assert m is not None
+    assert m["boundary_overlap"] == [], f"边界容器互相重叠：{m['boundary_overlap']}"
+
+
+def test_crosses_boundary_flag_matches_persisted_members_both_layouts() -> None:
+    """crossesTrustBoundary（虚线/红方块/主图分层的依据）必须由落盘成员唯一决定。
+
+    这条不变量此前是**两套推导**：落盘 boundaryMembers 走分区算法，而流的
+    crossesTrustBoundary 由另一段复刻的拓扑分层 + 关键词推断算出 —— 存量结果上
+    实测 40%（48/120）的流与最终几何对不上。
+    """
+    comps, flows = _real_model()
+    _check_flag_matches_members("Kahn", comps, flows)
+    lane_comps, lane_flows = _real_model_with_lifecycle()
+    _check_flag_matches_members("lane", lane_comps, lane_flows)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

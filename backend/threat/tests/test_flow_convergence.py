@@ -37,6 +37,53 @@ def _flow(fid, src, tgt, name, desc="", **props):
     }
 
 
+# ---------------------------------------------------------------------------
+# 数据流预算（P1）：只度量不裁剪 —— 超预算必须在质量报告里可见
+# ---------------------------------------------------------------------------
+def _diagram(n_nodes: int, n_edges: int) -> dict:
+    """手搭一份最小 DFD：n_nodes 个处理节点 + 1 个信任边界 + n_edges 条流。"""
+    cells = [
+        {"id": f"n{i}", "shape": "tm.Process",
+         "position": {"x": i * 100, "y": 0}, "size": {"width": 80, "height": 60}}
+        for i in range(n_nodes)
+    ]
+    cells.append({"id": "b1", "shape": "tm.BoundaryBox",
+                  "position": {"x": 0, "y": 0}, "size": {"width": 900, "height": 200}})
+    cells += [
+        {"id": f"e{i}", "shape": "tm.Flow",
+         "source": {"cell": f"n{i % n_nodes}"},
+         "target": {"cell": f"n{(i + 1) % n_nodes}"},
+         "data": {"name": f"流{i}"}}
+        for i in range(n_edges)
+    ]
+    return {"cells": cells}
+
+
+def test_flow_budget_ratio_and_report_flag():
+    """预算口径 = 流数 / **非边界节点数**；超 1.5× 时报告要显式标出。
+
+    为什么只度量不裁剪：裁流等于从模型里删元素、连带删掉挂在流上的威胁，
+    而模型内容是用户资产、不可逆 —— 先让问题可见（日志 + 报告），取舍交给人。
+    实测存量结果里最差的一份是 13 个非边界节点 / 38 条流 = 2.92×。
+    """
+    from threat.app.services.dfd_layout_metrics import evaluate, format_report
+
+    def _m(n_nodes: int, n_edges: int) -> dict:
+        rec = {"model": {"detail": {"diagrams": [_diagram(n_nodes, n_edges)]}}}
+        got = evaluate(rec)
+        assert got is not None, "度量模块无法评估最小图"
+        return got
+
+    ok = _m(n_nodes=10, n_edges=12)               # 1.2× 在预算内
+    assert ok["flow_budget_ratio"] == 1.2, ok["flow_budget_ratio"]
+    assert "预算<=1.5" in format_report("t", ok)
+    assert "超预算" not in format_report("t", ok), "预算内不应出现超预算提示"
+
+    over = _m(n_nodes=10, n_edges=30)             # 3.0× 超预算
+    assert over["flow_budget_ratio"] == 3.0, over["flow_budget_ratio"]
+    assert "超预算" in format_report("t", over), "超预算必须在报告里可见"
+
+
 def test_merge_same_direction_same_semantics():
     flows = [
         _flow("f1", "A", "B", "上传体征数据", "手环体征经网关上传", protocol="HTTPS"),
