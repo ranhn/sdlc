@@ -36,7 +36,7 @@
         <el-form-item label="系统名称"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="负责人">
-          <el-select v-model="form.owner_id" clearable filterable placeholder="选择负责人">
+          <el-select v-model="form.owner_id" clearable filterable :loading="usersLoading" placeholder="选择负责人">
             <!-- label 用 userLabel()：含英文用户名，否则只能按中文名搜（见 utils/userLabel.js） -->
             <el-option v-for="u in users" :key="u.id" :label="userLabel(u)" :value="u.id" />
           </el-select>
@@ -64,6 +64,8 @@ const store = useUserStore()
 const canEdit = computed(() => ['admin', 'secops'].includes(store.role))
 const list = ref([])
 const users = ref([])
+const usersLoading = ref(false)
+let usersLoaded = false
 const loading = ref(false)
 const visible = ref(false)
 const form = reactive({ id: null, name: '', description: '', owner_id: null, status: 'running' })
@@ -73,7 +75,26 @@ const statusType = { running: 'success', dev: 'warning', offline: 'info' }
 function fmt(d) { return fmtDateTime(d) }
 
 async function load() { loading.value = true; try { list.value = (await systemApi.list()).data } finally { loading.value = false } }
-function openForm(row) {
+
+/**
+ * 负责人下拉的人员列表**按需加载**：飞书通讯录同步后公司有 1600+ 人，
+ * 全量约 580KB，而这一页只有编辑弹窗用得到 —— 以前在 onMounted 就拉，
+ * 等于每次打开「系统资产」都白等一次下载。现在改为弹窗打开时拉一次，
+ * 且用只返回 id/用户名/姓名的 /users/pick（约 60KB）。
+ */
+async function ensureUsers() {
+  if (!canEdit.value || usersLoaded) return
+  usersLoaded = true
+  usersLoading.value = true
+  try { users.value = (await adminApi.userPicks()).data || [] }
+  catch { usersLoaded = false }   // 失败允许下次重试
+  finally { usersLoading.value = false }
+}
+
+async function openForm(row) {
+  // 先等人员列表就绪再回填 owner_id —— Element 解析"已选项显示名"时要能在选项里
+  // 找到这个人（否则会短暂显示成数字 id）。
+  await ensureUsers()
   Object.assign(form, row ? { id: row.id, name: row.name, description: row.description, owner_id: row.owner_id, status: row.status } : { id: null, name: '', description: '', owner_id: null, status: 'running' })
   visible.value = true
 }
@@ -121,5 +142,5 @@ async function doDelete(row, force) {
   }
 }
 
-onMounted(async () => { load(); if (canEdit.value) { try { users.value = (await adminApi.users()).data } catch {} } })
+onMounted(() => { load() })   // 人员列表改为打开弹窗时按需加载（见 ensureUsers）
 </script>

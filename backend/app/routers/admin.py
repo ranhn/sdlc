@@ -17,6 +17,7 @@ from ..schemas import (
     RoleOut,
     UserCreate,
     UserOut,
+    UserPickOut,
     UserUpdate,
     ChangePasswordIn,
 )
@@ -160,14 +161,9 @@ def update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db),
     return _user_out(user, dept_names)
 
 
-@router.get("/users", response_model=list[UserOut])
-def list_users(
-    q: str | None = None,
-    db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
-):
-    require_admin(current)
-    query = db.query(User).filter(User.is_deleted == False)
+def _users_query(db: Session, q: str | None):
+    """按关键词筛用户（用户名/姓名/邮箱，大小写不敏感）—— /users 与 /users/pick 共用。"""
+    query = db.query(User).filter(User.is_deleted == False)  # noqa: E712
     if q:
         like = f"%{q.strip()}%"
         query = query.filter(
@@ -175,7 +171,35 @@ def list_users(
             | (User.full_name.ilike(like))
             | (User.email.ilike(like))
         )
-    users = query.order_by(User.id.asc()).all()
+    return query
+
+
+@router.get("/users/pick", response_model=list[UserPickOut])
+def pick_users(
+    q: str | None = None,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    """人员下拉数据源（各类"选择负责人 / 指派"用）。
+
+    与 /users 的唯一差别：**只返回 id/用户名/姓名**。
+    为什么单独一个接口：飞书通讯录同步后公司有 1600+ 人，全量 UserOut 一次约 580KB，
+    而列表页每次刷新都会请求它 —— 里面大部分字段（邮箱/角色/部门/飞书 id）
+    下拉根本用不到。这个接口一次约 60KB。
+    不传 limit、不分页：前端是本地按关键词过滤，截断会让"某些人搜不到"。
+    """
+    require_admin(current)
+    return _users_query(db, q).order_by(User.id.asc()).all()
+
+
+@router.get("/users", response_model=list[UserOut])
+def list_users(
+    q: str | None = None,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    require_admin(current)
+    users = _users_query(db, q).order_by(User.id.asc()).all()
     # 部门名一次性查表成字典，避免每行一次查询（N+1）
     dept_names = {d.id: d.name for d in db.query(Department).all()}
     return [_user_out(u, dept_names) for u in users]

@@ -27,6 +27,20 @@ body {
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .page-title { font-size: 18px; font-weight: 600; color: #0f172a; }
 
+/* ===== 紧凑筛选栏（列表页统一口径，全站只此一份）=====
+   问题：筛选项一多，Element 默认的两处间距就吃掉近 250px ——
+     · .el-form--inline .el-form-item { margin-right: 32px }
+     · .el-form-item__label { padding-right: 12px }
+   再叠加每个 select 写死的宽度，整行要 1200px 左右，1366 / 1280 的小屏就会折成第二行。
+   这里统一收两处（第三处是各页面把 select 宽度按"够用就行"重设）：
+     ① 项间距 32 → 12；② label 右侧内边距 12 → 6。
+   改完提交漏洞页一行约 908px（原来约 1228px），1280 屏也留得下约 88px 余量。
+   用法：<el-form inline class="filter-form">。
+   注意选择器要写成 .filter-form.el-form--inline 两个类 —— 与 Element 的
+   .el-form--inline .el-form-item 同优先级，不叠加就会受 CSS 引入顺序影响而失效。 */
+.filter-form.el-form--inline .el-form-item { margin-right: 12px; }
+.filter-form.el-form--inline .el-form-item__label { padding-right: 6px; }
+
 /* Element Plus 输入框保持默认浅色主题 */
 
 /* ===== 紧凑列表表格（统一口径，全站只此一份）=====

@@ -22,11 +22,13 @@
       </div>
     </div>
 
-    <!-- 筛选 -->
+    <!-- 筛选：宽度按"最长选项够用"给（不是越大越好）——6 个筛选项在 1280 屏也要排成一行，
+         间距与 label 内边距见全局 .filter-form（src/styles/main.css）。
+         占位统一用「全部」：label 已经写明筛什么，写"全部状态/全部等级"纯属重复且更占地。 -->
     <el-card shadow="never" class="filter-card">
-      <el-form inline>
+      <el-form inline class="filter-form">
         <el-form-item label="状态">
-          <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 168px" @change="load(true)">
+          <el-select v-model="filters.status" clearable placeholder="全部" style="width: 112px" @change="load(true)">
             <el-option label="待确认" value="pending" />
             <el-option label="已确认" value="confirmed" />
             <el-option label="修复中" value="fixing" />
@@ -41,18 +43,28 @@
           </el-select>
         </el-form-item>
         <el-form-item label="等级">
-          <el-select v-model="filters.severity" clearable placeholder="全部等级" style="width: 120px" @change="load(true)">
+          <el-select v-model="filters.severity" clearable placeholder="全部" style="width: 88px" @change="load(true)">
             <el-option label="严重" value="critical" /><el-option label="高危" value="high" />
             <el-option label="中危" value="medium" /><el-option label="低危" value="low" />
           </el-select>
         </el-form-item>
+        <!-- 漏洞大类：筛的是**一级大类**（根因维度，如 访问控制 / 注入类），
+             和表格「类型」列展示的二级子类（如 越权 / CSRF）不是一回事，所以标成"大类"。
+             选项直接来自 vulnTypeGroups —— 与提交漏洞时的级联选择同一份定义，
+             以后增删类型只改那一处，不会出现"能选到但筛不出来"。 -->
+        <el-form-item label="漏洞大类">
+          <!-- 宽 132：最长的大类名「业务逻辑与并发」在框内会省略，但下拉列表里是完整的 -->
+          <el-select v-model="filters.vuln_category" clearable placeholder="全部" style="width: 132px" @change="load(true)">
+            <el-option v-for="g in vulnTypeGroups" :key="g.label" :label="g.label" :value="g.label" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="系统">
-          <el-select v-model="filters.system_id" clearable filterable placeholder="全部系统" style="width: 160px" @change="load(true)">
+          <el-select v-model="filters.system_id" clearable filterable placeholder="全部" style="width: 132px" @change="load(true)">
             <el-option v-for="s in systems" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="来源">
-          <el-select v-model="filters.is_external" clearable placeholder="全部来源" style="width: 130px" @change="load(true)">
+          <el-select v-model="filters.is_external" clearable placeholder="全部" style="width: 96px" @change="load(true)">
             <el-option label="内部提交" :value="false" />
             <el-option label="外部报告" :value="true" />
           </el-select>
@@ -63,12 +75,12 @@
       </el-form>
     </el-card>
 
-    <!-- 列表（每页 12 条，分页见表格下方 .vuln-pager） -->
+    <!-- 列表（服务端分页，每页 12 条，分页见表格下方 .vuln-pager） -->
     <!-- border：Element Plus 的列宽拖拽**必须**在表格上开 border 才会出现拖拽手柄
          （列的 resizable 默认为 true，但没 border 就拖不动）。开 border 后每列可左右拖宽，
          长标题拖宽后就能读全。列宽在刷新/重新进入页面后会回到默认（未做持久化）。 -->
     <el-table
-      :data="pagedList"
+      :data="list"
       v-loading="loading"
       stripe
       border
@@ -140,12 +152,12 @@
       </el-table-column>
     </el-table>
 
-    <!-- 分页：固定每页 12 条（列表全量已拉回，这里是纯前端切片） -->
+    <!-- 分页：服务端分页（接口按页返回，total 由服务端给），每页 12 条 -->
     <div class="vuln-pager">
       <el-pagination
         v-model:current-page="page"
         :page-size="pageSize"
-        :total="list.length"
+        :total="total"
         :pager-count="7"
         layout="total, prev, pager, next, jumper"
         background
@@ -168,7 +180,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="修复负责人">
-          <el-select v-model="createForm.assignee_id" clearable filterable placeholder="可留空，由安全专家指派" style="width: 100%">
+          <el-select v-model="createForm.assignee_id" clearable filterable :loading="usersLoading" placeholder="可留空，由安全专家指派" style="width: 100%">
             <!-- label 用 userLabel()：里面带上了英文用户名，否则只按中文名搜（见 utils/userLabel.js 说明） -->
             <el-option v-for="u in users" :key="u.id" :value="u.id" :label="userLabel(u)">
               <span style="display: inline-block; width: 160px">{{ u.full_name || u.username }}</span>
@@ -363,7 +375,7 @@
 
     <!-- 指派弹窗 -->
     <el-dialog v-model="assignVisible" title="指派负责人" width="400px">
-      <el-select v-model="assignTo" placeholder="选择负责人" style="width: 100%" filterable>
+      <el-select v-model="assignTo" placeholder="选择负责人" style="width: 100%" filterable :loading="usersLoading">
         <!-- ⚠️ 这里原来没传 :label —— Element 的本地过滤只比对 label，拿不到就退化成
              比对 value（数字 id），于是搜任何名字都显示"无匹配数据"。
              现在统一用 userLabel()（用户名 + 中文名），大小写由 Element 用 RegExp(query,'i') 处理。 -->
@@ -405,31 +417,33 @@ const currentUserId = computed(() => store.user?.id ?? null)
 const list = ref([])
 const systems = ref([])
 const users = ref([])
+const usersLoading = ref(false)
+let usersLoaded = false
 const loading = ref(false)
-const filters = reactive({ status: '', severity: '', system_id: null, is_external: '', mine: false })
+const filters = reactive({ status: '', severity: '', vuln_category: '', system_id: null, is_external: '', mine: false })
 // 表格多选状态:用于批量导出已选漏洞
 const tableRef = ref()
 const selectedIds = ref([])
 
-// ---- 分页：每页 12 条 ----
-// 列表接口一次返回全量（筛选与批量导出都作用在全量结果上），所以这里做的是
-// **视图切片**：只决定"这一屏显示哪 12 行"，不参与请求参数，也不会改变
-// 筛选/导出语义。配合 row-key + reserve-selection，跨页勾选的导出行不丢。
+// ---- 分页：**服务端分页**，每页 12 条 ----
+// 列表接口按页返回 { items, total }：筛选与排序都在库里完成，前端只拿当前页，
+// 不再"全量拉回 + 前端切片"。total 是**筛选命中的总数**（与分页参数无关），
+// 分页组件的页数与序号都基于它；配合 row-key + reserve-selection，跨页勾选不丢
+// （导出走 /export，不受分页影响，仍按当前筛选条件导全部）。
 const page = ref(1)
 const pageSize = ref(12)
-const pagedList = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return list.value.slice(start, start + pageSize.value)
-})
-const pageCount = computed(() => Math.max(1, Math.ceil(list.value.length / pageSize.value)))
+const total = ref(0)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
-/** 序号跨页连续：列表按提交时间倒序（最新在最上），序号 = 全量倒序位次 */
+/** 序号跨页连续：列表按提交时间倒序（最新在最上），序号 = 命中总数 - 当前页内偏移 */
 function rowIndex(idx) {
-  return list.value.length - ((page.value - 1) * pageSize.value + idx)
+  return total.value - ((page.value - 1) * pageSize.value + idx)
 }
 
 /** 翻页后把列表顶部滚回视口（表格 auto height、整页滚动，不是内部滚动） */
-function onPageChange() {
+function onPageChange(p) {
+  if (p && p !== page.value) page.value = p   // 兜底：Element 会把新页码传进来
+  load()                                      // 服务端分页：翻页必须重新请求该页
   nextTick(() => tableRef.value?.$el?.scrollIntoView?.({ block: 'start' }))
 }
 
@@ -655,6 +669,7 @@ function openCreate() {
   createForm.vuln_path = []
   createForm.steps = [newStep()]
   createVisible.value = true
+  ensureUsers()          // 弹窗打开时才拉人员列表（见 ensureUsers 说明）
 }
 
 // 编辑：先把 row 现有数据填回表单。
@@ -662,6 +677,9 @@ function openCreate() {
 // reproduce_steps 多行字符串 + step_screenshots 列表 还原成 steps 数组。
 async function openEdit(row) {
   if (!canEdit(row)) return ElMessage.warning('当前状态或角色不可编辑')
+  // 先等人员列表就绪再回填 assignee_id：Element 解析"已选项显示名"时要能在选项里
+  // 找到这个人（本地过滤模式）。顺序反了会短暂显示成数字 id。
+  await ensureUsers()
   try {
     const res = await vulnApi.detail(row.id)
     const v = res.data
@@ -868,7 +886,9 @@ async function submitAssign() {
   assignVisible.value = false
   openDetail(current.value)
 }
-function openAssign() {
+async function openAssign() {
+  // 同样先确保人员列表就绪（指派弹窗默认选中"当前负责人"，理由同 openEdit）
+  await ensureUsers()
   assignTo.value = current.value?.assignee_id ?? null
   assignVisible.value = true
 }
@@ -903,7 +923,13 @@ async function doExport(fmt, idsOverride) {
   const params = {}
   if (filters.status) params.status = filters.status
   if (filters.severity) params.severity = filters.severity
+  if (filters.vuln_category) params.vuln_category = filters.vuln_category
   if (filters.system_id) params.system_id = filters.system_id
+  // 来源和大类此前没传给导出接口：页面上筛了「外部报告」，导出的文件里却是全部 ——
+  // 导出按钮写的是"导出当前筛选结果"，所以筛选条件必须原样带过去。
+  if (filters.is_external !== null && filters.is_external !== undefined && filters.is_external !== '') {
+    params.is_external = filters.is_external
+  }
   if (filters.mine) params.mine = true
   if (ids && ids.length) params.ids = ids.join(',')
   try {
@@ -934,27 +960,54 @@ async function doExport(fmt, idsOverride) {
  *   有效页，避免停在一个空白页（看起来像数据丢了）。
  */
 async function load(resetPage = false) {
+  if (resetPage) page.value = 1   // 筛选条件变了就回第 1 页（必须在拼参数之前）
   loading.value = true
   try {
-    const params = {}
+    const params = { page: page.value, page_size: pageSize.value }
     if (filters.status) params.status = filters.status
     if (filters.severity) params.severity = filters.severity
+    if (filters.vuln_category) params.vuln_category = filters.vuln_category
     if (filters.system_id) params.system_id = filters.system_id
     if (filters.is_external !== null && filters.is_external !== undefined && filters.is_external !== '') {
       params.is_external = filters.is_external
     }
     if (filters.mine) params.mine = true
     const res = await vulnApi.list(params)
-    list.value = res.data
-    if (resetPage) page.value = 1
-    else if (page.value > pageCount.value) page.value = pageCount.value
+    list.value = res.data.items || []        // 服务端分页：这里只有当前页
+    total.value = res.data.total ?? 0
+    if (page.value > pageCount.value) {
+      // 数据变少（删除/筛选后）时收敛到最后一个有效页，避免停在空白页（看起来像数据丢了）
+      page.value = pageCount.value
+      await load()
+    }
   } finally { loading.value = false }
+}
+
+/**
+ * 人员列表**按需加载**（本项目最大的一个页面加载开销）。
+ *
+ * 以前在 onMounted 里就拉：飞书通讯录同步后公司有 1600+ 人，`GET /api/users`
+ * 一次约 580KB，每次刷新页面都要下载 + JSON 解析一遍 ——
+ * 而这两个人员下拉（提交漏洞的「修复负责人」、详情里的「指派」）只有点开弹窗才用得到。
+ * 现在改成弹窗打开时再拉、且整个页面生命周期只拉一次（usersLoaded 记住结果），
+ * 同时改用只返回 id/用户名/姓名的 /users/pick（约 60KB）。
+ */
+async function ensureUsers() {
+  if (usersLoaded) return
+  usersLoaded = true
+  usersLoading.value = true
+  try {
+    users.value = (await adminApi.userPicks()).data || []
+  } catch {
+    usersLoaded = false   // 失败不算"已加载"，下次打开弹窗可以重试
+  } finally {
+    usersLoading.value = false
+  }
 }
 
 onMounted(async () => {
   load()
   try { systems.value = (await systemApi.list()).data } catch {}
-  try { users.value = (await adminApi.users()).data } catch {}
   // 兼容审计日志等外部跳转：?id=123 直接打开该漏洞详情
   const qid = Number(route.query.id)
   if (qid && Number.isFinite(qid)) {
@@ -1005,9 +1058,7 @@ onMounted(async () => {
 .step-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
 .step-no { width: 26px; height: 26px; line-height: 26px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; font-size: 13px; }
 .step-desc { flex: 1; }
-/* 每步最多 3 张截图：横向排开、放不下就换行（不再是一个固定 92px 的单图盒子） */
-.step-shots { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
-.step-thumb-wrap { width: 90px; height: 90px; position: relative; flex-shrink: 0; }
+/* 每步最多 3 张截图：横向排开、放不下就换行（不再是一�.step-thumb-wrap { width: 90px; height: 90px; position: relative; flex-shrink: 0; }
 .step-thumb { width: 90px; height: 90px; border-radius: 6px; border: 1px solid #e2e8f0; }
 .step-shot-del { position: absolute; bottom: -6px; right: -6px; background: #fff; border-radius: 10px; padding: 0 6px; }
 .step-row :deep(.el-upload--picture-card) { width: 90px; height: 90px; }

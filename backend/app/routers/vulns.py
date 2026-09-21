@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import inspect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_db
 from ..models import AssetSystem, User, Vuln, VulnComment, VulnFlow
@@ -13,7 +13,9 @@ from ..schemas import (
     VulnCommentOut,
     VulnCreate,
     VulnFlowOut,
+    VulnListItem,
     VulnOut,
+    VulnPage,
     VulnReject,
     VulnStatusAction,
     VulnUpdate,
@@ -32,7 +34,25 @@ router = APIRouter(prefix="/api/vulns", tags=["漏洞管理"])
 # STATUS_NAMES 已收敛到 state_machine（单一来源），此处不再本地维护一份副本。
 
 
-def _to_out(v: Vuln, db: Session) -> VulnOut:
+# 列表接口返回的是 VulnListItem（VulnOut 去掉详情级大字段），见 schemas.VulnListItem：
+# 列表响应从 416KB 降到个位数 KB，而详情/编辑/Word 导出仍走全量。
+
+
+def _user_names(db: Session, ids) -> dict[int, str]:
+    """一次性取回 {用户 id: 姓名}。
+
+    为什么要批量取：列表/导出里每条漏洞都要填提交人/负责人/复测人，
+    早期写法是 `_to_out` 里逐条 `query(User).filter(id==...)` —— 15 条漏洞要
+    37 次查询，漏洞一多就线性放大（100 条 ≈ 250 次查询）。现在按需一次取完。
+    """
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return {}
+    rows = db.query(User.id, User.full_name).filter(User.id.in_(wanted)).all()
+    return {uid: name for uid, name in rows}
+
+
+def _to_out(v: Vuln, db: Session, user_names: dict[int, str] | None = None) -> VulnOut:
     data = {c.key: getattr(v, c.key) for c in inspect(v).mapper.column_attrs}
     if data.get("screenshots"):
         try:
@@ -49,12 +69,12 @@ def _to_out(v: Vuln, db: Session) -> VulnOut:
     else:
         data["step_screenshots"] = None
     out = VulnOut.model_validate(data)
-    reporter = db.query(User).filter(User.id == v.reporter_id).first()
-    assignee = db.query(User).filter(User.id == v.assignee_id).first() if v.assignee_id is not None else None
-    reviewer = db.query(User).filter(User.id == v.reviewer_id).first() if v.reviewer_id is not None else None
-    out.reporter_name = reporter.full_name if reporter else None
-    out.assignee_name = assignee.full_name if assignee else None
-    out.reviewer_name = reviewer.full_name if reviewer else None
+    # 调用方（列表/导出）已经批量取好姓名时直接查表；没有则退回按需查询（单条详情等场景）
+    if user_names is None:
+        user_names = _user_names(db, (v.reporter_id, v.assignee_id, v.reviewer_id))
+    out.reporter_name = user_names.get(v.reporter_id)
+    out.assignee_name = user_names.get(v.assignee_id) if v.assignee_id is not None else None
+    out.reviewer_name = user_names.get(v.reviewer_id) if v.reviewer_id is not None else None
     if v.system:
         out.system_name = v.system.name
     return out
@@ -97,6 +117,8 @@ def _describe_scope(
     status: str | None = None,
     severity: str | None = None,
     system_id: int | None = None,
+    vuln_category: str | None = None,
+    is_external: bool | None = None,
     mine: bool = False,
     assigned_to_me: bool = False,
     ids: str | None = None,
@@ -121,6 +143,12 @@ def _describe_scope(
     if system_id:
         row = db.query(AssetSystem).filter(AssetSystem.id == system_id).first()
         parts.append(f"所属系统：{row.name if row else system_id}")
+    if vuln_category:
+        parts.append(f"漏洞大类：{vuln_category}")
+    # is_external 用 is not None 判定：False 是"只要内部提交"，也是一个筛选条件，
+    # 不能跟"没传"混为一谈 —— 否则报告封面会把"仅内部"的报告写成"全部漏洞"。
+    if is_external is not None:
+        parts.append("来源：外部报告" if is_external else "来源：内部提交")
     if assigned_to_me:
         parts.append("指派给我的漏洞")
     elif mine:
@@ -128,7 +156,7 @@ def _describe_scope(
     return " · ".join(parts) if parts else "全部漏洞"
 
 
-@router.get("", response_model=list[VulnOut])
+@router.get("", response_model=VulnPage)
 def list_vulns(
     status: str | None = Query(default=None),
     severity: str | None = Query(default=None),
@@ -138,9 +166,16 @@ def list_vulns(
     mine: bool = Query(default=False),
     assigned_to_me: bool = Query(default=False),
     is_external: bool | None = Query(default=None, description="漏洞来源过滤：None=全部, True=外部, False=内部"),
+    page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(default=12, ge=1, le=200, description="每页条数（上限 200：别用一个参数把分页绕过去）"),
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
+    """漏洞列表（**服务端分页**，返回 {items, total, page, page_size}）。
+
+    分页作用在**筛选之后**：先按筛选条件数出 total，再取当前页那一段。
+    响应只含清单级字段（见 VulnListItem），详情/编辑/导出走各自的接口。
+    """
     query = db.query(Vuln)
     query = _apply_status_filter(query, status)
     if severity:
@@ -157,8 +192,25 @@ def list_vulns(
         query = query.filter((Vuln.reporter_id == current.id) | (Vuln.assignee_id == current.id))
     if assigned_to_me:
         query = query.filter(Vuln.assignee_id == current.id)
-    vulns = query.order_by(Vuln.created_at.desc()).all()
-    return [_to_out(v, db) for v in vulns]
+    # 总数要在**分页之前**算（前端分页组件靠它算页数），且不受 page/page_size 影响
+    total = query.count()
+    # 排序加 id 兜底：批量导入常出现 created_at 完全相同的数据，只按时间排时
+    # 翻页顺序不稳定 —— 同一条可能在两页里都出现、或某条永远翻不到。
+    # joinedload：本行要用 v.system.name，不预加载就是每条一次查询（N+1）
+    vulns = (
+        query.options(joinedload(Vuln.system))
+        .order_by(Vuln.created_at.desc(), Vuln.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    names = _user_names(db, [i for v in vulns for i in (v.reporter_id, v.assignee_id, v.reviewer_id)])
+    return VulnPage(
+        items=[_to_out(v, db, names) for v in vulns],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/export")
@@ -168,6 +220,8 @@ def export_vulns(
     status: str | None = Query(default=None),
     severity: str | None = Query(default=None),
     system_id: int | None = Query(default=None),
+    vuln_category: str | None = Query(default=None, description="一级大类过滤,如 注入类 / 访问控制"),
+    is_external: bool | None = Query(default=None, description="漏洞来源过滤：None=全部, True=外部, False=内部"),
     mine: bool = Query(default=False),
     assigned_to_me: bool = Query(default=False),
     ids: str | None = Query(default=None, description="可选,逗号分隔的漏洞 ID 列表；传了则只导出这些条(与其它筛选条件取交集)"),
@@ -184,6 +238,13 @@ def export_vulns(
         query = query.filter(Vuln.severity == severity)
     if system_id:
         query = query.filter(Vuln.system_id == system_id)
+    # 漏洞大类 / 来源：页面筛选栏上有这两项，导出必须同样支持 ——
+    # 导出按钮写的是"导出当前筛选结果"，这里少接一个参数就会出现
+    # "页面上筛出 2 条、导出的文件里却是全部 15 条"这种对不上的情况。
+    if vuln_category:
+        query = query.filter(Vuln.vuln_category == vuln_category)
+    if is_external is not None:
+        query = query.filter(Vuln.is_external == is_external)
     if mine:
         query = query.filter((Vuln.reporter_id == current.id) | (Vuln.assignee_id == current.id))
     if assigned_to_me:
@@ -202,10 +263,12 @@ def export_vulns(
     # 从头看整改脉络，最早的一条排在最前面，ID 也就自然从小到大（用户要求）。
     # 同时序（批量导入会有相同 created_at）再用 id 升序兜底，保证结果确定、可复现。
     vulns = query.order_by(Vuln.created_at.asc(), Vuln.id.asc()).all()
-    rows = [_to_out(v, db) for v in vulns]
+    names = _user_names(db, [i for v in vulns for i in (v.reporter_id, v.assignee_id, v.reviewer_id)])
+    rows = [_to_out(v, db, names) for v in vulns]
 
     scope_desc = _describe_scope(
         db, status=status, severity=severity, system_id=system_id,
+        vuln_category=vuln_category, is_external=is_external,
         mine=mine, assigned_to_me=assigned_to_me, ids=ids,
     )
     if fmt == "csv":

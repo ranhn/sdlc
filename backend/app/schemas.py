@@ -85,6 +85,22 @@ class UserOut(BaseModel):
         from_attributes = True
 
 
+class UserPickOut(BaseModel):
+    """人员下拉（选择负责人 / 指派）专用：只要 3 个字段。
+
+    为什么不复用 UserOut：飞书通讯录同步后公司有 1600+ 人，UserOut 带邮箱/角色/
+    部门/飞书 id 等十几个字段（其中大半是 null），一次序列化约 580KB；下拉只需要
+    "英文名 + 中文名"，其余全是白下载 + 白解析。这个模型一次约 60KB。
+    """
+
+    id: int
+    username: str
+    full_name: str
+
+    class Config:
+        from_attributes = True
+
+
 class DepartmentOut(BaseModel):
     id: int
     name: str
@@ -195,6 +211,44 @@ class VulnOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class VulnListItem(VulnOut):
+    """漏洞**列表/看板**用的清单级模型 = VulnOut 去掉详情级大字段。
+
+    为什么必须瘦：`screenshots` / `step_screenshots` 存的是 base64 图片，单条可达几十 KB；
+    `description` / `reproduce_steps` / `impact` / `fix_suggestion` 是长文本。
+    实测 15 条漏洞的列表响应 **416KB**，而列表页只用得到清单字段（标题/系统/等级/
+    类型/状态/负责人/时间）—— 每次刷新页面都要下载 + 解析这一坨，是"刷新很慢"的主因。
+    详情展示、编辑回填、Word 导出走全量的 `GET /api/vulns/{id}`（VulnOut），功能不受影响。
+
+    ⚠️ 为什么不用路由上的 `response_model_exclude`：实测 FastAPI 0.115 对
+    `response_model=list[...]` 这种"列表根"**不生效**（字段照样返回，最小复现已验证）。
+    用子模型 + `Field(exclude=True)` 是在 pydantic 序列化阶段真正丢掉，
+    OpenAPI 文档里也只出现轻字段，前端一看就知道列表能拿到什么。
+    """
+
+    description: Optional[str] = Field(default=None, exclude=True)
+    reproduce_steps: Optional[str] = Field(default=None, exclude=True)
+    impact: Optional[str] = Field(default=None, exclude=True)
+    fix_suggestion: Optional[str] = Field(default=None, exclude=True)
+    screenshots: Optional[list[str]] = Field(default=None, exclude=True)
+    step_screenshots: Optional[list[dict]] = Field(default=None, exclude=True)
+
+
+class VulnPage(BaseModel):
+    """漏洞列表的**分页**响应。
+
+    为什么要分页：以前 `GET /api/vulns` 一次返回全量，前端只做"视图切片" —— 漏洞一多，
+    每次进页面/翻页都要把全部行传下来再解析（筛选、排序也都在前端假装完成）。
+    现在由服务端按页取（筛选与排序仍在库里做），`total` 是**满足筛选条件的总数**，
+    前端分页组件靠它算页数 —— 注意 total 不受分页参数影响，两个页面的页码才稳定。
+    """
+
+    items: list[VulnListItem]
+    total: int          # 筛选命中的总条数（不是当前页条数）
+    page: int
+    page_size: int
 
 
 class VulnFlowOut(BaseModel):

@@ -76,6 +76,9 @@ export const adminApi = {
   departments: () => http.get('/departments'),
   roles: () => http.get('/roles'),
   users: (params) => http.get('/users', { params }),
+  // 人员下拉专用：只返回 id/用户名/姓名（全量 1600+ 人的 UserOut 约 580KB，
+  // 下拉只需要其中三个字段；见后端 /api/users/pick 说明）
+  userPicks: (params) => http.get('/users/pick', { params }),
   createUser: (data) => http.post('/users', data),
   // 编辑用户（姓名/邮箱/角色/部门）—— 只传要改的字段，没传的后端保持原样
   updateUser: (id, data) => http.put(`/users/${id}`, data),
