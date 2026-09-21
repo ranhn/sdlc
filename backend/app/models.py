@@ -37,7 +37,7 @@ class Department(Base):
 
 
 class Role(Base):
-    """角色。内置：超管/安全专家/研发人员/测试人员/普通员工。"""
+    """角色。内置：超管/安全专家/研发人员/测试人员/普通权限（user，原「普通员工」）。"""
     __tablename__ = "sys_role"
 
     id = Column(Integer, primary_key=True, index=True)

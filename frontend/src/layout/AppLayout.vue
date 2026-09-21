@@ -87,8 +87,8 @@ const roleMap = {
   secops: '安全专家',
   reviewer: '安全审核员',
   developer: '开发人员',
-  employee: '普通员工',
-  user: '普通员工',
+  employee: '普通权限',
+  user: '普通权限',
 }
 
 const menus = computed(() => {

@@ -439,19 +439,19 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
     if not (cfg["app_id"] and cfg["app_secret"]):
         raise HTTPException(status_code=400, detail="飞书配置未启用（FEISHU_APP_ID / FEISHU_APP_SECRET）")
 
-    # 默认角色兜底：所有同步进来的用户都是「普通员工」（FEISHU_DEFAULT_ROLE_ID 可覆盖）
+    # 默认角色兜底：所有同步进来的用户都是「普通权限」（FEISHU_DEFAULT_ROLE_ID 可覆盖）
     default_role_id = cfg["default_role_id"]
     if not default_role_id:
-        # ⚠️ 这里踩过一次线上坑：seed 出来的「普通员工」角色 code 是 **user**，而下面兜底
+        # ⚠️ 这里踩过一次线上坑：seed 出来的「普通权限」角色 code 是 **user**，而下面兜底
         # 创建用的 code 是 employee —— 只按 code=employee 查会查不到，接着再插一条同名
-        # 「普通员工」就撞 sys_role.name 唯一约束，整次同步直接 500（按钮点了没反应）。
-        # 所以：code 兼容 user/employee，再按名字兜底，最后才创建。
+        # 角色就撞 sys_role.name 唯一约束，整次同步直接 500（按钮点了没反应）。
+        # 所以：code 兼容 user/employee，再按名字兜底（名字含改名前后的两种），最后才创建。
         emp_role = (
             db.query(Role).filter(Role.code.in_(("employee", "user"))).first()
-            or db.query(Role).filter(Role.name == "普通员工").first()
+            or db.query(Role).filter(Role.name.in_(("普通权限", "普通员工"))).first()
         )
         if not emp_role:
-            emp_role = Role(name="普通员工", code="employee", description="飞书同步默认角色")
+            emp_role = Role(name="普通权限", code="employee", description="飞书同步默认角色")
             db.add(emp_role)
             db.commit()
             db.refresh(emp_role)
@@ -645,7 +645,7 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
                         full_name=name,
                         en_name=en_name or None,
                         email=email,
-                        role_id=default_role_id,      # 角色：默认普通员工（FEISHU_DEFAULT_ROLE_ID 可覆盖）
+                        role_id=default_role_id,      # 角色：默认普通权限（FEISHU_DEFAULT_ROLE_ID 可覆盖）
                         department_id=dept_id,
                         is_active=True,
                         feishu_open_id=open_id,

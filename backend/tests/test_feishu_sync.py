@@ -401,21 +401,41 @@ def test_sync_picks_most_specific_department_for_multi_dept_user():
 
 
 def test_sync_reuses_seeded_employee_role_instead_of_crashing():
-    """真实库踩到的坑：seed 的「普通员工」code 是 user，而兜底创建用 employee。
+    """真实库踩到的坑：seed 的「普通权限」code 是 user，而兜底创建用 employee。
 
-    只按 code=employee 查会查不到 → 再插一条同名「普通员工」→ 撞 sys_role.name
+    只按 code=employee 查会查不到 → 再插一条同名角色 → 撞 sys_role.name
     唯一约束 → 整次同步 500（表现就是"点了同步没反应"）。
     """
     db = _make_db()
-    db.add(Role(name="普通员工", code="user", description="seed 角色"))
+    db.add(Role(name="普通权限", code="user", description="seed 角色"))
     db.commit()
     admin = _wire_sync(db, {"od-sec": [{"open_id": "ou_a", "name": "张三"}]})
 
     res = asyncio.run(feishu.sync_users(db=db, current=admin))
     assert res.created == 1 and res.failed == 0, res
     u = db.query(User).filter(User.feishu_open_id == "ou_a").first()
-    assert db.get(Role, u.role_id).code == "user", "没有复用现成的普通员工角色"
+    assert db.get(Role, u.role_id).code == "user", "没有复用现成的普通权限角色"
     assert db.query(Role).filter(Role.code == "employee").count() == 0, "多插了一条角色"
+
+
+def test_sync_matches_default_role_by_name_across_rename():
+    """默认角色按名字兜底时，改名前后的两种名字都要认。
+
+    背景：user 角色的显示名 2026-09 从「普通员工」改成「普通权限」（code 不变）。
+    兜底链路是 code(user/employee) → 名字 → 新建；若老库里默认角色的 code 两者都不是，
+    就只能靠名字匹配 —— 这时只认新名会让老库匹配失败，进而新建同名角色撞唯一约束、
+    整次同步 500。所以名字匹配要同时认新旧两种。
+    """
+    db = _make_db()
+    db.add(Role(name="普通员工", code="staff", description="旧名 + 非标准 code"))
+    db.commit()
+    admin = _wire_sync(db, {"od-sec": [{"open_id": "ou_old", "name": "旧名用户"}]})
+
+    res = asyncio.run(feishu.sync_users(db=db, current=admin))
+    assert res.created == 1 and res.failed == 0, res
+    u = db.query(User).filter(User.feishu_open_id == "ou_old").first()
+    assert db.get(Role, u.role_id).name == "普通员工", "没按（旧的）名称匹配到默认角色"
+    assert db.query(Role).filter(Role.code == "employee").count() == 0, "又新建了一条角色"
 
 
 def test_sync_deactivates_users_missing_from_feishu():

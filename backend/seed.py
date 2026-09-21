@@ -43,13 +43,18 @@ def _safe_print(*args, **kwargs):
         print(*safe_args, **kwargs)
 
 
+# ⚠️ 角色名以这张表为准：init() 是**按 code** 幂等 upsert，每次启动都会把已有角色的
+# name/description 刷回这里的值 —— 所以改显示名只改这里，存量库下次启动自动跟着更新，
+# 不需要另写数据迁移。**code 不要改**：前后端所有权限判定都按 code（admin/secops/dev/
+# tester/user）走，改名不影响鉴权。
 ROLES = [
     ("超级管理员", "admin", "平台全部权限"),
     ("安全专家", "secops", "漏洞审核/流转/复测、资产维护"),
     ("研发人员", "dev", "提交漏洞、认领修复、学习培训"),
     ("测试人员", "tester", "提交漏洞、复测验证"),
-    # 已移除"培训讲师"角色：培训职能由安全专家/普通员工承担
-    ("普通员工", "user", "个人工作台、学习、提交漏洞"),
+    # 已移除"培训讲师"角色：培训职能由安全专家/普通权限承担
+    # user 角色原叫「普通员工」，2026-09 改名为「普通权限」（只改显示名，code 仍是 user）
+    ("普通权限", "user", "个人工作台、学习、提交漏洞"),
 ]
 
 DEPARTMENTS = ["研发部", "安全部", "测试部", "产品部"]
@@ -126,7 +131,7 @@ def init():
         "SELECT id FROM sys_role WHERE code='trainer' LIMIT 1"
     )).first()
     if _trainer_role_row:
-        # 把历史上 trainer 角色的用户改回普通员工（若有）
+        # 把历史上 trainer 角色的用户改回普通权限角色（若有）
         db.execute(_sa_text(
             "UPDATE sys_user SET role_id=(SELECT id FROM sys_role WHERE code='user' LIMIT 1) "
             "WHERE role_id=:rid"

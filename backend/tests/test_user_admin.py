@@ -45,7 +45,7 @@ def _setup():
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     roles = {}
-    for name, code in (("超级管理员", "admin"), ("安全专家", "secops"), ("普通员工", "user")):
+    for name, code in (("超级管理员", "admin"), ("安全专家", "secops"), ("普通权限", "user")):
         r = Role(name=name, code=code)
         db.add(r)
         roles[code] = r
