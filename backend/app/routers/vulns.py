@@ -305,6 +305,12 @@ _STATUS_NOTICES: dict[str, dict[str, str]] = {
         "template": "green",
         "action_label": "复测通过",
     },
+    "fail_retest": {
+        # 需要人**立刻行动**（打回去重修），所以用橙色而不是绿色；原因块单独渲染
+        "title": "复测不通过，需重新修复",
+        "template": "orange",
+        "action_label": "复测不通过",
+    },
     "close": {
         "title": "漏洞已关闭",
         "template": "grey",
@@ -318,6 +324,9 @@ _STATUS_RECIPIENTS: dict[str, tuple[str, ...]] = {
     "reject": ("reporter",),
     "finish_fix": ("reporter",),
     "pass_retest": ("reporter", "assignee"),
+    # 复测不通过 → 负责人（要重修，这是主角）+ 提单人（状态回退，他要知道"还没修好"）。
+    # 提单人就是复测人时自动跳过（下面统一有一条"操作人自己不打扰"）。
+    "fail_retest": ("assignee", "reporter"),
     "close": ("reporter", "assignee"),
 }
 
@@ -325,10 +334,14 @@ _STATUS_RECIPIENTS: dict[str, tuple[str, ...]] = {
 def _status_notice_card(v: Vuln, *, notice: dict[str, str], operator: User,
                         base_url: str, assignee_name: str | None = None,
                         reason: str | None = None,
+                        reason_label: str = "驳回原因",
                         comment: str | None = None) -> dict:
     """状态流转通知卡片（纯函数，便于单测）。
 
-    与指派卡片的区别只有两处：标题按动作走、驳回时**必须带原因**（这是这张卡存在的理由）。
+    与指派卡片的区别只有两处：标题按动作走、驳回/复测不通过时**必须带原因**
+    （这是这类卡片存在的理由）。
+
+    reason_label 用来区分原因的性质：驳回是「驳回原因」，复测不通过是「复测不通过原因」。
 
     assignee_name 由调用方查出后传入：``Vuln`` 上只有 ``system`` 关系，
     **没有** assignee 关系（见 models.py），所以这里不能靠 ``v.assignee`` 取名字。
@@ -349,7 +362,7 @@ def _status_notice_card(v: Vuln, *, notice: dict[str, str], operator: User,
     # 驳回原因单独成块（换行展示，不塞进 fields —— 原因是长文本，塞进两列网格会被截断）
     if reason:
         elements += [{"tag": "hr"},
-                     feishu_notify.text_div(f"**驳回原因**\n{reason}")]
+                     feishu_notify.text_div(f"**{reason_label}**\n{reason}")]
     if comment:
         elements.append(feishu_notify.text_div(f"**备注**：{comment}"))
     if link:
@@ -371,6 +384,7 @@ def _status_notice_card(v: Vuln, *, notice: dict[str, str], operator: User,
 def _notify_status_change(db: Session, v: Vuln, action: str, operator: User,
                           request: Request | None = None, *,
                           reason: str | None = None,
+                          reason_label: str = "驳回原因",
                           comment: str | None = None) -> None:
     """状态流转后通知相关人（尽力而为：不抛错、不阻塞业务动作）。
 
@@ -420,7 +434,8 @@ def _notify_status_change(db: Session, v: Vuln, action: str, operator: User,
                 "interactive",
                 _status_notice_card(v, notice=notice, operator=operator,
                                     base_url=base_url, assignee_name=assignee_name,
-                                    reason=reason, comment=comment),
+                                    reason=reason, reason_label=reason_label,
+                                    comment=comment),
                 tag=f"漏洞 #{v.id} {notice['title']} → {user.full_name or user.username}",
             )
     except Exception as exc:  # noqa: BLE001 —— 通知绝不打断状态流转
@@ -845,15 +860,22 @@ def vuln_action(vuln_id: int, action: str, request: Request, data: VulnStatusAct
     if action == "finish_fix":
         v.fixed_at = nc.utcnow()
         v.reviewer_id = current.id
-    if action == "pass_retest":
+    if action in ("pass_retest", "fail_retest"):
+        # 记下"复测是谁做的"（通过或不通过都记），便于审计追责与"反复修了几轮"的统计
         v.reviewer_id = current.id
 
     db.commit()
     db.refresh(v)
     _record_flow(db, v.id, from_status, to_status, current, data.comment)
     write_operation_log(db, current, f"vuln_{action}", "vuln", f"漏洞 #{v.id} {from_status}->{to_status}")
-    # 状态流转通知（确认/修复完成/复测通过/关闭；start_fix 不在矩阵里，会自动跳过）
-    _notify_status_change(db, v, action, current, request, comment=data.comment)
+    # 状态流转通知（确认/修复完成/复测通过/复测不通过/关闭；start_fix 不在矩阵里，会自动跳过）
+    if action == "fail_retest":
+        # 复测不通过时，前端的输入框填的是"不通过原因" —— 按原因渲染（单独的正文块），
+        # 而不是塞进"备注"里（这两种信息在读者眼里完全不是一件事）
+        _notify_status_change(db, v, action, current, request,
+                              reason=data.comment, reason_label="复测不通过原因")
+    else:
+        _notify_status_change(db, v, action, current, request, comment=data.comment)
     return _to_out(v, db)
 
 

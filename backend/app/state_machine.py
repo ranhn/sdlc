@@ -18,6 +18,7 @@
 - start_fix  confirmed -> fixing    修复人
 - finish_fix fixing -> retest       修复人
 - pass_retest retest -> fixed       复测人
+- fail_retest retest -> fixing      复测人（**不通过打回重修**，需写明原因）
 - close      fixed -> closed        安全专家
 
 关于「负责人（修复人）也能确认/驳回」（见 ASSIGNEE_ACTIONS）：
@@ -75,6 +76,9 @@ ACTION_RULES = {
     "start_fix":     {"from": [VulnState.CONFIRMED], "roles": ["admin", "secops", "dev"]},
     "finish_fix":    {"from": [VulnState.FIXING], "roles": ["admin", "secops", "dev", "tester"]},
     "pass_retest":   {"from": [VulnState.RETEST], "roles": ["admin", "secops", "tester"]},
+    # 复测不通过 → 打回「修复中」。角色与 pass_retest 完全一致：**只有复测方**（安全专家/测试）
+    # 能判"没通过"，修复人不能自己判自己没修好（那等于绕过复测环节）。
+    "fail_retest":   {"from": [VulnState.RETEST], "roles": ["admin", "secops", "tester"]},
     "close":         {"from": [VulnState.FIXED], "roles": ["admin", "secops"]},
 }
 
@@ -96,6 +100,9 @@ TRANSITIONS = {
     "start_fix": VulnState.FIXING,
     "finish_fix": VulnState.RETEST,
     "pass_retest": VulnState.FIXED,
+    # 打回重修：回到 fixing（`fixed_at` 保留，那是"研发自称修完"的时间点，
+    # 复测结论与打回记录都在流转记录里，便于统计"反复修了几轮"）
+    "fail_retest": VulnState.FIXING,
     "close": VulnState.CLOSED,
 }
 

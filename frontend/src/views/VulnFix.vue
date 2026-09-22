@@ -160,6 +160,8 @@
           <el-button v-if="can('start_fix')" type="warning" size="small" @click="doAction('start_fix')">开始修复</el-button>
           <el-button v-if="can('finish_fix')" type="success" size="small" @click="doAction('finish_fix')">修复完成</el-button>
           <el-button v-if="can('pass_retest')" type="success" size="small" @click="doAction('pass_retest')">复测通过</el-button>
+          <!-- 复测不通过：打回「修复中」并通知负责人（原因必填，会随通知发出去） -->
+          <el-button v-if="can('fail_retest')" type="danger" size="small" plain @click="openFailRetest">复测不通过</el-button>
           <el-button v-if="can('close')" type="primary" size="small" @click="doAction('close')">关闭</el-button>
           <el-button v-if="can('assign')" type="info" size="small" @click="openAssign">指派</el-button>
           <el-button v-if="can('reject')" type="danger" size="small" plain @click="openReject">驳回</el-button>
@@ -206,6 +208,16 @@
       <template #footer>
         <el-button @click="rejectVisible = false">取消</el-button>
         <el-button type="danger" @click="submitReject">确定驳回</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 复测不通过弹窗（原因必填：会随飞书通知发给负责人，并写进流转记录） -->
+    <el-dialog v-model="failVisible" title="复测不通过（打回重修）" width="400px">
+      <el-input v-model="failReason" type="textarea" :rows="3"
+                placeholder="请说明未通过的原因（如：仍可越权 / 未覆盖该分支 / 环境未更新）" />
+      <template #footer>
+        <el-button @click="failVisible = false">取消</el-button>
+        <el-button type="danger" @click="submitFailRetest">确定打回</el-button>
       </template>
     </el-dialog>
   </div>
@@ -268,7 +280,10 @@ const severityType = { critical: 'danger', high: 'warning', medium: '', low: 'in
 const actionRoles = {
   confirm: ['admin', 'secops'], reject: ['admin', 'secops'],
   start_fix: ['admin', 'secops', 'dev'], finish_fix: ['admin', 'secops', 'dev', 'tester'],
-  pass_retest: ['admin', 'secops', 'tester'], close: ['admin', 'secops'],
+  pass_retest: ['admin', 'secops', 'tester'],
+  // 复测不通过：只有"复测方"能判（与后端 ACTION_RULES.fail_retest 一致）
+  fail_retest: ['admin', 'secops', 'tester'],
+  close: ['admin', 'secops'],
   assign: ['admin', 'secops'],
 }
 // 各动作允许的前置状态（与后端 state_machine.ACTION_RULES 保持一致）
@@ -278,6 +293,7 @@ const actionFrom = {
   start_fix: ['confirmed'],
   finish_fix: ['fixing'],
   pass_retest: ['retest'],
+  fail_retest: ['retest'],
   close: ['fixed'],
   assign: ['pending', 'confirmed', 'fixing', 'retest', 'fixed'],
 }
@@ -313,6 +329,9 @@ const assignVisible = ref(false)
 const assignTo = ref(null)
 const rejectVisible = ref(false)
 const rejectReason = ref('')
+// 复测不通过：原因必填（会随飞书通知发给负责人）
+const failVisible = ref(false)
+const failReason = ref('')
 const users = ref([])
 const usersLoading = ref(false)
 let usersLoaded = false
@@ -386,6 +405,30 @@ async function submitReject() {
     load()          // 驳回后状态变了，列表里的状态列要同步
   } catch (e) {
     ElMessage.error(extractErrorMsg(e, '驳回失败'))
+  }
+}
+
+/**
+ * 复测不通过：打回「修复中」，原因随飞书通知发给负责人。
+ *
+ * 后端把它当一次普通的状态动作（POST /action/fail_retest，comment 就是原因），
+ * 所以这里不需要新接口 —— 只是原因必填（不写原因，负责人不知道该修什么）。
+ */
+function openFailRetest() {
+  failReason.value = ''
+  failVisible.value = true
+}
+async function submitFailRetest() {
+  if (!failReason.value.trim()) return ElMessage.warning('请填写复测不通过的原因')
+  try {
+    await vulnApi.action(current.value.id, 'fail_retest', { comment: failReason.value })
+    ElMessage.success('已打回重修，负责人会收到飞书通知')
+    failVisible.value = false
+    failReason.value = ''
+    openDetail(current.value)
+    load()          // 状态回到「修复中」，列表状态列要同步
+  } catch (e) {
+    ElMessage.error(extractErrorMsg(e, '复测不通过提交失败'))
   }
 }
 

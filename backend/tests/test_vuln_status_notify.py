@@ -314,6 +314,66 @@ def test_close_notifies_reporter_and_assignee():
     assert "已关闭" in _card_text(SENT[0]["content"]), _card_text(SENT[0]["content"])
 
 
+# ============ 复测不通过（打回重修） ============
+def test_fail_retest_bounces_back_and_notifies_both_with_reason():
+    """复测不通过 → 状态回到「修复中」，负责人 + 提单人各 1 条，**原因是独立正文块**。"""
+    db, client = _setup()
+    admin, sec1, dev1, tester = (_u(db, "admin"), _u(db, "sec1"),
+                                 _u(db, "dev1"), _u(db, "tester1"))
+    CURRENT["user"] = sec1
+    vid = _new_vuln(client, assignee_id=dev1.id)
+    CURRENT["user"] = admin
+    _to_retest(client, vid, fixer=admin)
+    SENT.clear()
+
+    CURRENT["user"] = tester
+    r = _action(client, vid, "fail_retest", "仍可越权读取他人数据")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "fixing", f"应打回修复中：{r.json().get('status')}"
+    assert sorted(m["to"] for m in SENT) == ["ou_dev1", "ou_sec1"], SENT
+
+    card = next(m["content"] for m in SENT if m["to"] == "ou_dev1")
+    assert "复测不通过" in card["header"]["title"]["content"], card["header"]
+    assert card["header"]["template"] == "orange", "需要人立刻行动 → 橙色（非绿色的通过）"
+    text = _card_text(card)
+    assert "复测不通过原因" in text, text          # 原因块有自己的标签，不混进「备注」
+    assert "仍可越权读取他人数据" in text, text
+    assert "修复中" in text, text                  # 当前状态跟着变
+    assert "测试小李" in text, text                # 谁判的不通过
+
+
+def test_fail_retest_by_fixer_is_rejected():
+    """修复人**不能自己判"没通过"** —— 那等于绕过复测环节；必须由复测方（专家/测试）判定。"""
+    db, client = _setup()
+    admin, dev1 = _u(db, "admin"), _u(db, "dev1")
+    CURRENT["user"] = admin
+    vid = _new_vuln(client, assignee_id=dev1.id)
+    _to_retest(client, vid, fixer=admin)
+    SENT.clear()
+
+    CURRENT["user"] = dev1
+    r = _action(client, vid, "fail_retest", "我觉得没修好")
+    assert r.status_code == 403, f"研发不该能判复测不通过：{r.status_code} {r.text}"
+    assert SENT == [], SENT
+    db.expire_all()
+    assert db.get(Vuln, vid).status == "retest", "状态不该被改动"
+
+
+def test_fail_retest_by_reporter_himself_notifies_assignee_only():
+    """提单人自己复测判不通过（他是安全专家）→ 只通知负责人，不给自己发。"""
+    db, client = _setup()
+    admin, sec1, dev1 = _u(db, "admin"), _u(db, "sec1"), _u(db, "dev1")
+    CURRENT["user"] = sec1                      # 提单人 = sec1
+    vid = _new_vuln(client, assignee_id=dev1.id)
+    CURRENT["user"] = admin
+    _to_retest(client, vid, fixer=admin)
+    SENT.clear()
+
+    CURRENT["user"] = sec1                      # 由提单人本人复测并判不通过
+    assert _action(client, vid, "fail_retest", "未覆盖该分支").status_code == 200
+    assert [m["to"] for m in SENT] == ["ou_dev1"], f"只该通知负责人：{SENT}"
+
+
 # ============ 不该发 / 失败兜底 ============
 def test_notify_disabled_by_switch():
     """FEISHU_NOTIFY=0（应急开关）→ 一条都不发，流转照样成功。"""
