@@ -13,6 +13,16 @@
         >
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
+        <!-- 启用/禁用筛选：人员管理页最常做的判断就是"谁被停用了"（飞书同步识别出的离职账号
+             就在这一档里，对应同步弹窗的「本轮已停用」名单）。按钮上直接带条数 ——
+             不用点进去才知道有没有，也能一眼看出"禁用 0"是不是真的没人被停。
+             实现在前端过滤：列表本来就是**全量拉回、前端切页**（1600+ 条只渲染 12 行），
+             所以等价于后端过滤，而且不必动后端（也就省掉"必须重启后端"这道工序）。 -->
+        <el-radio-group v-model="statusFilter" @change="onStatusChange">
+          <el-radio-button value="all">全部 {{ statusCounts.all }}</el-radio-button>
+          <el-radio-button value="active">启用 {{ statusCounts.active }}</el-radio-button>
+          <el-radio-button value="disabled">禁用 {{ statusCounts.disabled }}</el-radio-button>
+        </el-radio-group>
         <el-button
           v-if="isAdmin"
           :disabled="!feishuEnabled"
@@ -90,16 +100,15 @@
           </template>
         </el-table-column>
       </el-table>
-      <div v-if="!loading && list.length === 0" class="empty-tip">
-        {{ searchKey ? '没有匹配的用户' : '暂无用户' }}
-      </div>
+      <div v-if="!loading && filteredList.length === 0" class="empty-tip">{{ emptyTip }}</div>
       <!-- 分页：每页 12 条。列表全量拉回来在前端切片 ——
-           1600+ 人一次性渲染会明显卡顿，而且没人会翻到第 100 页。 -->
-      <div v-if="list.length > PAGE_SIZE" class="user-pager">
+           1600+ 人一次性渲染会明显卡顿，而且没人会翻到第 100 页。
+           分页总数用**筛选后**的条数：否则选「禁用」时会出现"总数 1618、表格里只有 2 行"的矛盾。 -->
+      <div v-if="filteredList.length > PAGE_SIZE" class="user-pager">
         <el-pagination
           v-model:current-page="page"
           :page-size="PAGE_SIZE"
-          :total="list.length"
+          :total="filteredList.length"
           :pager-count="7"
           layout="total, prev, pager, next, jumper"
           background
@@ -144,6 +153,15 @@
       <!-- 停用被安全阀跳过时必须说清楚：否则管理员会以为"离职的人已经处理了" -->
       <el-alert v-if="deactivateSkipped" type="warning" :closable="false" show-icon
                 :title="deactivateSkipped" style="margin-bottom: 10px" />
+      <!-- 停用了谁：直接列出来（以前只给一个数字，想知道是谁得翻库或跑脚本）。
+           管理员据此核对"这几位是不是真离职"；若是误伤（例如只是移出了同步可见范围），
+           到「人员管理」点「启用」即可恢复。 -->
+      <div v-if="syncResult?.deactivated_users?.length" class="deact-box">
+        <b>本轮已停用（飞书通讯录里已不存在的账号）</b>
+        <ul>
+          <li v-for="n in syncResult.deactivated_users" :key="n">{{ n }}</li>
+        </ul>
+      </div>
       <el-table v-if="syncResult?.details?.length" :data="syncResult.details" max-height="240" size="small">
         <el-table-column prop="open_id" label="open_id" />
         <el-table-column prop="error" label="错误" />
@@ -200,10 +218,33 @@ const canTargetUser = (row) => isAdmin.value || row.role_code !== 'admin'
 const list = ref([])
 const page = ref(1)
 const PAGE_SIZE = 12   // 每页 12 条（与漏洞列表页保持一致），其余翻页
-// 列表接口是按搜索条件全量返回的，这里前端切页
+// 启用/禁用筛选（all / active / disabled）。放在前端过滤的原因见模板里的注释：
+// 列表本来就是按搜索条件**全量返回**、再前端切页的，所以两种做法结果一致。
+const statusFilter = ref('all')
+const filteredList = computed(() => {
+  if (statusFilter.value === 'active') return list.value.filter((u) => u.is_active)
+  if (statusFilter.value === 'disabled') return list.value.filter((u) => !u.is_active)
+  return list.value
+})
+// 三个按钮上的条数：选完搜索词后跟着变（口径 = 当前搜索结果里各状态各有多少）
+const statusCounts = computed(() => ({
+  all: list.value.length,
+  active: list.value.filter((u) => u.is_active).length,
+  disabled: list.value.filter((u) => !u.is_active).length,
+}))
+// 换筛选条件要回到第 1 页：否则可能停在"新条件下不存在"的页码上，表格空着但总数不为 0
+function onStatusChange() {
+  page.value = 1
+}
+const emptyTip = computed(() => {
+  if (searchKey.value) return '没有匹配的用户'
+  if (statusFilter.value === 'disabled') return '没有已禁用的账号'
+  if (statusFilter.value === 'active') return '没有已启用的账号'
+  return '暂无用户'
+})
 const pagedList = computed(() => {
   const start = (page.value - 1) * PAGE_SIZE
-  return list.value.slice(start, start + PAGE_SIZE)
+  return filteredList.value.slice(start, start + PAGE_SIZE)
 })
 
 /** ID 列：从 0 开始、跨页连续递增（第 1 页 0~11、第 2 页 12~23…） */
@@ -262,9 +303,9 @@ async function load(resetPage = false) {
     if (resetPage) {
       page.value = 1
     } else {
-      // 删除/搜索后当前页可能超界（例如最后一页只剩 1 条又被删掉）→ 退回最后一页，
+      // 删除/搜索/筛选后当前页可能超界（例如最后一页只剩 1 条又被删掉）→ 退回最后一页，
       // 否则会出现"表格空着、但总数不为 0"的怪状态
-      const maxPage = Math.max(1, Math.ceil(list.value.length / PAGE_SIZE))
+      const maxPage = Math.max(1, Math.ceil(filteredList.value.length / PAGE_SIZE))
       if (page.value > maxPage) page.value = maxPage
     }
   } finally {
@@ -274,7 +315,12 @@ async function load(resetPage = false) {
 
 async function toggle(row) {
   await adminApi.toggleUser(row.id)
-  ElMessage.success(row.is_active ? '已禁用' : '已启用')
+  const nowActive = !row.is_active
+  // 在「启用 / 禁用」筛选下，改完状态这一行就会离开当前视图 —— 提示里说明一句，
+  // 否则看起来像"刚点的那行被删掉了"。
+  const leftView = (statusFilter.value === 'active' && !nowActive)
+    || (statusFilter.value === 'disabled' && nowActive)
+  ElMessage.success(`${nowActive ? '已启用' : '已禁用'}${leftView ? '，该账号已移出当前筛选' : ''}`)
   load()
 }
 
@@ -438,7 +484,9 @@ onMounted(async () => {
   margin-bottom: 16px;
 }
 .page-title { font-size: 18px; font-weight: 600; }
-.header-tools { display: flex; gap: 12px; align-items: center; }
+/* 工具栏：搜索框 + 启停筛选 + 飞书同步 + 新增用户。加上筛选后控件变多，
+   窄窗口（或浏览器缩放到 125% 时）允许换行，避免把标题挤掉或把按钮压变形 */
+.header-tools { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .muted { color: #909399; }
 .hint-icon { color: #c0c4cc; cursor: help; }
 .empty-tip { text-align: center; color: #909399; padding: 32px 0; font-size: 14px; }
@@ -450,6 +498,13 @@ onMounted(async () => {
   border: 1px solid #f5dab1; border-radius: 6px; font-size: 12px;
   color: #b88230; line-height: 1.6;
 }
+/* 本轮被停用的账号名单：红底便于一眼看到，内部可滚动（范围异常时可能一次停用很多人） */
+.deact-box {
+  margin-bottom: 10px; padding: 8px 10px;
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;
+  font-size: 12.5px; line-height: 1.6; color: #b91c1c;
+}
+.deact-box ul { margin: 4px 0 0; padding-left: 18px; max-height: 96px; overflow-y: auto; }
 .sync-summary { display: flex; gap: 12px; margin-bottom: 16px; }
 .sync-summary .stat {
   flex: 1; text-align: center; padding: 12px; background: #f5f7fa; border-radius: 6px;

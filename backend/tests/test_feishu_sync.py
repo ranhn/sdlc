@@ -453,6 +453,9 @@ def test_sync_deactivates_users_missing_from_feishu():
 
     res = asyncio.run(feishu.sync_users(db=db, current=admin))
     assert res.deactivated == 1, res
+    # 还要报出"**停了谁**"：同步结果弹窗直接列成名单，管理员据此核对是否真离职
+    # （以前只有一个数字，想知道是谁得翻库或跑脚本）
+    assert res.deactivated_users == ["已离职（fs_gone）"], res.deactivated_users
     assert db.query(User).filter(User.username == "fs_gone").first().is_active is False
     assert db.query(User).filter(User.username == "fs_keep").first().is_active is True
 
@@ -474,6 +477,7 @@ def test_sync_skips_deactivation_when_fetch_looks_truncated():
 
     res = asyncio.run(feishu.sync_users(db=db, current=admin))
     assert res.deactivated == 0, res
+    assert res.deactivated_users == [], "跳过停用时不该报出任何名单"
     assert db.query(User).filter(User.username == "fs_y").first().is_active is True
     assert any("skipped_deactivate" in d for d in res.details), res.details
 

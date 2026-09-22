@@ -723,6 +723,9 @@ class FeishuSyncResult(BaseModel):
     dept_matched: int = 0
     # 本轮飞书里已不存在 → 被停用的本地账号数（离职/移出部门）
     deactivated: int = 0
+    # 被停用的**具体是谁**（"姓名（用户名）"）：管理员需要核对"这几位是不是真离职"。
+    # 以前只给一个数字，想知道停了谁得去翻库或跑脚本（用户反馈过这个不便）。
+    deactivated_users: list[str] = []
     # 与手工账号合并的人数（手工账号挂上飞书 id、飞书那条重复记录软删除）
     merged: int = 0
     # 用户名由 fs_xxxx 改成英文名的账号数（只改从没登录过的账号）
@@ -989,6 +992,9 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
             if u.feishu_open_id not in seen_open_ids and u.is_active:
                 u.is_active = False
                 result.deactivated += 1
+                # 记下"停了谁"：同步结果弹窗直接列出来，管理员据此核对是不是真离职。
+                # （以前只给一个数字，想知道停了谁得翻库或跑脚本 —— 用户反馈过这个不便）
+                result.deactivated_users.append(f"{u.full_name or u.username}（{u.username}）")
     elif feishu_accounts:
         result.details.append({
             "skipped_deactivate": f"本轮 {len(seen_open_ids)} 人 / 库内 {len(feishu_accounts)} 人"
@@ -996,12 +1002,19 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
         })
 
     db.commit()
+    # 审计详情里带上被停用的人名（最多列 10 个，避免某次范围异常时把日志撑爆）：
+    # 出事回查时，日志本身就能回答"当时停了谁"。
+    deact_desc = ""
+    if result.deactivated_users:
+        names = "、".join(result.deactivated_users[:10])
+        more = f" 等 {len(result.deactivated_users)} 人" if len(result.deactivated_users) > 10 else ""
+        deact_desc = f"（{names}{more}）"
     write_operation_log(
         db, current, "feishu_sync", "admin",
         f"飞书同步: 部门 {result.dept_total} 个（新建 {result.dept_created} / 匹配 {result.dept_matched}）, "
         f"用户 总数 {result.total}, 新建 {result.created}, 更新 {result.updated}, "
         f"改名 {result.renamed}, 合并手工账号 {result.merged}, "
         f"初始口令对齐 {aligned_password}, "
-        f"停用 {result.deactivated}, 失败 {result.failed}",
+        f"停用 {result.deactivated}{deact_desc}, 失败 {result.failed}",
     )
     return result
