@@ -290,9 +290,17 @@
           </div>
         </el-form-item>
         <el-form-item label="负责人">
-          <el-select v-model="reqForm.owner_id" filterable clearable placeholder="可选（负责人可自行填写评估）"
+          <el-select v-model="reqForm.owner_id" filterable clearable :loading="usersLoading"
+                     placeholder="可选（负责人可自行填写评估）"
                      style="width: 100%" @visible-change="(v) => v && ensureUsers()">
-            <el-option v-for="u in picks" :key="u.id" :label="u.full_name || u.username" :value="u.id" />
+            <!-- 与「指派负责人」同一套：英文名（=用户名）+ 中文名两列。
+                必须显式传 :label —— Element 的本地过滤只比对 label，缺了就退化成比对
+                 数字 id，搜 "eric" 会显示"无匹配数据"（见 utils/userLabel.js 的源码说明）；
+                下拉是 teleport 到 body 的，所以两列用**行内样式**（scoped 样式够不着）。 -->
+            <el-option v-for="u in picks" :key="u.id" :value="u.id" :label="userLabel(u)">
+              <span style="display: inline-block; width: 150px">{{ u.username }}</span>
+              <span style="color: #909399; font-size: 12px">{{ u.full_name || '—' }}</span>
+            </el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="截止日期">
@@ -384,6 +392,8 @@ import { adminApi, baselineApi, systemApi } from '../api'
 import { useUserStore } from '../store/user'
 // 达标线 + 合规率档位/颜色：与首页共用同一份口径（别再各自写常量）
 import { BASELINE_TARGET, RATE_COLORS, rateColor, rateLevel } from '../utils/baseline'
+// 人员下拉的 label：英文名 + 中文名（与「指派负责人」同一套实现）
+import { userLabel } from '../utils/userLabel'
 
 const store = useUserStore()
 const canManage = computed(() => ['admin', 'secops'].includes(store.role))
@@ -485,6 +495,7 @@ const filters = reactive({})
 const openBaselines = reactive({})
 const autoOpened = {}
 let usersLoaded = false
+const usersLoading = ref(false)
 const picks = ref([])
 
 // 列表筛选：状态 + 关键词（数据本就全量在前端，零后端改动）
@@ -771,7 +782,17 @@ function isOverdue(r) {
 async function ensureUsers() {
   if (usersLoaded) return
   usersLoaded = true
-  try { picks.value = (await adminApi.userPicks()).data } catch { picks.value = [] }
+  usersLoading.value = true
+  try {
+    picks.value = (await adminApi.userPicks()).data || []
+  } catch (e) {
+    // 失败不算"已加载"：下次打开弹窗还能重试。
+    // 错误必须报出来 —— 空 catch 时接口 403 只会表现为"下拉是空的"，看不出是权限问题。
+    usersLoaded = false
+    ElMessage.error(e.response?.data?.detail || '加载人员列表失败')
+  } finally {
+    usersLoading.value = false
+  }
 }
 
 // ============ 基线模板库 ============
