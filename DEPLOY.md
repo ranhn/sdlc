@@ -192,6 +192,8 @@ crontab -e
 | `FEISHU_NOTIFY` | - | 飞书指派通知开关，默认 `1`；设 `0` 关闭。需开通 `im:message:send_as_bot` 权限 + 启用「机器人」应用能力并发布版本 |
 | `PUBLIC_BASE_URL` | - | 飞书通知深链/按钮用的**对外地址**（如 `https://sdlc.vesync.cn`）。不配则取操作人访问地址，可能内网不可达。改完必须 `docker compose up -d --force-recreate sdlc`（env_file 在容器创建时固化，`restart` 不生效） |
 | `FEISHU_DEFAULT_PASSWORD` | - | 飞书同步账号的初始密码（默认 `Aa123456`）。仅作用于从没登录过的账号，指派通知会随卡片发给本人，首登强制改密 |
+| `FEISHU_SYNC_WEEKLY` | - | 飞书通讯录**每周定时同步**开关，默认开。与手动同步共用同一份实现和同一把锁；"本周已同步过"（含手动）不再重复跑；漏跑会自动补 |
+| `FEISHU_SYNC_WEEKDAY` / `FEISHU_SYNC_HOUR` | - | 定时同步的星期几（ISO 1=周一）与小时数（**北京时间**），默认 `1` / `8` = 每周一 08:00 |
 | `LOG_LEVEL` | - | 应用日志级别，默认 `INFO`。`INFO` 会记录「飞书通知已发送/失败」「飞书同步: …停用 N」等排查线索；`DEBUG` 细查 / `WARNING` 降噪 |
 | `COMPLIANCE_REGIONS` | - | 威胁建模报告「合规影响面」启用哪些法规地区，默认 `US,EU`；需要境内条目写成 `US,EU,CN` |
 

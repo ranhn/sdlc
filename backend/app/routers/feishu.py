@@ -746,11 +746,47 @@ def get_config(current: User = Depends(get_current_user)):
     )
 
 
+# ============ 同步入口（手动 / 定时共用）============
+class SyncInProgress(Exception):
+    """已有一轮同步正在进行 —— 由调用方决定怎么处理（手动→409 提示，定时→跳过本轮）。"""
+
+
+# 手动与定时**共用**一把锁。为什么不用数据库锁：这是单进程 uvicorn（见 backend/Dockerfile
+# 的 CMD，没有 --workers），进程内一把 asyncio.Lock 足够；将来若改成多 worker，
+# 必须换成 DB 锁或把调度挪到独立进程，否则会 N 倍重复同步。
+SYNC_LOCK = asyncio.Lock()
+
+
+async def run_feishu_sync(db: Session, operator: User | None = None, *, trigger: str = "手动"):
+    """同步飞书通讯录 → 本地（**唯一实现**：手动按钮与定时任务都走这里）。
+
+    为什么要收敛成一个入口：手动和定时如果各写一份，迟早出现"手动修了某个坑、定时没修"
+    （比如安全阀、停用判定、初始口令对齐）—— 那些逻辑正是最容易改的地方。
+
+    Args:
+        operator: 触发人；定时任务传 None（审计日志里记成"定时任务"）
+        trigger: 触发方式，写进审计日志（区分"谁在什么时候、以什么方式同步的"）
+    """
+    if SYNC_LOCK.locked():
+        raise SyncInProgress()
+    async with SYNC_LOCK:
+        return await _sync_users_impl(db, operator, trigger=trigger)
+
+
 @router.post("/sync", response_model=FeishuSyncResult)
 async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
-    """从飞书拉取用户并同步到本地。"""
+    """手动「从飞书同步」（超级管理员）。定时任务走 run_feishu_sync 的同一份实现。"""
     if current.role is None or current.role.code != "admin":
         raise HTTPException(status_code=403, detail="仅超级管理员可操作")
+    try:
+        return await run_feishu_sync(db, current, trigger="手动")
+    except SyncInProgress:
+        # 点两次按钮 / 撞上定时任务时给个明确提示，而不是让两个同步同时拉 1600 人
+        raise HTTPException(status_code=409, detail="已有一次同步正在进行，请稍后再试")
+
+
+async def _sync_users_impl(db: Session, operator: User | None = None, *, trigger: str = "手动"):
+    """同步实现主体（不直接对外暴露；调用请走 run_feishu_sync，才能吃到并发锁）。"""
     cfg = _get_config()
     if not (cfg["app_id"] and cfg["app_secret"]):
         raise HTTPException(status_code=400, detail="飞书配置未启用（FEISHU_APP_ID / FEISHU_APP_SECRET）")
@@ -1010,11 +1046,15 @@ async def sync_users(db: Session = Depends(get_db), current: User = Depends(get_
         more = f" 等 {len(result.deactivated_users)} 人" if len(result.deactivated_users) > 10 else ""
         deact_desc = f"（{names}{more}）"
     write_operation_log(
-        db, current, "feishu_sync", "admin",
-        f"飞书同步: 部门 {result.dept_total} 个（新建 {result.dept_created} / 匹配 {result.dept_matched}）, "
+        db, operator, "feishu_sync", "admin",
+        # 带上触发方式：定时任务的操作日志如果和手动长得一样，事后根本分不清
+        # "这次是谁触发的"（定时任务没有登录用户，username 单独给）
+        f"飞书同步（{trigger}）: 部门 {result.dept_total} 个（新建 {result.dept_created} / 匹配 {result.dept_matched}）, "
         f"用户 总数 {result.total}, 新建 {result.created}, 更新 {result.updated}, "
         f"改名 {result.renamed}, 合并手工账号 {result.merged}, "
         f"初始口令对齐 {aligned_password}, "
         f"停用 {result.deactivated}{deact_desc}, 失败 {result.failed}",
+        # 定时任务没有登录用户 → 显式给个操作者名，别落成 "anonymous"
+        username=operator.username if operator else "定时任务",
     )
     return result

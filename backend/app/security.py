@@ -61,10 +61,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # ============ 操作审计 ============
 def write_operation_log(db: Session, user: User | None, action: str,
-                        module: str, detail: str | None = None):
+                        module: str, detail: str | None = None,
+                        username: str | None = None):
+    """写一条操作审计。
+
+    ``username`` 用于**没有登录用户**的操作（定时任务）：不传时沿用原行为
+    （有 user 取 user.username，没有则 "anonymous"）。定时任务若不动它，
+    日志里会落成 anonymous —— 事后看不出是"系统自动跑的"还是"某个匿名请求"。
+    """
     log = OperationLog(
         user_id=user.id if user else None,
-        username=user.username if user else "anonymous",
+        username=username or (user.username if user else "anonymous"),
         action=action,
         module=module,
         detail=detail,

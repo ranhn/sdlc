@@ -46,6 +46,9 @@
            tight-table（全局样式，见 src/styles/main.css）：单元格不换行 + 内边距 12→6px；
            配合表级 show-overflow-tooltip —— 姓名/邮箱/部门这些"读全才有意义"的字段都在
            同一行显示，实在过长的（超长部门名等）截断后 hover 能看全。 -->
+      <!-- 表格按后端顺序（ID 升序）渲染；**只有「禁用」视图**会按「最近同步」倒序重排，
+           原因见 sortedList 的说明。列表是"全量拉回 + 前端切片分页"，所以任何排序都必须在
+           切页之前做（Element 内置排序只排当前页那 12 行），这里统一在 sortedList 里完成。 -->
       <el-table :data="pagedList" v-loading="loading" stripe
                 class="tight-table" show-overflow-tooltip>
         <!-- ID 列显示"从 0 开始的连续序号、跨页递增"，而不是数据库主键：
@@ -77,7 +80,7 @@
             <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '启用' : '禁用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近同步" width="142">
+        <el-table-column prop="last_synced_at" label="最近同步" width="142">
           <template #default="{ row }"><span class="muted">{{ formatSyncTime(row.last_synced_at) }}</span></template>
         </el-table-column>
         <el-table-column label="操作" width="255">
@@ -242,9 +245,34 @@ const emptyTip = computed(() => {
   if (statusFilter.value === 'active') return '没有已启用的账号'
   return '暂无用户'
 })
+/**
+ * 排序只做一件事：「禁用」视图按「最近同步」倒序，其余视图保持后端顺序（ID 升序）。
+ *
+ * 为什么只有禁用视图需要排：被禁用 / 掉出同步范围的账号，"最近同步"停在各自**最后一次被
+ * 看见的时刻**，彼此不同（实测两批：09-21 07:28 与 09-22 01:48）—— 按它排才看得出谁是什么
+ * 时候掉的、哪批掉的。而"全部 / 启用"里 1614 个同步账号的时间戳全部落在**同一次同步的
+ * 同一秒**内（只有微秒差异，界面显示到分钟，全是 18:36）→ 按它排等于按"飞书返回顺序"排，
+ * 看着随机（某一页全是采购部就是这么来的），所以那两个视图不排 —— 保持大家熟悉的 ID 顺序
+ * （admin 在第 0 位）。
+ *
+ * 必须在**切页之前**排：列表是"全量拉回 + 前端切片分页"，对当前页排只会得到
+ * "看着排了、翻页又乱"的假象。
+ */
+const sortedList = computed(() => {
+  if (statusFilter.value !== 'disabled') return filteredList.value
+  const rows = [...filteredList.value]
+  rows.sort((a, b) => {
+    // 没有同步时间的（手工账号：admin/secops/dev/trainer）算 0 → 恒排最后
+    const ta = a.last_synced_at ? Date.parse(a.last_synced_at) : 0
+    const tb = b.last_synced_at ? Date.parse(b.last_synced_at) : 0
+    return tb - ta                        // 最近被看见的在前
+  })
+  return rows
+})
+
 const pagedList = computed(() => {
   const start = (page.value - 1) * PAGE_SIZE
-  return filteredList.value.slice(start, start + PAGE_SIZE)
+  return sortedList.value.slice(start, start + PAGE_SIZE)
 })
 
 /** ID 列：从 0 开始、跨页连续递增（第 1 页 0~11、第 2 页 12~23…） */
