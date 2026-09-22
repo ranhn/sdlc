@@ -5,8 +5,8 @@
 # 默认账号：admin / admin123（部署后立即修改！）
 # ============================================
 
-version: "3.8"
-
+# 注：不再写 `version: "3.8"` —— Compose V2 已废弃该字段，留着只会在每次
+# `docker compose` 命令上打一条 "the attribute `version` is obsolete" WARN。
 services:
   # ---- 后端 API ----
   sdlc:
@@ -73,7 +73,10 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/nginx-health"]
+      # 必须用 127.0.0.1 而不是 localhost：容器内 localhost 可能先解析到 IPv6 ::1，
+      # 而 nginx 只监听 IPv4（listen 80）→ wget 连 ::1 失败 → 容器一直显示 unhealthy
+      # （实测过：服务其实完全正常，只是健康检查把自己判死了）。
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/nginx-health"]
       interval: 30s
       timeout: 5s
       retries: 3
