@@ -44,13 +44,15 @@
 
 | 特性 | 说明 |
 |---|---|
-| **一体化部署** | 一条 `docker compose up` 命令，对外仅暴露 8000 端口 |
+| **一体化部署** | 一条 `docker compose up` 命令，Nginx 终止 HTTPS，对外仅暴露 80 / 443 |
 | **AI 威胁建模** | DFD 可视化 + LLM 智能分析（OpenAI 兼容协议，可对接私有模型） |
 | **DFD 评审** | 内置规则引擎，自动识别缺失的信任边界/数据流 |
 | **威胁评分** | 确定性严重度矩阵（属性修正）+ STRIDE-AI 下的 DREAD 五维评分（0~50）|
+| **合规影响面** | 按美国 / 欧洲法规域输出影响面，并区分「适用 / 不适用」（不代表合规结论） |
 | **结果导出** | 支持 Markdown / JSON(Threat Dragon v2) / CSV / DOCX 四种格式导出 |
+| **飞书集成** | 通讯录同步（离职自动停用账号）+ 漏洞流转消息通知（指派 / 驳回 / 复测等） |
 | **审计完备** | 所有写操作自动记录审计日志（含 IP、UA、操作前后值） |
-| **可观测** | 健康检查 + 邮件告警 + 磁盘清理 cron（脚本开箱即用） |
+| **可观测** | 应用日志 + 健康检查 + 邮件告警 + 磁盘清理 cron（脚本开箱即用） |
 | **可备份** | 一键备份/恢复 SQLite 数据库（详见 `BACKUP.md`） |
 
 ---
@@ -73,7 +75,7 @@
 │  │   admin/logs)        │  │                          │ │
 │  └──────────────────────┘  └──────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────┐ │
-│  │  静态前端托管（构建后由 FastAPI 直接 serve）       │ │
+│  │  静态前端托管（构建后由 Nginx / FastAPI 直接 serve）│ │
 │  └────────────────────────────────────────────────────┘ │
 └──────────────────────────┬──────────────────────────────┘
                            │ SQLAlchemy ORM
@@ -85,7 +87,8 @@
 
 **关键设计**：
 - **单进程**：业务与威胁建模共用一个 FastAPI 进程，共享 JWT、CORS、配置
-- **静态托管**：前端 `npm run build` 产物由 FastAPI 直接托管，无需 Nginx（生产可加 Nginx 做 HTTPS 卸载）
+- **静态托管**：前端 `npm run build` 产物由 Nginx 托管；后端 8000 只在容器网络内暴露，
+  对外由 Nginx 的 80 / 443 承担（HTTPS 在 Nginx 终止，80 自动跳 443）
 - **统一认证**：`/api/auth/login` 签发 JWT，前端 axios 自动附带 `Authorization: Bearer <token>`
 
 ---
@@ -100,9 +103,9 @@
 | 漏洞扫描 | `/scan` | SBOM 组件、CVE 情报库、扫描任务、结果转单 |
 | 安全基线 | `/baseline` | 合规率、检查项评估、分类管理 |
 | 安全培训 | `/training` | 课程、学习进度、题库 |
-| 人员管理 | `/users` | 用户/角色/部门（仅管理员） |
+| 人员管理 | `/users` | 用户/角色/部门、启停筛选、飞书同步（仅管理员） |
 | 审计日志 | `/audit` | 操作审计（仅管理员） |
-| AI 威胁建模 | `/threat-modeling` | DFD 数据流图、威胁识别、AI 分析、结果导出 |
+| AI 威胁建模 | `/threat-modeling` | DFD 数据流图、威胁识别、AI 分析、合规影响面、结果导出 |
 
 ---
 
@@ -123,13 +126,15 @@ vi .env   # 至少修改 SECRET_KEY（openssl rand -hex 32）
 docker compose up -d --build
 
 # 4. 访问
-# 浏览器打开 http://<服务器IP>:8000
+# 浏览器打开 http://<服务器IP>（会自动跳转 https，自签证书需点「继续访问」）
+# 生产域名：把证书放进 nginx/ssl/ 并取消 docker-compose.yml 里的挂载注释
 # 默认账号：admin / admin123（首次登录后请立即修改）
 ```
 
 **部署后必做**：
 - 修改默认密码（`admin / admin123`、`secops / sec123`）
 - 修改 `SECRET_KEY`（生产环境必须）
+- 配置 `PUBLIC_BASE_URL`（飞书通知里的链接基地址）
 - 配置 SMTP（用于告警邮件）
 
 ### 本地开发模式
@@ -211,8 +216,8 @@ sdlc-platform/
 │   ├── app/                    # SDLC 业务（auth/vulns/scan/training/baseline/admin/logs）
 │   ├── threat/app/             # AI 威胁建模子应用（挂载到 /threat）
 │   ├── scripts/                # 运维脚本（baseline 导入等）
-│   ├── main.py                 # 统一入口
-│   ├── app_entry.py            # ASGI 应用工厂
+│   ├── main.py                 # 统一入口（加载 .env + 初始化日志）
+│   ├── app/app_entry.py        # 业务子应用入口
 │   ├── requirements.txt
 │   ├── threat/requirements.txt
 │   ├── Dockerfile
@@ -227,7 +232,7 @@ sdlc-platform/
 │   │   └── main.js
 │   ├── package.json
 │   └── vite.config.js
-├── nginx/                      # 可选：Nginx 反向代理（HTTPS 卸载）
+├── nginx/                      # Nginx 反向代理 + 前端静态托管（HTTPS 终止）
 ├── scripts/                    # 运维脚本（告警/清理）
 ├── docker-compose.yml          # 一键部署
 ├── healthcheck.sh              # 健康检查
@@ -237,6 +242,7 @@ sdlc-platform/
 ├── .env.example                # 环境变量模板
 ├── .env.monitor.example        # 监控告警配置模板
 ├── .gitignore
+├── .dockerignore
 ├── README.md                   # 本文件
 ├── API.md                      # API 接口文档
 ├── ARCHITECTURE.md             # 架构设计文档
@@ -302,10 +308,10 @@ LLM_MODEL=your-model-name
 <summary><b>Q6: 怎么升级？</b></summary>
 
 ```bash
-git pull
-docker compose up -d --build
-# 数据库会自动迁移（SQLAlchemy create_all）
+./backup.sh        # 建议先备份
+./update.sh        # 拉代码 + 重建 + 健康检查
 ```
+手工等价步骤：`git pull && docker compose up -d --build`（数据库会自动迁移）。
 </details>
 
 ---

@@ -61,15 +61,18 @@ bash deploy.sh
 
 ```bash
 cd /opt/sdlc-platform
+./backup.sh        # 生产建议先备份（出问题可 restore 回去）
 ./update.sh
 ```
 
 `update.sh` 会自动：
-1. `git pull` 拉取最新代码
+1. `git fetch` + `git reset --hard <远端分支>` 对齐代码（**会覆盖仓库内的本地改动**，
+   所以别在服务器上直接改仓库文件；`.env` / `backups/` / `data/` 不受影响）
 2. `docker compose up -d --build` 重新构建并启动
 3. 健康检查通过即完成
 
 > 💡 数据库结构和数据**不会被破坏**（代码在 image 里、数据在 volume 里）。
+> ⏱ 重建容器会有 **1~3 分钟中断**，生产建议低峰期执行。
 
 ## 数据备份
 
@@ -114,21 +117,57 @@ mkdir -p nginx/ssl
 cp /etc/letsencrypt/live/sdlc.yourcompany.com/fullchain.pem nginx/ssl/
 cp /etc/letsencrypt/live/sdlc.yourcompany.com/privkey.pem nginx/ssl/
 
-# 4. 重启 Nginx
-docker compose restart nginx
+# 4. 让 Nginx 用上证书（首次要 --force-recreate：新加的卷挂载 restart 不生效）
+docker compose up -d --force-recreate nginx
 ```
 
 ### 方式 B：内网自签证书
 
 ```bash
 mkdir -p nginx/ssl
-openssl req -x509 -nodes -days 3650 \
+openssl req -x509 -nodes -days 825 \
   -newkey rsa:2048 \
   -keyout nginx/ssl/privkey.pem \
   -out nginx/ssl/fullchain.pem \
-  -subj "/CN=sdlc.yourcompany.com"
-docker compose restart nginx
+  -subj "/C=CN/O=Company/CN=sdlc.yourcompany.com" \
+  -addext "subjectAltName=DNS:sdlc.yourcompany.com"   # 必须带 SAN，否则浏览器报"域名不匹配"
+docker compose up -d --force-recreate nginx
 ```
+> 自签只解决"加密"，浏览器仍会提示不受信任（同事首次访问要点「继续访问」）；
+> 想让内部同事零告警：把 `fullchain.pem` 作为受信任根证书装到各机器，或让 IT 用域策略下发。
+
+### 方式 C：内网域名 + 公司内部 CA 证书（内网访问推荐）
+
+内网域名（如 `sdlc.yourcompany.com` 只在内网解析）**申请不到公网 CA 证书**（Let's Encrypt
+需要公网可验证）；正规做法是让 IT 用**公司内部 CA** 签发一张该域名的服务器证书：
+
+```bash
+# 向 IT/运维申请：CN/SAN = sdlc.yourcompany.com，取回 fullchain.pem + privkey.pem
+mkdir -p /opt/sdlc-platform/nginx/ssl
+# 把两个 pem 放进去，然后：
+cd /opt/sdlc-platform
+vim docker-compose.yml     # 取消 nginx 服务下 `- ./nginx/ssl:/etc/nginx/ssl:ro` 的注释
+docker compose up -d --force-recreate nginx
+```
+同事机器只要信任公司根 CA（域内一般已下发），访问就**完全没有告警**。
+
+> ⚠️ 两个容易踩的点：
+> ① 端口要对内网可达 —— 本机确认 `ss -lntp | grep :443` 有 docker-proxy 监听；
+>    若走运维侧的反向代理/内网防火墙，需请运维放行到本机 443。
+> ② 改了 `docker-compose.yml` 的挂载必须用 `--force-recreate`（`restart` 不会重新套用卷配置，
+>    现象是"证书放好了页面还是旧证书自签告警"）。
+
+> 🔀 **80 会强制跳 443**（Nginx 默认行为），只留三条走明文：
+> `/.well-known/acme-challenge/`（证书续期）、`/nginx-health`（容器健康检查）、
+> `/api/health`（`update.sh` 与外部监控）—— 这三条一跳转就"看起来健康"但实际没验到后端。
+> 其余路径（含 SPA、`/api/*`、`/threat/*`）一律 `301 → https://<你访问的域名><原路径>`。
+>
+> ⚠️ 如果贵司运维的代理是「**TLS 终止 + 回源到本机 80**」（而不是 TLS 透传到 443），
+> 这个跳转会形成"浏览器 https → 代理 → 本机 80 → 301 → 循环"。这种情况请告诉开发，
+> 改用 `X-Forwarded-Proto` 判据（代理已终结 TLS 时不再跳）。**建议先与运维确认代理方式。**
+
+> 💡 暂不建议加 HSTS：证书还是自签时，HSTS 会让浏览器**无法再点「继续访问」**（只能清站点数据），
+> 等真证书装好、验证一段时间后再考虑。
 
 ### 自动续期
 
@@ -153,6 +192,8 @@ crontab -e
 | `FEISHU_NOTIFY` | - | 飞书指派通知开关，默认 `1`；设 `0` 关闭。需开通 `im:message:send_as_bot` 权限 + 启用「机器人」应用能力并发布版本 |
 | `PUBLIC_BASE_URL` | - | 飞书通知深链用的对外地址（如 `https://sdlc.example.com`）。不配则取操作人访问地址，可能内网不可达 |
 | `FEISHU_DEFAULT_PASSWORD` | - | 飞书同步账号的初始密码（默认 `Aa123456`）。仅作用于从没登录过的账号，指派通知会随卡片发给本人，首登强制改密 |
+| `LOG_LEVEL` | - | 应用日志级别，默认 `INFO`。`INFO` 会记录「飞书通知已发送/失败」「飞书同步: …停用 N」等排查线索；`DEBUG` 细查 / `WARNING` 降噪 |
+| `COMPLIANCE_REGIONS` | - | 威胁建模报告「合规影响面」启用哪些法规地区，默认 `US,EU`；需要境内条目写成 `US,EU,CN` |
 
 ## 故障排查
 

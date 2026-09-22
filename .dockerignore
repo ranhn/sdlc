@@ -1,0 +1,67 @@
+# ============================================================
+# Docker 构建上下文排除清单（两个镜像共用仓库根目录作为 context）
+#
+# 为什么必须有这个文件：
+#   两份 Dockerfile 都用了「整目录 COPY」——
+#     · backend/Dockerfile :  COPY backend/  ./backend/     （运行镜像）
+#     · frontend/Dockerfile:  COPY frontend/ .              （前端构建阶段）
+#   → 没被排除的东西会**真的进镜像**（不只是占体积）：
+#     · backend/threat/app/services/.llm_runtime.json —— 存着真实的 LLM API Key
+#     · .env —— SECRET_KEY / 飞书 App Secret / 数据库口令
+#     · backend/*.db —— 业务数据（含用户、漏洞）
+#     本机构建镜像时这些会被烧进镜像层，镜像一旦外传等于泄密。
+#   附带收益：构建上下文从「含 node_modules 的数万文件」降到几百 KB，构建更快；
+#   也避免把 Windows 版依赖 COPY 进 Linux 构建阶段（平台不对，且会覆盖容器内装的依赖）。
+#
+# ⚠️ 维护约定：改这里前先看 Dockerfile 到底 COPY 了什么 ——
+#     backend/Dockerfile : backend/requirements.txt、backend/、
+#                          backend/static_new（来自构建阶段，不受本文件影响）
+#     frontend/Dockerfile: frontend/package.json、frontend/package-lock.json、frontend/、
+#                          nginx/nginx.conf、/usr/share/nginx/html 的 dist（来自构建阶段）
+#   上面这些路径**不能**被下面的规则排除。
+#   （`COPY --from=<构建阶段>` 取的是镜像层，与本文件无关。）
+#
+# 写法说明：**所有"任意层级"的规则都显式写成 `**/xxx`**，不依赖"无斜杠模式会自动匹配
+#   任意层级"这一隐式行为 —— 规则长什么样，命中什么，一眼能看懂。
+#
+# 本文件只影响「构建上下文」，**不会删除本地任何文件**。
+# ============================================================
+
+# ---------- 机密 ----------
+**/.env
+**/.env.*
+!**/.env.example
+**/.env.monitor
+backend/threat/app/services/.llm_runtime.json
+nginx/ssl/
+nginx/certbot/
+
+# ---------- 运行时数据（compose 用 volume 挂载，镜像里不需要）----------
+**/*.db
+**/*.sqlite3
+backend/data/
+backend/uploads/
+backend/threat/data/
+**/logs/
+
+# ---------- 依赖与构建产物（镜像内自己装 / 自己构建）----------
+frontend/node_modules/
+frontend/dist/
+backend/static_new/
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# ---------- 版本库与开发工具目录 ----------
+**/.git/
+**/.github/
+**/.codebuddy/
+**/.vscode/
+**/.idea/
+**/*.log
+**/*.bak
+**/backups/

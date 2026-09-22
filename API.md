@@ -60,24 +60,43 @@
 | PATCH | `/api/vulns/{id}` | 修改漏洞 | 提交人 / secops+ |
 | DELETE | `/api/vulns/{id}` | 删除漏洞 | admin / secops |
 | POST | `/api/vulns/{id}/action/{action}` | 状态机动作 | 视动作 |
-| POST | `/api/vulns/{id}/reject` | 驳回（带原因） | admin / secops |
-| POST | `/api/vulns/{id}/assign` | 指派处理人 | admin / secops |
+| POST | `/api/vulns/{id}/reject` | 驳回（带原因） | admin / secops / 该漏洞负责人 |
+| POST | `/api/vulns/{id}/assign` | 指派 / 转派处理人 | admin / secops / 该漏洞当前负责人 |
 | POST | `/api/vulns/{id}/comments` | 添加评论 | 已登录 |
 | GET | `/api/vulns/{id}/comments` | 评论列表 | 已登录 |
 | POST | `/api/vulns/{id}/attachments` | 上传截图（multipart） | 已登录 |
 | GET | `/api/vulns/{id}/attachments` | 附件列表 | 已登录 |
 | DELETE | `/api/vulns/{id}/attachments/{aid}` | 删除附件 | 提交人 / secops+ |
 
-**动作 action 枚举：** `confirm | reject | ignore | start_fix | finish_fix | pass_retest | close`
+**动作 action 枚举：** `confirm | reject | start_fix | finish_fix | pass_retest | fail_retest | close`
+
+> 注：`ignore`（忽略）**已从状态机移除**（页面上从来没有该入口），`ignored` 仅作为历史状态兼容显示。
 
 **状态机：**
 ```
-pending → confirmed → fixing → retest → fixed → closed
-   ↓          ↓
-rejected   ignored
+draft → pending → confirmed → fixing → retest → fixed → closed
+                            ↑        │
+                            └────────┘ fail_retest（复测不通过，打回重修）
+           │
+           └─ reject → rejected
 ```
 
 每个 action 的角色限制见后端 `app/state_machine.py` 的 `ACTION_RULES`。
+
+**动作的飞书通知对象**（`vulns._STATUS_RECIPIENTS`）：
+
+| action | 通知谁 | 备注 |
+|---|---|---|
+| `confirm` | 提单人 | —— |
+| `reject` | 提单人 | 卡片含**驳回原因** |
+| `start_fix` | —— | 刻意不发（避免噪音） |
+| `finish_fix` | 提单人 | 提示进入待复测 |
+| `pass_retest` | 提单人 + 负责人 | —— |
+| `fail_retest` | 负责人 + 提单人 | 卡片含**不通过原因**；状态回到 `fixing` |
+| `close` | 提单人 + 负责人 | —— |
+| `assign`（指派/转派） | 新负责人 | 首次登录账号会附上初始口令 |
+
+> 操作人本人不会被通知；收件人是手工账号（无 `feishu_open_id`）时跳过并在日志记一行。
 
 **动作请求体（可选）：**
 ```json
