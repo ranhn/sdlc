@@ -24,6 +24,7 @@ from ..schemas import (
 from ..security import get_current_user, write_operation_log
 from ..state_machine import STATUS_NAMES, TRANSITIONS, validate_action
 from ..utils import network_clock as nc
+from ..utils.public_url import public_base_url, resolve_request_base_url
 from ..utils.vuln_csv import render_vulns_csv
 from ..utils.vuln_docx import SEV_ZH, render_vulns_docx
 # 飞书消息下发（指派通知）。import 的是模块而不是函数：调用点写成
@@ -192,38 +193,9 @@ def _assignee_notice_card(v: Vuln, assignee: User, operator: User, base_url: str
     }
 
 
-def _notify_base_url(request: Request | None) -> str:
-    """飞书通知里深链要用的基地址。
-
-    与 CSV/Word 导出的 ``_resolve_base_url`` 有一个**关键区别**：导出文件是操作人自己下载的，
-    用"他此刻访问的地址"永远是对的；而通知是发给**另一个人**的，必须是**别人也点得开**的地址。
-    所以这里让显式配置 ``PUBLIC_BASE_URL`` 优先（生产配成对外域名），没配才退回请求上下文
-    （Referer → Origin → CORS_ORIGINS → 请求自身 host，与导出一致）。
-
-    没配、且解析出来的是回环/内网地址时打一条 WARNING：页面上的现象是"收件人点链接打不开"，
-    这条日志把原因直接指到配置上（实测踩过：本机 127.0.0.1:5173 的链接发给了外部同事）。
-    """
-    import os
-    from urllib.parse import urlsplit
-
-    explicit = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-    if explicit:
-        return explicit
-    if request is None:
-        return ""
-    base = _resolve_base_url(request)
-    try:
-        host = (urlsplit(base).hostname or "").lower()
-    except Exception:  # noqa: BLE001
-        host = ""
-    # 粗判即可：这些地址只在本机/内网可达，收件人在外面就点不开
-    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1") or \
-            host.startswith(("127.", "10.", "192.168.", "172.1", "172.2", "172.3")):
-        logger.warning(
-            "指派通知里的链接是内网/本机地址（%s）—— 收件人在别的网络下点不开。"
-            "生产环境请配置 PUBLIC_BASE_URL=https://<对外域名>", base,
-        )
-    return base
+# 通知链接的基地址解析已收敛到 utils/public_url.py（public_base_url）：
+# 通知的读者是**另一个人**，必须用对外域名 —— 那里同时负责"内网地址 WARNING"与
+# "PUBLIC_BASE_URL 不是 https 时提醒"，与本文件里导出的那套口径刻意分开。
 
 
 def _notify_assignee(db: Session, v: Vuln, prev_assignee_id: int | None,
@@ -256,7 +228,7 @@ def _notify_assignee(db: Session, v: Vuln, prev_assignee_id: int | None,
             logger.info("飞书指派通知跳过：负责人 #%s（%s）无 open_id（非飞书同步账号）",
                         assignee.id, assignee.full_name or assignee.username)
             return
-        base_url = _notify_base_url(request)
+        base_url = public_base_url(request)
         # 该账号还没拿到可用密码（飞书同步来 + 从没改过密码）→ 通知里附上账号与初始口令；
         # 已改密的账号恒为 None（见 feishu.initial_password_for），不会把口令发给在用账号。
         initial_password = feishu_notify.initial_password_for(assignee)
@@ -400,7 +372,7 @@ def _notify_status_change(db: Session, v: Vuln, action: str, operator: User,
             return
         if not feishu_notify.notify_enabled():
             return
-        base_url = _notify_base_url(request)
+        base_url = public_base_url(request)
         # 负责人名字要显式查（Vuln 上没有 assignee 关系，见卡片函数说明）
         assignee = (db.query(User).filter(User.id == v.assignee_id).first()
                     if v.assignee_id else None)
@@ -621,40 +593,10 @@ def export_vulns(
         mine=mine, assigned_to_me=assigned_to_me, ids=ids,
     )
     if fmt == "csv":
-        # CSV 里的"详情链接"要用用户此刻访问的平台地址（见 _resolve_base_url）
-        return _export_csv(rows, base_url=_resolve_base_url(request))
+        # CSV 里的"详情链接"要用用户**此刻访问**的平台地址 —— 文件是他自己下载的，
+        # 与通知那套（对外域名）刻意分开，解析逻辑见 utils/public_url.py
+        return _export_csv(rows, base_url=resolve_request_base_url(request))
     return _export_docx(rows, exported_by=current.full_name, scope_desc=scope_desc)
-
-
-def _resolve_base_url(request: Request) -> str:
-    """解析导出文件里超链接要用的平台基地址（形如 https://sdlc.example.com）。
-
-    优先级（从"用户实际在用哪个地址"到"部署配置"）：
-      1. ``Referer``：导出必然发生在平台页面上（axios 的 blob 请求同源带 Referer），
-         取它的 origin 就是用户此刻访问的地址 —— 多域名 / 内外网双入口都自适应；
-      2. ``Origin``：部分客户端/代理会带（跨域 XHR 一定带）；
-      3. ``CORS_ORIGINS`` 的第一条：部署时配置的前端白名单（生产由 run_dev/容器注入）；
-      4. 请求自身的 scheme://host：生产环境前端由 FastAPI 托管（同源），此时一定正确。
-
-    为什么不写死域名：同一份代码要跑在本地、内网、多套部署环境上，写死必然有一处是错的。
-    """
-    for raw in (request.headers.get("referer"), request.headers.get("origin")):
-        if not raw:
-            continue
-        try:
-            from urllib.parse import urlsplit
-
-            parts = urlsplit(raw)
-            if parts.scheme and parts.netloc:
-                return f"{parts.scheme}://{parts.netloc}"
-        except Exception:  # noqa: BLE001
-            continue
-    import os
-
-    cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
-    if cors:
-        return cors[0].rstrip("/")
-    return str(request.base_url).rstrip("/")
 
 
 def _export_csv(rows: list[VulnOut], *, base_url: str | None = None):

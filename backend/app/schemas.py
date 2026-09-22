@@ -565,3 +565,83 @@ class BaselineResultOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ---------- 基线需求（某系统绑定了哪几个基线）----------
+class BaselineTypeOut(BaseModel):
+    """基线类型目录项（"新增需求"弹窗的勾选列表）。
+
+    item_count/category_count 是给用户**当场看到工作量**的：固件开发基线 50 项、
+    APP 开发基线 15 项，勾下去之前就该知道差别。0 项的类型照样返回（前端置灰），
+    它就是"这批 Excel 还没导入"的信号。
+    """
+    key: str
+    label: str
+    item_count: int = 0
+    category_count: int = 0
+
+
+class BaselineRequirementCreate(BaseModel):
+    system_id: int
+    name: Optional[str] = None                  # 留空 → 后端生成「<系统名>-基线评估」
+    baseline_types: list[str] = Field(default_factory=list)
+    owner_id: Optional[int] = None
+    due_date: Optional[datetime] = None
+
+
+class BaselineRequirementUpdate(BaseModel):
+    """编辑需求：只改传了的字段（前端不传 = 不动）。
+
+    `due_date` 显式传 null 表示**清除**截止日期（exclude_unset 会把显式 null 视为"已设置"）。
+    """
+    name: Optional[str] = None
+    baseline_types: Optional[list[str]] = None
+    owner_id: Optional[int] = None
+    due_date: Optional[datetime] = None
+    status: Optional[str] = None                # in_progress / done
+
+
+class BaselineRequirementBaselineOut(BaseModel):
+    """需求里单个基线的完成情况（列表卡上一条 chip 的进度与计数）。
+
+    单独拿出来是因为"只有总数"看不出问题在哪：75 项里做了 8 项，可能是后端基线的
+    36 项全做了、安全需求基线的 39 项没动，也可能是反的 —— 展示粒度不同，结论完全不同。
+    """
+    type: str
+    label: str
+    total: int = 0
+    pass_count: int = 0
+    fail_count: int = 0
+    na_count: int = 0
+    pending_count: int = 0
+    compliance: float = 0.0
+    progress: float = 0.0
+
+
+class BaselineRequirementOut(BaseModel):
+    id: int
+    system_id: int
+    system_name: Optional[str] = None
+    name: str
+    baseline_types: list[str] = Field(default_factory=list)    # 已解析的 key（库里是 JSON 文本）
+    baseline_labels: list[str] = Field(default_factory=list)   # 展示名，前端不必再维护一份映射
+    owner_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    due_date: Optional[AwareDT] = None
+    status: str = "in_progress"
+    created_at: Optional[AwareDT] = None
+    baselines: list[BaselineRequirementBaselineOut] = Field(default_factory=list)
+    # ---- 统计：分母只算**本需求绑定范围**内的条目 ----
+    bound_items: int = 0        # 应评条目数（= 绑定基线下的全部条目）
+    pass_count: int = 0
+    fail_count: int = 0
+    na_count: int = 0
+    pending_count: int = 0
+    compliance: float = 0.0     # 合规率 = 通过 ÷ (应评 − 不适用)
+    progress: float = 0.0       # 进度 = 已评估 ÷ 应评
+
+
+class BaselineRequirementItemOut(BaselineResultOut):
+    """需求详情里的条目：在结果字段上补"属于哪个基线"，供详情按基线分组展示。"""
+    baseline_type: Optional[str] = None
+    baseline_label: Optional[str] = None

@@ -146,15 +146,34 @@ export const scanApi = {
 
 // ---------- 安全基线 ----------
 export const baselineApi = {
+  // 基线类型目录（5 个类型的 key/label + 各自条目数）。唯一的类型清单来源：
+  // 前端不再自己维护 typeNameMap，避免"后端加了类型、前端看不见"。
+  types: () => http.get('/baseline/types'),
   categories: (baselineType) => http.get('/baseline/categories', { params: { baseline_type: baselineType || undefined } }),
   createCategory: (data) => http.post('/baseline/categories', data),
-  items: (categoryId) => http.get('/baseline/items', { params: { category_id: categoryId || undefined } }),
+  // 检查项清单：params 可带 { category_id } 或 { baseline_type }（模板库抽屉按类型一次取全）
+  items: (params) => http.get('/baseline/items', { params }),
   createItem: (data) => http.post('/baseline/items', data),
   removeItem: (id) => http.delete(`/baseline/items/${id}`),
+  // 老口径统计（分母 = 系统数 × 全部条目数）。保留兼容，新页面请用 overview()。
   stats: (baselineType) => http.get('/baseline/stats', { params: { baseline_type: baselineType || undefined } }),
   systemItems: (systemId, baselineType) => http.get(`/baseline/systems/${systemId}/items`, { params: { baseline_type: baselineType || undefined } }),
   updateItem: (systemId, itemId, data) =>
     http.put(`/baseline/systems/${systemId}/items/${itemId}`, data),
+
+  // ---------- 需求（某系统绑定哪几个基线）----------
+  // 概览：按 (系统, 条目) 去重、按绑定范围算的合规率/进度（新口径）
+  overview: () => http.get('/baseline/requirements/overview'),
+  requirements: (params) => http.get('/baseline/requirements', { params }),
+  createRequirement: (data) => http.post('/baseline/requirements', data),
+  updateRequirement: (id, data) => http.put(`/baseline/requirements/${id}`, data),
+  removeRequirement: (id) => http.delete(`/baseline/requirements/${id}`),
+  // 需求详情：只返回**绑定范围内**的条目 + 已有结论（可按单个基线过滤）
+  requirementItems: (id, baselineType) =>
+    http.get(`/baseline/requirements/${id}/items`, { params: { baseline_type: baselineType || undefined } }),
+  // 需求范围内的评估（负责人可自评；后端会校验条目确实在绑定范围内）
+  updateRequirementItem: (id, itemId, data) =>
+    http.put(`/baseline/requirements/${id}/items/${itemId}`, data),
 }
 
 // ---------- 安全培训 ----------

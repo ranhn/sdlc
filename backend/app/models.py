@@ -375,3 +375,43 @@ class BaselineResult(Base):
 
     system = relationship("AssetSystem")
     item = relationship("BaselineItem")
+
+
+class BaselineRequirement(Base):
+    """基线需求：某个系统这一轮要落地的基线范围（勾选 5 个基线里的哪几个）。
+
+    为什么要有它：此前"系统需要满足哪些基线"根本没有数据载体 —— 页面把某个基线类型的
+    **全部条目**都算作每个系统的应评范围（`baseline_stats` 里 overall = 通过数 ÷
+    (系统数 × 全部条目数)），于是没做过基线的系统也在拉低整体合规率，而实际只做
+    APP + 后端两个基线的系统被要求补前端/固件的条目。需求表就是"范围"这件事的载体。
+
+    为什么评估结论不挂在需求上（而仍存 baseline_result）：
+      · 需求只表达"范围 + 责任人 + 截止时间 + 进度"，条目结论仍是"系统对该检查项的
+        当前状况" —— 同一系统重开一轮需求时沿用上次结论，同一检查项不必重复填一遍；
+      · 将来真要做"轮次对比"，应另加只追加的历史表，而不是给 baseline_result 加
+        requirement_id 去改它的 (system_id, item_id) 唯一键（老数据回填 + 页面选轮次
+        的成本远大于收益）。
+    """
+    __tablename__ = "baseline_requirement"
+
+    id = Column(Integer, primary_key=True, index=True)
+    system_id = Column(Integer, ForeignKey("asset_system.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    # JSON 数组文本，如 '["security_requirement", "backend_dev"]'。
+    # 用 JSON 而不是关联表：范围就是"一组枚举"，且读取时永远整体使用（不需要按单个
+    # baseline_type 反查需求），关联表只会多一次 join。解析统一走 baseline_catalog.parse_types。
+    baseline_types = Column(Text, nullable=False, default="[]")
+    owner_id = Column(Integer, ForeignKey("sys_user.id"), nullable=True)   # 需求负责人（可自评）
+    due_date = Column(DateTime, nullable=True)
+    status = Column(String(20), default="in_progress")                     # in_progress / done
+    created_at = Column(DateTime, default=nc.utcnow)
+    updated_at = Column(DateTime, default=nc.utcnow, onupdate=nc.utcnow)
+
+    system = relationship("AssetSystem")
+    owner = relationship("User")
+
+    @property
+    def type_keys(self) -> list:
+        """绑定基线的 key 列表（按目录顺序、已剔除脏值）—— 见 baseline_catalog.parse_types。"""
+        from .baseline_catalog import parse_types
+        return parse_types(self.baseline_types)

@@ -1,5 +1,5 @@
 """管理路由：用户/角色/部门/系统资产。"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from ..schemas import (
     ChangePasswordIn,
 )
 from ..security import get_current_user, hash_password, write_operation_log
+from ..utils.public_url import public_base_url
 # 飞书：初始口令口径（default_password）与发消息都得跟同步/通知共用同一份实现
 from . import feishu as feishu_notify
 
@@ -268,6 +269,7 @@ def change_user_password(user_id: int, data: ChangePasswordIn, db: Session = Dep
 @router.post("/users/{user_id}/reset-password")
 def reset_user_password(
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
@@ -291,19 +293,15 @@ def reset_user_password(
     if user.id == current.id:
         raise HTTPException(status_code=400, detail="不能在这里重置自己的密码（请用右上角「修改密码」）")
 
-    import os
-
     password = feishu_notify.default_password()      # 与同步建号同源，通知里发的才是真的
     user.password_hash = hash_password(password)
     user.must_change_password = True                 # 重置后同样强制首登改密
     db.commit()
     db.refresh(user)
 
-    # 登录链接的基地址：与通知同一口径（显式配置优先，其次前端白名单第一条）
-    base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-    if not base:
-        cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
-        base = cors[0].rstrip("/") if cors else ""
+    # 登录链接的基地址：与漏洞通知**同一口径**（PUBLIC_BASE_URL 优先 → 请求上下文 →
+    # CORS_ORIGINS 第一条），收敛在 utils/public_url.py，不再各写一份
+    base = public_base_url(request)
 
     notified, error = False, None
     open_id = (user.feishu_open_id or "").strip()

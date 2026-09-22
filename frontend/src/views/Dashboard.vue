@@ -62,8 +62,33 @@
       </el-col>
       <el-col :span="8">
         <el-card shadow="hover">
-          <template #header><span class="card-title">安全基线整体合规率</span></template>
-          <div ref="statusRef" class="chart-sm"></div>
+          <!-- 补充说明放**卡片头部**，不要塞进 ECharts 的标题：
+              之前把"（2 个系统已纳入 · 待评估 259 项）"写成了 gauge 的 name，那串文字画在
+               canvas 里、和中间的大数字挤在一起（看着像重影），而且卡片窄时还被裁掉。
+               现在图里只留数字，说明用 HTML 放在头部右侧，自然就不会重叠。 -->
+          <template #header>
+            <div class="card-head-row">
+              <span class="card-title">安全基线整体合规率</span>
+              <span class="card-sub">{{ baselineNote }}</span>
+            </div>
+          </template>
+          <!-- 小环 + 按系统的合规率（最差的在最上面）：
+               整体一个数字看不出问题在谁身上 —— 这张卡要能直接指出"哪个系统欠账"。
+               数据来自 /baseline/requirements/overview 的 systems（与基线页同一口径）。 -->
+          <div class="base-card">
+            <div ref="statusRef" class="base-gauge"></div>
+            <div class="base-systems">
+              <div v-if="baseSystems.length" class="bsys-caption">按系统合规率（低 → 高）</div>
+              <div v-for="s in baseSystems" :key="s.system_id" class="bsys"
+                   :title="`${s.system_name}：应评 ${s.bound_items} 项 · 通过 ${s.pass_count} / 不通过 ${s.fail_count} / 未评估 ${s.pending_count}`">
+                <span class="bsys-name">{{ s.system_name }}</span>
+                <span class="bsys-track"><i :style="{ width: s.barWidth + '%', background: s.color }" /></span>
+                <span class="bsys-pct" :style="{ color: s.color }">{{ s.compliance }}%</span>
+              </div>
+              <div v-if="!baseSystems.length" class="bsys-empty">尚未创建基线需求</div>
+              <div v-else-if="baseHidden" class="bsys-more">还有 {{ baseHidden }} 个系统未显示</div>
+            </div>
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -71,9 +96,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, reactive } from 'vue'
+import { ref, onMounted, onBeforeUnmount, reactive, computed } from 'vue'
 import * as echarts from 'echarts'
 import { dashboardApi, baselineApi } from '../api'
+// 达标线 + 合规率档位/颜色：与「安全基线」页共用同一份口径
+import { BASELINE_TARGET, rateColor } from '../utils/baseline'
 
 const trendRef = ref()
 const topRef = ref()
@@ -81,6 +108,17 @@ const sevRef = ref()
 const typeRef = ref()
 const statusRef = ref()
 const trendRange = ref(30)
+const baselineNote = ref('')          // 基线卡头部的补充说明（原本塞在图表里，会和大数字重叠）
+// 基线卡的"按系统"行（后端已按合规率升序返回：最差的在最前）
+const baseSystemsAll = ref([])
+const baseShown = 5                      // 卡片最多显示几个系统
+const baseSystems = computed(() => baseSystemsAll.value.slice(0, baseShown).map((s) => ({
+  ...s,
+  color: rateColor(s.compliance),      // 达标绿 / 接近橙 / 有问题红 / 未开始灰（共享口径）
+  // 极小值也给 3% 的可见宽度：否则 1~2% 在这么细的条上等于"没画"（看着像数据丢了）
+  barWidth: s.compliance > 0 ? Math.max(s.compliance, 3) : 0,
+})))
+const baseHidden = computed(() => Math.max(0, baseSystemsAll.value.length - baseShown))
 let charts = []
 let trendChart = null
 
@@ -176,7 +214,7 @@ async function loadAndRender(t, top, sev, ty, st) {
       dashboardApi.trend({ days: 30 }),
       dashboardApi.distribution(),
       dashboardApi.top(),
-      baselineApi.stats(),
+      baselineApi.overview(),   // 与基线页同一口径（按需求绑定范围，见上方注释）
     ])
     const o = ov.data
     statCards[0].value = o.total
@@ -230,30 +268,45 @@ async function loadAndRender(t, top, sev, ty, st) {
     }))
     ty.setOption(pieOption(typeData, '大类'))
     // 安全基线整体合规率（仪表盘）
+    // 口径与「安全基线」页保持一致：只统计**需求已绑定的基线范围**，且同一检查项在多条
+    // 需求里只算一次。之前用的是 baselineApi.stats()（分母 = 系统数 × 全库全部条目数）——
+    // 没做过基线的系统也在拉低这个数字，首页和基线页会互相打架。
     const blData = bl.data || {}
-    const overall = blData.overall ?? 0
-    const sysRows = blData.systems || []
-    const passSystems = sysRows.filter((s) => s.compliance >= 80).length
+    const overall = blData.compliance ?? 0
+    const sysCount = blData.system_count ?? 0
+    const pendingItems = blData.pending_count ?? 0
+    // 头部只写"纳入了多少系统"（目标值已经画在环里了，不重复）
+    baselineNote.value = sysCount ? `${sysCount} 个系统已纳入` : '尚未创建基线需求'
+    baseSystemsAll.value = blData.systems || []
+    // 小环（卡片左侧 ~128px）：去掉刻度与轴标签，只留"底环 + 进度弧 + 中心数字"
+    // —— 与「安全基线」页的合规率环同一套视觉；卡片右侧让给"按系统"列表。
+    const baseColor = rateColor(overall)      // 档位/颜色来自 utils/baseline.js（与基线页同一份）
     st.setOption({
       tooltip: { trigger: 'item' },
       series: [{
         type: 'gauge',
-        startAngle: 210, endAngle: -30,
+        // 整圆（而不是 210°/-30° 的开口仪表盘）：旁边两张是完整甜甜圈，
+        // 开口形状放大后底部那个"缺口"特别扎眼，而且缺口正是原来放刻度文字的位置，
+        // 文字去掉后那块空白就纯属多余 → 改成整圆，三张卡才像一套
+        startAngle: 90, endAngle: -270,
         min: 0, max: 100,
-        radius: '100%', center: ['50%', '55%'],
-        progress: { show: true, width: 16 },
-        axisLine: { lineStyle: { width: 16, color: [[1, '#e2e8f0']] } },
+        radius: '94%', center: ['50%', '50%'],
+        // 环加厚到 20px：旁边甜甜圈带宽约占半径 30%，环太细在同样直径下会显得"空"
+        progress: { show: true, width: 20, itemStyle: { color: baseColor } },
+        axisLine: { lineStyle: { width: 20, color: [[1, '#eef2f7']] } },
         pointer: { show: false },
         axisTick: { show: false },
-        splitLine: { length: 12, lineStyle: { width: 2, color: '#fff' } },
-        axisLabel: { distance: 22, fontSize: 10, color: '#94a3b8' },
+        splitLine: { show: false },
+        axisLabel: { show: false },
         anchor: { show: false },
-        title: { show: true, offsetCenter: [0, '30%'], fontSize: 13, color: '#64748b' },
+        // 环内只放两行短文字：数字 + "目标 80%"（提供参照，且短到不会和数字抢位置）；
+        // 卡片头部的副标题因此改成只写"纳入了多少系统"，不再重复目标值
+        title: { show: true, offsetCenter: [0, '36%'], fontSize: 11, color: '#94a3b8' },
         detail: {
-          valueAnimation: true, offsetCenter: [0, '-12%'],
-          formatter: '{value}%', fontSize: 34, fontWeight: 700, color: overall >= 80 ? '#22c55e' : overall >= 60 ? '#f59e0b' : '#ef4444',
+          valueAnimation: true, offsetCenter: [0, '-2%'],
+          formatter: '{value}%', fontSize: 25, fontWeight: 700, color: baseColor,
         },
-        data: [{ value: overall, name: `整体合规率 (${passSystems}/${sysRows.length} 系统达标)` }],
+        data: [{ value: overall, name: `目标 ${BASELINE_TARGET}%` }],
       }],
     })
   } catch (e) {
@@ -297,4 +350,26 @@ onBeforeUnmount(disposeAll)
 .chart-row .el-col .el-card :deep(.el-card__body) { flex: 1; min-height: 0; }
 .chart-lg, .chart-sm { height: 100%; }
 .card-title { font-weight: 600; color: #1e293b; font-size: 13px; }
+/* 卡片头部：标题左、补充说明右（说明用 HTML，不占图表画布） */
+.card-head-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.card-sub {
+  font-size: 11px; color: #94a3b8; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* 基线卡：左环 + 右"按系统"列表（整体数字之外的落点是"哪个系统欠账"）。
+   环的宽度按"和旁边两张饼图视觉等大"来定：那两张饼图占满各自卡片宽度、
+   直径由卡片高度决定(≈150px)，所以这里给 170px 宽的容器 → 环直径 ≈150px，三张卡看起来才是一套。 */
+.base-card { height: 100%; display: flex; align-items: center; gap: 14px; }
+.base-gauge { width: 170px; height: 100%; flex-shrink: 0; }
+.base-systems { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 7px; }
+.bsys-caption { font-size: 11px; color: #94a3b8; }
+.bsys { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.bsys-name {
+  width: 68px; flex-shrink: 0; color: #334155;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.bsys-track { flex: 1; height: 7px; border-radius: 999px; background: #eef2f7; overflow: hidden; }
+.bsys-track i { display: block; height: 100%; border-radius: 999px; transition: width .4s ease; }
+.bsys-pct { width: 40px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bsys-empty, .bsys-more { font-size: 11px; color: #94a3b8; }
 </style>

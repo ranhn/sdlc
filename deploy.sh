@@ -61,6 +61,9 @@ CORS_ORIGINS=http://${DOMAIN},https://${DOMAIN},http://localhost,https://localho
 # === 域名 ===
 DOMAIN=${DOMAIN}
 
+# === 飞书通知深链/按钮用的对外地址（收件人必须点得开；不要用内网地址） ===
+PUBLIC_BASE_URL=https://${DOMAIN}
+
 # === 数据库（默认 SQLite，落入 data/ 子目录由 sdlc_db 卷持久化） ===
 DATABASE_URL=sqlite:///./data/security_platform.db
 
