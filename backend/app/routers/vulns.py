@@ -270,6 +270,163 @@ def _notify_assignee(db: Session, v: Vuln, prev_assignee_id: int | None,
         logger.warning("飞书指派通知准备失败（不影响指派）：%s", exc)
 
 
+# ============ 状态流转通知（确认/驳回/修复完成/复测通过/关闭）============
+#
+# 为什么只在这五个动作发、且只发给这两种人：
+#   · 通知的判据是"这个动作之后**谁需要动起来**"，不是"所有相关人都广播一遍" ——
+#     每一步都发给所有人，一周之后大家就会把这类消息静音，等于没有通知。
+#   · start_fix（开始修复）刻意不发：提单人不需要知道每一小步，纯噪音。
+#
+# 收件人口径：
+#   confirm / reject / finish_fix → 提单人（reporter）
+#       · reject：提单人必须拿到**驳回原因**，否则漏洞无声消失（用户反馈的原始诉求）；
+#       · finish_fix：请提单人复核/复测（内部漏洞的提单人通常就是提测试结论的人）。
+#   pass_retest / close → 提单人 + 负责人（闭环，双方都该知道）
+#
+# 卡片标题与配色跟"指派通知"同一套观感（等级配色 + 双列字段 + 深链按钮）。
+_STATUS_NOTICES: dict[str, dict[str, str]] = {
+    "confirm": {
+        "title": "漏洞已受理",
+        "template": "green",
+        "action_label": "确认受理",
+    },
+    "reject": {
+        "title": "漏洞已驳回",
+        "template": "red",
+        "action_label": "驳回",
+    },
+    "finish_fix": {
+        "title": "修复完成，待复测",
+        "template": "blue",
+        "action_label": "修复完成",
+    },
+    "pass_retest": {
+        "title": "复测通过",
+        "template": "green",
+        "action_label": "复测通过",
+    },
+    "close": {
+        "title": "漏洞已关闭",
+        "template": "grey",
+        "action_label": "关闭",
+    },
+}
+
+# 各动作的收件人（"reporter"/"assignee"），去重与"跳过操作人"在 _notify_status_change 里统一处理
+_STATUS_RECIPIENTS: dict[str, tuple[str, ...]] = {
+    "confirm": ("reporter",),
+    "reject": ("reporter",),
+    "finish_fix": ("reporter",),
+    "pass_retest": ("reporter", "assignee"),
+    "close": ("reporter", "assignee"),
+}
+
+
+def _status_notice_card(v: Vuln, *, notice: dict[str, str], operator: User,
+                        base_url: str, assignee_name: str | None = None,
+                        reason: str | None = None,
+                        comment: str | None = None) -> dict:
+    """状态流转通知卡片（纯函数，便于单测）。
+
+    与指派卡片的区别只有两处：标题按动作走、驳回时**必须带原因**（这是这张卡存在的理由）。
+
+    assignee_name 由调用方查出后传入：``Vuln`` 上只有 ``system`` 关系，
+    **没有** assignee 关系（见 models.py），所以这里不能靠 ``v.assignee`` 取名字。
+    """
+    sev = v.severity or "medium"
+    sev_zh = SEV_ZH.get(sev, sev)
+    status_zh = STATUS_NAMES.get(v.status, v.status or "—")
+    link = f"{base_url.rstrip('/')}/vulnerabilities/fix?id={v.id}" if base_url else ""
+    elements: list[dict] = [
+        feishu_notify.text_div(f"**#{v.id} {v.title}**"),
+        feishu_notify.fields_div(
+            f"**等级**：{sev_zh}",
+            f"**当前状态**：{status_zh}",
+            f"**所属系统**：{v.system.name if getattr(v, 'system', None) else '—'}",
+            f"**负责人**：{assignee_name or '未指派'}",
+        ),
+    ]
+    # 驳回原因单独成块（换行展示，不塞进 fields —— 原因是长文本，塞进两列网格会被截断）
+    if reason:
+        elements += [{"tag": "hr"},
+                     feishu_notify.text_div(f"**驳回原因**\n{reason}")]
+    if comment:
+        elements.append(feishu_notify.text_div(f"**备注**：{comment}"))
+    if link:
+        elements += [{"tag": "hr"}, feishu_notify.primary_button("查看漏洞详情", link)]
+    else:
+        elements.append(feishu_notify.text_div("请登录 SDLC 安全平台查看详情"))
+    elements.append(feishu_notify.note_div(
+        f"由 {operator.full_name or operator.username} {notice['action_label']}"))
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": notice["template"],
+            "title": {"tag": "plain_text", "content": f"{notice['title']} · {sev_zh}"},
+        },
+        "elements": elements,
+    }
+
+
+def _notify_status_change(db: Session, v: Vuln, action: str, operator: User,
+                          request: Request | None = None, *,
+                          reason: str | None = None,
+                          comment: str | None = None) -> None:
+    """状态流转后通知相关人（尽力而为：不抛错、不阻塞业务动作）。
+
+    逐条过滤，任一条不满足就跳过（并说明原因，便于回答"他怎么没收到"）：
+      1. 该动作不在通知矩阵里（如 start_fix）→ 不发；
+      2. FEISHU_NOTIFY=0 或未配 App 凭证 → 不发；
+      3. **操作人自己不收**（安全专家提的单自己驳回、自己确认等）；
+      4. 收件人没有 feishu_open_id（手工账号）→ 跳过并记日志。
+    """
+    try:
+        notice = _STATUS_NOTICES.get(action)
+        if not notice:
+            return
+        if not feishu_notify.notify_enabled():
+            return
+        base_url = _notify_base_url(request)
+        # 负责人名字要显式查（Vuln 上没有 assignee 关系，见卡片函数说明）
+        assignee = (db.query(User).filter(User.id == v.assignee_id).first()
+                    if v.assignee_id else None)
+        assignee_name = (assignee.full_name or assignee.username) if assignee else None
+
+        wanted: list[tuple[str, int | None]] = []
+        for who in _STATUS_RECIPIENTS.get(action, ()):
+            uid = v.reporter_id if who == "reporter" else v.assignee_id
+            if uid:
+                wanted.append((who, uid))
+
+        sent_to: set[int] = set()
+        for who, uid in wanted:
+            if uid in sent_to:
+                continue                 # 提单人 == 负责人时只发一条
+            sent_to.add(uid)
+            if uid == operator.id:
+                continue                 # 操作人自己不打扰
+            user = db.query(User).filter(User.id == uid).first()
+            if not user:
+                continue
+            open_id = (user.feishu_open_id or "").strip()
+            if not open_id:
+                logger.info(
+                    "飞书流转通知跳过：%s #%s（%s）无 open_id（非飞书同步账号）",
+                    who, user.id, user.full_name or user.username,
+                )
+                continue
+            feishu_notify.send_in_background(
+                open_id,
+                "interactive",
+                _status_notice_card(v, notice=notice, operator=operator,
+                                    base_url=base_url, assignee_name=assignee_name,
+                                    reason=reason, comment=comment),
+                tag=f"漏洞 #{v.id} {notice['title']} → {user.full_name or user.username}",
+            )
+    except Exception as exc:  # noqa: BLE001 —— 通知绝不打断状态流转
+        logger.warning("飞书流转通知准备失败（不影响流转）：%s", exc)
+
+
 def _apply_status_filter(query, status: str | None):
     """按状态过滤（支持逗号分隔的多状态）。
 
@@ -660,7 +817,7 @@ def assign_vuln(vuln_id: int, request: Request, data: VulnAssign, db: Session = 
 
 
 @router.post("/{vuln_id}/action/{action}", response_model=VulnOut)
-def vuln_action(vuln_id: int, action: str, data: VulnStatusAction,
+def vuln_action(vuln_id: int, action: str, request: Request, data: VulnStatusAction,
                 db: Session = Depends(get_db), current: User = Depends(get_current_user)):
     v = db.query(Vuln).filter(Vuln.id == vuln_id).first()
     if not v:
@@ -695,11 +852,13 @@ def vuln_action(vuln_id: int, action: str, data: VulnStatusAction,
     db.refresh(v)
     _record_flow(db, v.id, from_status, to_status, current, data.comment)
     write_operation_log(db, current, f"vuln_{action}", "vuln", f"漏洞 #{v.id} {from_status}->{to_status}")
+    # 状态流转通知（确认/修复完成/复测通过/关闭；start_fix 不在矩阵里，会自动跳过）
+    _notify_status_change(db, v, action, current, request, comment=data.comment)
     return _to_out(v, db)
 
 
 @router.post("/{vuln_id}/reject", response_model=VulnOut)
-def reject_vuln(vuln_id: int, data: VulnReject, db: Session = Depends(get_db),
+def reject_vuln(vuln_id: int, request: Request, data: VulnReject, db: Session = Depends(get_db),
                 current: User = Depends(get_current_user)):
     v = db.query(Vuln).filter(Vuln.id == vuln_id).first()
     if not v:
@@ -714,6 +873,8 @@ def reject_vuln(vuln_id: int, data: VulnReject, db: Session = Depends(get_db),
     db.refresh(v)
     _record_flow(db, v.id, "pending", "rejected", current, f"驳回：{data.reason}")
     write_operation_log(db, current, "vuln_reject", "vuln", f"漏洞 #{v.id} 驳回：{data.reason}")
+    # 驳回必须让**提单人**知道原因：否则漏洞从他的视角无声消失了
+    _notify_status_change(db, v, "reject", current, request, reason=data.reason)
     return _to_out(v, db)
 
 

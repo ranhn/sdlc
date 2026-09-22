@@ -26,6 +26,13 @@ try:
 except Exception:  # noqa: BLE001 —— 缺 dotenv 不该影响启动
     pass
 
+# 应用日志：**必须在这里**（任何业务模块 import 之前），否则业务模块的 INFO
+# （如「飞书通知已发送/失败」）会被 root logger 的默认级别丢掉，日志里查不到
+# "通知到底发出去没有"。幂等，两个入口都会经过（见 logging_setup 说明）。
+from .logging_setup import setup_logging
+
+setup_logging()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
