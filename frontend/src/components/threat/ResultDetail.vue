@@ -290,7 +290,9 @@
 
       <!-- 合规影响面：展示本次建模的威胁触达了哪些法规域。
            注意语义——这是"影响面"而非"合规结论"：识别出越多种类的威胁
-           反而会让命中数上升，所以页面上必须显式声明不代表合规达标。 -->
+           反而会让命中数上升，所以页面上必须显式声明不代表合规达标。
+           三态：绿色=适用且触达；默认灰=适用但未触达；灰虚线的 na=不适用
+           （不适用项不参与命中统计，悬浮里有适用性理由）。 -->
       <div v-if="complianceList.length" class="rd-side-card">
         <h5>
           合规影响面
@@ -303,7 +305,7 @@
             v-for="c in complianceList"
             :key="c.code"
             class="rd-compliance-chip"
-            :class="{ covered: isComplianceHit(c) }"
+            :class="{ covered: isComplianceHit(c), na: isNotApplicable(c) }"
             :title="complianceTitle(c)"
           >
             {{ c.label || c.code }}
@@ -572,17 +574,30 @@ function isComplianceHit(c) {
 }
 
 /**
- * 合规域悬浮提示：说清命中含义、依据来源，并强调不代表合规达标。
+ * 该合规域对本次建模是否「不适用」（三态里的「—」）。
+ * 旧结果没有 applicable 字段 → 视为适用（保持原样展示，不误标成不适用）。
+ */
+function isNotApplicable(c) {
+  return c?.applicable === false
+}
+
+/**
+ * 合规域悬浮提示：三态各说清含义，并带上依据/适用性理由。
  */
 function complianceTitle(c) {
   if (!c) return ''
   const bits = []
-  bits.push(
-    isComplianceHit(c)
-      ? `本次建模有 ${c.relatedThreatCount || 0} 条威胁触达该域`
-      : '本次建模未触达该域',
-  )
-  if (c.relatedTypes?.length) bits.push(`命中类型：${c.relatedTypes.join('、')}`)
+  if (isNotApplicable(c)) {
+    bits.push('该法规对本系统不适用（已排除在影响面统计外）')
+  } else {
+    bits.push(
+      isComplianceHit(c)
+        ? `本次建模有 ${c.relatedThreatCount || 0} 条威胁触达该域`
+        : '本次建模未触达该域',
+    )
+    if (c.relatedTypes?.length) bits.push(`命中类型：${c.relatedTypes.join('、')}`)
+  }
+  if (c.applicabilityReason) bits.push(`适用性：${c.applicabilityReason}`)
   if (c.basis) bits.push(`依据：${c.basis}${c.version ? `（${c.version}）` : ''}`)
   if (c.note) bits.push(c.note)
   bits.push('※ 仅表示影响面，不代表合规达标')
@@ -1765,6 +1780,14 @@ async function toggleOOS(item, t, e) {
 .rd-compliance-chip.covered {
   color: #059669; background: #ecfdf5;
   border-color: #a7f3d0; font-weight: 500;
+}
+/* 三态里的「不适用」：虚线 + 更淡，视觉上明确"这条不计入影响面"。
+   不删掉、也不划掉 —— 法规清单的完整性本身就是信息（读者会问"那 AI Act 呢"），
+   划掉会让人以为该法规被否决。 */
+.rd-compliance-chip.na {
+  color: var(--c-text-4, #b6bfcc);
+  background: transparent;
+  border-style: dashed;
 }
 
 /* ---- 版本对比 ---- */

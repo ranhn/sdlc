@@ -992,12 +992,27 @@ def render_result_markdown(record: dict[str, Any]) -> str:
             lines.append(f"- OWASP Top10 for LLM 覆盖：{_pct(llm_cov)}（{', '.join(covered) if covered else '无'}）")
         compliance = metrics.get("compliance")
         if compliance:
-            lines.append("- 合规影响面（仅表示威胁触达的法规域，不代表合规结论）：")
+            lines.append(
+                "- 合规影响面（● 适用且有威胁触达 / ○ 适用但本次未触达 / — 不适用；"
+                "仅表示威胁触达的法规域，不代表合规结论）："
+            )
             for item in compliance:
-                mark = "●" if item.get("hit") else "○"
+                applicable = item.get("applicable", True)
+                mark = "—" if not applicable else ("●" if item.get("hit") else "○")
                 cnt = item.get("relatedThreatCount") or 0
-                tail = f"（关联威胁 {cnt} 条）" if cnt else ""
+                if not applicable:
+                    tail = "（不适用）"
+                elif cnt:
+                    tail = f"（关联威胁 {cnt} 条）"
+                else:
+                    tail = ""
                 lines.append(f"  - {mark} {item['code']} {item['label']}{tail}")
+                # 不适用时给出原因：读者需要知道"为什么这次没算它"，否则会以为漏了
+                if not applicable:
+                    reason = item.get("applicabilityReason") or ""
+                    if reason:
+                        lines.append(f"      原因：{reason}")
+                    continue
                 basis = item.get("basis") or ""
                 version = item.get("version") or ""
                 if basis:
@@ -2746,21 +2761,42 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
         if compliance:
             _h2(f"{_no_mt}.1", "合规影响面")
             note_p = doc.add_paragraph()
-            nr = note_p.add_run("仅表示威胁触达的法规域，不代表合规结论。")
+            # 图例必须写清三态含义：读者看到"—"要立刻明白是"该法规对本系统不适用"，
+            # 而不是"没检测"；同时保留"不代表合规结论"的免责语义。
+            nr = note_p.add_run(
+                "● 适用且有威胁触达　○ 适用但本次未触达　— 不适用。"
+                "仅表示威胁触达的法规域，不代表合规结论。"
+            )
             nr.font.size = Pt(9)
             nr.font.color.rgb = RGBColor(0x8A, 0x94, 0xA6)
             comp_rows = []
+            na_items = []          # 不适用项，表格下方单独说明原因
             for item in compliance:
-                mark = "●" if item.get("hit") else "○"
+                applicable = item.get("applicable", True)
+                mark = "—" if not applicable else ("●" if item.get("hit") else "○")
                 cnt = item.get("relatedThreatCount") or 0
+                if not applicable:
+                    na_items.append(item)
+                    cnt_text = "不适用"
+                else:
+                    cnt_text = str(cnt) if cnt else "-"
                 comp_rows.append([
                     f"{mark} {item.get('code', '')}",
                     item.get("label", ""),
-                    str(cnt) if cnt else "-",
+                    cnt_text,
                     (item.get("basis") or "") + (f"（{item.get('version')}）" if item.get("version") else ""),
                 ])
             _make_table(["法规域", "名称", "关联威胁", "依据"], comp_rows,
                         widths=[3.2, 5.4, 2.2, 5.6])   # 合计 16.4
+            # 不适用说明：为什么本次没把它计入（否则读者只看到"—"会以为漏算了）
+            if na_items:
+                na_p = doc.add_paragraph()
+                na_run = na_p.add_run("不适用说明：" + "；".join(
+                    f"{it.get('code', '')} {it.get('applicabilityReason') or '不适用'}"
+                    for it in na_items
+                ))
+                na_run.font.size = Pt(9)
+                na_run.font.color.rgb = RGBColor(0x8A, 0x94, 0xA6)
 
     # 「威胁总览」章已裁剪：全部威胁的索引表与第 5 章全量明细、附录 B 清单
     # 重复渲染同一批威胁；「按等级浏览」由附录 B 的降序排列承接，

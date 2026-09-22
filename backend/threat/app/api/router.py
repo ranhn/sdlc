@@ -940,7 +940,9 @@ def _build_metrics(
     # CIA / LINDDUN / PLOT4ai / EOP / MAESTRO 等方法论的合规判定恒为 0/4；
     # 且字段名 covered 会被误读成"合规达标"。这里改为输出"影响面"，
     # 字段为 hit / relatedThreatCount，语义为"本次建模是否触达该合规域"。
-    metrics["compliance"] = build_compliance_impact(threats)
+    # 传入 components 用于**适用性**判定（AI 专项域只在确实涉及 AI 元素时才算适用，
+    # 否则一个没有 AI 的系统也会被标成"触及 EU AI Act"）。
+    metrics["compliance"] = build_compliance_impact(threats, components)
 
     # MITRE ATLAS 覆盖：把威胁映射到 AI 对抗技术，对齐业界通用攻击语言。
     # 主要用于 STRIDE-AI 场景，但 STRIDE/CIA 等也可用（只要有 STRIDE 类型）。
