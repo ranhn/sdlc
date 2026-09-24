@@ -249,7 +249,8 @@ def trend(days: int = 30, bucket: str = None, db: Session = Depends(get_db),
       同页出现过"卡片 8、曲线 7"这种自相矛盾）。
 
     粒度（bucket）自适应：跨度 ≤92 天按日、≤400 天按周、更久按月（可显式传
-    bucket=day|week|month 覆盖）。days<=0 表示**全部历史**：从最早一条漏洞算起、默认按月 —
+    bucket=day|week|month 覆盖）。days<=0 表示**全部历史**：从最早一条漏洞算起，
+    粒度同样按真实跨度自适应（不是固定按月 —— 历史短的时候按月只剩两个点）。
     原来的 `max(1, days)` 会把 days=0 变成"只看 1 天"，而前端选「全部」时传的就是 0。
 
     性能：原来是"每天 2 次 count 查询"（30 天 90 次），现在一次取回后在内存分桶（3 次查询）。
@@ -284,7 +285,9 @@ def trend(days: int = 30, bucket: str = None, db: Session = Depends(get_db),
         bucket = bucket or _pick_bucket(days)
     else:
         day0 = min((t.date() for t in created_ts.values()), default=now)
-        bucket = bucket or "month"
+        # 「全部」的粒度按**真实跨度**自适应（原来写死按月：平台只有 40 天数据时，
+        # 整张图就两个点连成一条斜线，看不出任何趋势 —— 用户就是这么发现的）。
+        bucket = bucket or _pick_bucket((now - day0).days + 1)
     if bucket not in ("day", "week", "month"):
         bucket = "day"
     # 起点对齐到桶边界：这样"周/月"的标签是桶的自然起点（周一 / 1 号），

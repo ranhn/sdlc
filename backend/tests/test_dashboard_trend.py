@@ -142,6 +142,26 @@ def test_trend_days_zero_means_all_history():
     assert rows30[-1]["unfixed"] == 2, rows30
 
 
+def test_trend_all_history_picks_bucket_by_real_span():
+    """选「全部」时按**真实跨度**选自适应粒度（不是固定按月）。
+
+    回归点：原来 days<=0 直接写死按月 —— 平台只有 40 天数据时，整张图只有两个点
+    连成一条斜线，看起来像"暴跌"、也看不出任何趋势（用户反馈"全部的趋势图有问题"）。
+    现在跨度 ≤92 天按日、≤400 按周、更久按月，与其它区间同一套规则。
+    """
+    db, user, client = _setup()
+    _vuln(db, user, "pending", days_ago=40)
+    _vuln(db, user, "pending", days_ago=3)
+
+    rows = client.get("/api/dashboard/trend?days=0").json()
+    assert len(rows) >= 39, f"40 天历史应按日聚合，实际 {len(rows)} 个桶"
+    assert not rows[-1]["date"].endswith("月"), rows[-1]
+
+    # 显式指定粒度仍然有效（可选 日/周/月）
+    weeks = client.get("/api/dashboard/trend?days=0&bucket=week").json()
+    assert 5 <= len(weeks) <= 8, f"40 天按周 ≈ 6 个桶，实际 {len(weeks)}"
+
+
 def test_trend_bucket_is_adaptive_and_overridable():
     """近半年按周（否则 180 个 x 轴刻度必然糊），也可以显式指定粒度。"""
     db, user, client = _setup()
