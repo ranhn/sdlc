@@ -1,4 +1,4 @@
-"""基线需求（范围绑定）回归测试：分母口径、不适用剔除、范围校验、权限。
+"""基线需求（范围绑定）回归测试：分母口径、不适用计入、范围校验、权限。
 
 用法（在 backend 目录下）：
     python -m pytest tests/test_baseline_requirement.py -v
@@ -8,8 +8,8 @@
   1. **分母口径**：这是整件事的核心 —— 合规率必须只按"本需求绑定的基线"算。老口径把
      全库条目当分母（系统数 × 全部条目数），没做过基线的系统也在拉低整体数字，且这个
      数字回答不了"谁欠账"。这里钉住"只绑后端时，分母就是后端的 2 条"。
-  2. **不适用剔除**：`合规率 = 通过 ÷ (应评 − 不适用)`。老口径把 na 也算分母 —— 老实
-     标"不适用"反而拉低合规率，会逼人虚报通过。测试里同时断言"不等于老口径的值"。
+  2. **不适用计入分母**：`合规率 = 通过 ÷ 应评`（需求方口径）。曾有一版把 na 从分母剔除
+     （怕标了 na 反而拉低数字），现按"应评即分母"。测试里同时断言"不等于旧口径的值"。
   3. **范围校验**：负责人（研发）可以自评，但**只能动本需求绑定范围内的条目** —— 放开
      权限时最怕的就是顺手把"任意检查项"也放开了。
   4. **解绑不删结论**：结论属于系统（baseline_result），不属于某条需求；解绑再绑回来
@@ -160,8 +160,12 @@ def test_denominator_is_bound_scope_only():
     assert r2.json()["baseline_types"] == ["security_requirement", "backend_dev"], r2.json()
 
 
-def test_na_is_excluded_from_compliance_denominator():
-    """1 通过 / 1 不通过 / 1 不适用 → 合规率 50（不适用不进分母），进度 100。"""
+def test_na_counts_in_compliance_denominator():
+    """1 通过 / 1 不通过 / 1 不适用 → 合规率 33.3（**不适用也算分母**），进度 100。
+
+    口径变更（需求方要求）：`合规率 = 通过 ÷ 应评`。旧版把"不适用"从分母剔除以避免
+    "标了 na 反而拉低数字"，现在按"应评即分母" —— 标了不适用的条目同样没通过。
+    """
     db, client = _setup()
     CURRENT["user"] = _users(db)["admin"]
     req = _create(db, client, types=["security_requirement"]).json()
@@ -177,9 +181,9 @@ def test_na_is_excluded_from_compliance_denominator():
     assert (row["pass_count"], row["fail_count"], row["na_count"]) == (1, 1, 1), row
     assert row["pending_count"] == 0, row
     assert row["progress"] == 100.0, row
-    # 分母 = 3 - 1(na) = 2 → 1/2 = 50.0；老口径是 1/3 = 33.3，这里明确把它排除掉
-    assert row["compliance"] == 50.0, row
-    assert row["compliance"] != 33.3, "na 不该计入合规率分母（老口径 bug）"
+    # 分母 = 应评 3 → 1/3 = 33.3（旧口径 1/2 = 50.0，这里明确把它排除掉）
+    assert row["compliance"] == 33.3, row
+    assert row["compliance"] != 50.0, "「不适用」要计入合规率分母（现行口径）"
 
 
 def test_empty_baseline_does_not_break_rates():
@@ -425,6 +429,184 @@ def test_overview_systems_empty_when_no_requirements():
     CURRENT["user"] = _users(db)["admin"]
     ov = client.get("/api/baseline/requirements/overview").json()
     assert ov["systems"] == [] and ov["system_count"] == 0, ov
+
+
+def test_item_edit_keeps_existing_results():
+    """编辑检查项：改名/改要求**不动评估结论**（结论挂在 item_id 上，不挂在名字上）。
+
+    回归点：此前只有"新增 + 删除"，改个错别字只能删了重建 —— 而删除会连带删掉所有系统
+    在该检查项上的评估结论（前端确认弹窗里就这么写的）。改名是零风险操作，不该走那条路。
+    """
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+    req = _create(db, client, types=["backend_dev"]).json()          # 2 条检查项
+    item = db.query(BaselineItem).filter(BaselineItem.name == "接口鉴权").first()
+    assert client.put(f"/api/baseline/requirements/{req['id']}/items/{item.id}",
+                      json={"status": "fail", "evidence": "越权可访问"}).status_code == 200
+
+    r = client.put(f"/api/baseline/items/{item.id}",
+                   json={"name": "接口鉴权（改名）", "description": "新的要求",
+                         "check_method": "manual"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "接口鉴权（改名）", r.json()
+
+    # 结论还在：1 不通过 / 2 项
+    assert db.query(BaselineResult).filter(BaselineResult.item_id == item.id).count() == 1
+    row = client.get("/api/baseline/requirements").json()[0]
+    assert (row["pass_count"], row["fail_count"]) == (0, 1), row
+    assert row["compliance"] == 0.0, row
+    # 需求详情里显示的是新名字（前端表格直接读 item_name）
+    items = client.get(f"/api/baseline/requirements/{req['id']}/items").json()
+    assert any(i["item_name"] == "接口鉴权（改名）" for i in items), items
+
+
+def test_check_method_only_manual():
+    """「自动」检查方式被显式拒绝：没有任何代码在读 check_method。
+
+    回归点：库里曾提供「自动」选项，但挂了"自动"的检查项照样要人工点结论（模板库那列
+    因此常年只有"人工"一个值）。留着它 = 对着界面承诺一个不存在的自动化。
+    """
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+    cat = db.query(BaselineCategory).filter(BaselineCategory.baseline_type == "backend_dev").first()
+    r = client.post("/api/baseline/items",
+                    json={"category_id": cat.id, "name": "自动项", "check_method": "automated"})
+    assert r.status_code == 400, r.text
+    assert "人工" in r.json()["detail"], r.text
+    # 不传 check_method（默认 manual）正常建
+    r = client.post("/api/baseline/items", json={"category_id": cat.id, "name": "人工项"})
+    assert r.status_code == 201, r.text
+
+
+def test_fail_needs_evidence_and_pending_resets():
+    """两条硬要求：**「不通过」必须留依据**、**结论可以撤回（重置为未评估）**。
+
+    为什么钉在这：① 一条"不通过"没有说明，研发不知道改什么、审计问不出所以然 ——
+    结论可以下，但必须带着理由下；② 手滑点错只能被另一个结论顶替（等于逼人编一个
+    结论出来），所以要有"回到未评估"这条正路。
+    """
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+    req = _create(db, client, types=["backend_dev"]).json()
+    item = db.query(BaselineItem).filter(BaselineItem.name == "接口鉴权").first()
+    url = f"/api/baseline/requirements/{req['id']}/items/{item.id}"
+
+    # 不通过：缺说明 / 只有空白 → 400；都不该写库
+    assert client.put(url, json={"status": "fail"}).status_code == 400
+    assert client.put(url, json={"status": "fail", "evidence": "   "}).status_code == 400
+    assert db.query(BaselineResult).filter(BaselineResult.item_id == item.id).count() == 0
+
+    r = client.put(url, json={"status": "fail", "evidence": "未开启鉴权，要求 9/30 前整改"})
+    assert r.status_code == 200, r.text
+    assert r.json()["evidence"].startswith("未开启鉴权"), r.json()
+
+    # 重置为未评估：状态、说明、评估人、评估时间一并清空（不能留下"半截结论")
+    r = client.put(url, json={"status": "pending"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "pending", body
+    assert not body["evidence"] and not body["checked_at"], body
+    row = db.query(BaselineResult).filter(BaselineResult.item_id == item.id).first()
+    assert (row.status, row.evidence, row.checker_id) == ("pending", None, None), row
+    # 页面上回到"未评估"：本需求 2 条都未评估
+    assert client.get("/api/baseline/requirements").json()[0]["pending_count"] == 2
+    # 「通过」不需要说明，仍然一键可存
+    assert client.put(url, json={"status": "pass"}).status_code == 200
+
+
+def test_export_requirement_csv():
+    """导出 CSV = 能送审的台账：每条带结论 + 依据 + 评估人 + 时间，未评估的也要在。"""
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+    req = _create(db, client, types=["backend_dev"]).json()
+    item = db.query(BaselineItem).filter(BaselineItem.name == "接口鉴权").first()
+    client.put(f"/api/baseline/requirements/{req['id']}/items/{item.id}",
+               json={"status": "fail", "evidence": "未开启鉴权"})
+
+    r = client.get(f"/api/baseline/requirements/{req['id']}/export")
+    assert r.status_code == 200, r.text
+    assert "attachment" in r.headers.get("content-disposition", ""), r.headers
+    text = r.content.decode("utf-8-sig")          # 去 BOM 后按普通文本断言
+    assert text.splitlines()[0] == \
+        "系统,需求,基线,控制模块,检查项,要求,评估结果,说明与证据,评估人,评估时间", text[:200]
+    assert "不通过" in text and "未开启鉴权" in text, text
+    assert "未评估" in text, "另一条没评过的也必须出现在台账里（导出是全量，不跟页面筛选）"
+    assert "H业务" in text, text                   # 每行都带系统/需求，便于多份文件合并后筛选
+
+    # 权限与评估一致：普通用户且非负责人 → 403
+    CURRENT["user"] = _users(db)["Tracy.Yang"]
+    assert client.get(f"/api/baseline/requirements/{req['id']}/export").status_code == 403
+    # 只支持 csv（不静默给一个别的格式）
+    CURRENT["user"] = _users(db)["admin"]
+    assert client.get(f"/api/baseline/requirements/{req['id']}/export?fmt=docx").status_code == 400
+
+
+def test_item_edit_requires_secops():
+    """改检查项属模板维护：与新增/删除同一道权限闸（普通权限 403）。"""
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["Tracy.Yang"]
+    item = db.query(BaselineItem).first()
+    assert client.put(f"/api/baseline/items/{item.id}",
+                      json={"name": "随便改"}).status_code == 403
+
+
+# ============ 10. 全部评完自动收口 ============
+def test_autoclose_when_all_assessed():
+    """全部评完 → 需求自动置为「已完成」。
+
+    为什么是自动：进度 100% 却还挂着"进行中"，看的人不知道到底算不算完；此前在行上补了
+    一个「已评完 · 标记完成」的提示 —— 那是同一个动作的**第二个入口**（页面上两个"标记完成"）。
+    现在系统收口，行上只留一个状态词。
+
+    同时钉住"只单向收口"：撤销一条结论不会把已完成的需求自动拉回进行中
+    （「重新开启」是人的决定，系统不抢）。
+    """
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+    req = _create(db, client, types=["backend_dev"]).json()          # 2 条检查项
+    items = (db.query(BaselineItem)
+             .join(BaselineCategory, BaselineItem.category_id == BaselineCategory.id)
+             .filter(BaselineCategory.baseline_type == "backend_dev")
+             .order_by(BaselineItem.id).all())
+    assert len(items) == 2, items
+    url = f"/api/baseline/requirements/{req['id']}/items"
+
+    # 只评了 1 条：还没完，仍是进行中
+    assert client.put(f"{url}/{items[0].id}", json={"status": "pass"}).status_code == 200
+    assert client.get("/api/baseline/requirements").json()[0]["status"] == "in_progress"
+
+    # 最后一条评完 → 自动已完成
+    assert client.put(f"{url}/{items[1].id}", json={"status": "pass"}).status_code == 200
+    row = client.get("/api/baseline/requirements").json()[0]
+    assert row["status"] == "done", row
+    assert row["progress"] == 100.0, row
+
+    # 撤销一条：进度回落，但状态不回退（单向收口）
+    assert client.put(f"{url}/{items[1].id}", json={"status": "pending"}).status_code == 200
+    again = client.get("/api/baseline/requirements").json()[0]
+    assert again["progress"] < 100 and again["status"] == "done", again
+
+
+def test_autoclose_via_bulk_and_ignores_empty_scope():
+    """批量评完也收口；但**一条基线都没绑**（应评 0）不算做完 —— 免得建完需求就自封完成。"""
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+
+    req = _create(db, client, types=["backend_dev"]).json()
+    r = client.post(f"/api/baseline/requirements/{req['id']}/bulk-result",
+                    json={"baseline_type": "backend_dev", "status": "pass"})
+    assert r.status_code == 200, r.text
+    assert r.json()["auto_done"] is True, r.text
+    assert client.get("/api/baseline/requirements").json()[0]["status"] == "done"
+
+    # 空范围（app_dev 在测试数据里故意留空）：直接调收口函数，必须拒绝
+    from app.routers.baseline import _autoclose_if_done
+    empty = _create(db, client, types=["app_dev"]).json()
+    assert empty["bound_items"] == 0, empty
+    assert empty["status"] == "in_progress", empty
+    from app.models import BaselineRequirement
+    obj = db.query(BaselineRequirement).filter(BaselineRequirement.id == empty["id"]).first()
+    assert _autoclose_if_done(db, obj, None) is False, "应评 0 项不算做完"
 
 
 # ============ 运行器 ============

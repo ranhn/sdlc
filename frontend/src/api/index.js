@@ -151,14 +151,22 @@ export const baselineApi = {
   types: () => http.get('/baseline/types'),
   categories: (baselineType) => http.get('/baseline/categories', { params: { baseline_type: baselineType || undefined } }),
   createCategory: (data) => http.post('/baseline/categories', data),
+  // 控制模块（分类）维护：改名 / 删除（下面还有检查项时后端会拒绝，避免连带删掉评估结论）
+  updateCategory: (id, data) => http.put(`/baseline/categories/${id}`, data),
+  removeCategory: (id) => http.delete(`/baseline/categories/${id}`),
   // 检查项清单：params 可带 { category_id } 或 { baseline_type }（模板库抽屉按类型一次取全）
   items: (params) => http.get('/baseline/items', { params }),
   createItem: (data) => http.post('/baseline/items', data),
   removeItem: (id) => http.delete(`/baseline/items/${id}`),
+  // 编辑检查项（改名/改要求**不动已有评估结论**，结论挂在 item_id 上）
+  updateItem: (id, data) => http.put(`/baseline/items/${id}`, data),
   // 老口径统计（分母 = 系统数 × 全部条目数）。保留兼容，新页面请用 overview()。
   stats: (baselineType) => http.get('/baseline/stats', { params: { baseline_type: baselineType || undefined } }),
   systemItems: (systemId, baselineType) => http.get(`/baseline/systems/${systemId}/items`, { params: { baseline_type: baselineType || undefined } }),
-  updateItem: (systemId, itemId, data) =>
+  // ⚠️ 这里原来也叫 updateItem，**把上面那个覆盖掉了**（对象字面量里后写的赢）：
+  // 模板库点「编辑」保存时实际打到 /baseline/systems/{id}/items/undefined → 422，
+  // 也就是"编辑从来没存上过"。改名收尾，别再用同名键。
+  updateSystemItem: (systemId, itemId, data) =>
     http.put(`/baseline/systems/${systemId}/items/${itemId}`, data),
 
   // ---------- 需求（某系统绑定哪几个基线）----------
@@ -174,6 +182,15 @@ export const baselineApi = {
   // 需求范围内的评估（负责人可自评；后端会校验条目确实在绑定范围内）
   updateRequirementItem: (id, itemId, data) =>
     http.put(`/baseline/requirements/${id}/items/${itemId}`, data),
+  // 导出该需求的评估明细 CSV（留档/送审）。responseType=blob：这是文件流，
+  // 按 JSON 解会拿到一堆乱码，下载不下来。
+  exportRequirement: (id) =>
+    http.get(`/baseline/requirements/${id}/export`, { params: { fmt: 'csv' }, responseType: 'blob' }),
+  // 手动跑一轮「需求到期提醒」（补发 / 提前提醒）。去重按天记，所以补发过的当天
+  // 定时任务不会再发一遍；dry_run=true 只返回"会发给谁"，不发消息。
+  notifyDue: (params) => http.post('/baseline/requirements/notify-due', null, { params }),
+  // 批量评估（「全部通过」）：默认只填未评估的，已有结论不会被覆盖
+  bulkResult: (id, data) => http.post(`/baseline/requirements/${id}/bulk-result`, data),
 }
 
 // ---------- 安全培训 ----------

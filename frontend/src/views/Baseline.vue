@@ -14,7 +14,10 @@
 
     <!-- ===== 概览：合规率环 + 关键指标 + 条目构成 ===== -->
     <section class="hero">
-      <div class="hero-ring">
+      <!-- 口径说明从下方那行常驻文字挪到这里：需要时悬停可见，不需要时不占屏幕 -->
+      <div class="hero-ring"
+           title="合规率 = 通过 ÷ 应评（「不适用」也计入分母）；只统计各需求已绑定的基线，同一检查项在多条需求里只算一次">
+
         <div class="ring-wrap">
           <svg viewBox="0 0 120 120" class="ring">
             <circle class="ring-bg" cx="60" cy="60" :r="RING_R" />
@@ -29,7 +32,6 @@
             <div class="ring-lbl">整体合规率</div>
           </div>
         </div>
-        <div class="ring-state" :class="rateLevel(overview.compliance)">{{ complianceState }}</div>
         <div class="ring-target">
           <template v-if="overview.compliance >= BASELINE_TARGET">
             已达标 · 目标 {{ BASELINE_TARGET }}%
@@ -68,23 +70,25 @@
         </div>
       </div>
     </section>
-    <p class="hero-note">
-      合规率 = 通过 ÷ (应评 − 不适用)，只统计各需求已绑定的基线；同一检查项在多条需求里只算一次。
-    </p>
 
     <!-- ===== 需求列表 ===== -->
     <section class="list-card">
       <div class="list-head">
         <span class="list-title">基线需求</span>
-        <span class="list-hint">展开某条需求 → 按绑定基线分组评估；未绑定的基线不会出现在里面</span>
         <div class="list-tools">
           <div class="seg-filter">
-            <button v-for="f in REQ_FILTERS" :key="f.value" :class="{ on: reqFilter === f.value }"
+            <button v-for="f in REQ_FILTERS" :key="f.value"
+                    :class="{ on: reqFilter === f.value, zero: !reqFilterCount[f.value] }"
                     @click="reqFilter = f.value">
               {{ f.label }} <b>{{ reqFilterCount[f.value] }}</b>
             </button>
           </div>
           <el-input v-model="reqSearch" placeholder="搜索系统 / 需求名" clearable style="width: 196px" />
+          <!-- 到期提醒：系统每天 9:00 自动发一次（见 backend/app/baseline_reminder.py），
+               这里用于补发或提前提醒 —— 去重按天记，手动发过当天不会再自动发一遍 -->
+          <el-button v-if="canManage" size="small" plain :loading="dueBusy"
+                     title="给「即将到期 / 已逾期」的需求负责人补发飞书提醒（每天每人最多一条）"
+                     @click="notifyDue">到期提醒</el-button>
         </div>
       </div>
 
@@ -129,7 +133,7 @@
       </div>
 
       <!-- 需求卡片 -->
-      <article v-for="r in sortedRequirements" :key="r.id" class="req" :class="{ open: isOpen(r.id) }">
+      <article v-for="r in pagedRequirements" :key="r.id" class="req" :class="{ open: isOpen(r.id) }">
         <div class="req-top" @click="toggleExpand(r)">
           <span class="chev" :class="{ open: isOpen(r.id) }" />
           <div class="avatar" :style="{ background: avatarBg(r.system_name) }">{{ initial(r.system_name) }}</div>
@@ -142,9 +146,14 @@
                 {{ r.status === 'done' ? '已完成' : '进行中' }}
               </span>
               <span v-if="isOverdue(r)" class="pill pill-late">已逾期</span>
+              <!-- 这里原本有个「已评完 · 标记完成」的提示徽标：与右侧操作区里的「标记完成」
+                   是**同一个动作的第二个入口**（页面上出现两个"标记完成"），已去掉。
+                   现在改由后端在全部评完时**自动收口**（见 _autoclose_if_done），
+                   行上就只留这一个状态词：进行中 / 已完成。 -->
             </div>
             <div class="req-line2">
               <!-- 列表只回答"哪条线有问题"：短名 + 百分比 + 不通过数（明细放 tooltip 与展开区） -->
+              <!-- 按反馈：所有绑定基线**全部平铺**，不折叠、不做 +N -->
               <div v-for="b in r.baselines" :key="b.type" class="bchip" :class="{ zero: b.total === 0 }"
                    :title="chipTitle(b)">
                 <span class="bchip-name">{{ shortLabel(b.label) }}</span>
@@ -157,15 +166,22 @@
 
           <div class="metric">
             <!-- 0% 用中性灰且小一档：一屏里"没做"的行不该和"有问题"的行抢视线 -->
-            <div class="metric-num" :class="r.compliance > 0 ? rateLevel(r.compliance) : 'zero'">
+            <!-- 两个百分比并排最容易混：这里把口径写进悬停说明 ——
+                 合规率 = 做对了多少，进度 = 做了多少 -->
+            <div class="metric-num" :class="r.compliance > 0 ? rateLevel(r.compliance) : 'zero'"
+                 title="合规率 = 通过 ÷ 应评（含「不适用」）—— 做对了多少">
               {{ r.compliance }}<span class="pct">%</span>
             </div>
             <div class="metric-lbl">合规率</div>
           </div>
 
           <div class="metric metric-bar">
-            <div class="track"><i :style="{ width: r.progress + '%' }" /></div>
-            <div class="metric-lbl">{{ assessed(r) }}/{{ r.bound_items }} 已评估</div>
+            <div class="track" title="评估进度 = 有结论的条目 ÷ 应评 —— 做了多少">
+              <i :style="{ width: r.progress + '%' }" />
+            </div>
+            <div class="metric-lbl" title="评估进度 = 有结论的条目 ÷ 应评 —— 做了多少">
+              已评估 {{ assessed(r) }}/{{ r.bound_items }}
+            </div>
           </div>
 
           <div class="who">
@@ -192,26 +208,45 @@
           <div class="detail-bar">
             <span class="detail-title">评估条目</span>
             <div class="seg-filter">
-              <button v-for="f in FILTERS" :key="f.value" :class="{ on: curFilter(r.id) === f.value }"
+              <!-- 「缺说明」只在真有这种条目时出现（v-show 不用 v-if：v-if 与 v-for 同元素，
+                   Vue 会给出"两者同时用很危险"的告警）——没有它时多一个 0 的 chip 只是噪音 -->
+              <button v-for="f in FILTERS" :key="f.value" v-show="f.key !== 'nofix' || countOf(r.id).nofix"
+                      :class="{ on: curFilter(r.id) === f.value }"
                       @click="filters[r.id] = f.value">
                 {{ f.label }} <b>{{ countOf(r.id)[f.key] }}</b>
               </button>
             </div>
-            <span class="detail-tip">
-              {{ canEvaluate(r) ? '点击下方结果即可评估（自动保存）' : '只读：你不是本需求负责人' }}
-            </span>
+            <!-- 未评估的条目分散在几个基线里：一键只看未评估，并跳到下一组 -->
+            <button v-if="canEvaluate(r) && countOf(r.id).pending" class="detail-jump"
+                    title="只看未评估的，并跳到下一组未评估"
+                    @click="jumpNextPending(r)">
+              跳到下一个未评估
+            </button>
+            <!-- 导出 = 能送审的台账：结论 + 依据 + 评估人 + 时间，一次一份需求 -->
+            <button class="detail-jump" title="导出本需求全部条目的结论与依据为 CSV（留档 / 送审用）"
+                    @click="exportDetail(r)">导出 CSV</button>
+            <!-- 只在只读时提示原因；可评估的人点一下就知道，不需要这行字 -->
+            <span v-if="!canEvaluate(r)" class="detail-tip">只读：你不是本需求负责人</span>
           </div>
 
           <div v-if="!detailLoading[r.id] && !visibleGroups(r.id).length" class="detail-empty">
             {{ detailEmptyTip(r.id) }}
           </div>
 
-          <div v-for="g in visibleGroups(r.id)" :key="g.key" class="bl-panel" :class="{ collapsed: !isBaselineOpen(r.id, g.key) }">
+          <div v-for="g in visibleGroups(r.id)" :key="g.key" class="bl-panel"
+               :class="{ collapsed: !isBaselineOpen(r.id, g.key) }" :data-key="`${r.id}-${g.key}`">
             <div class="bl-panel-head" @click="toggleBaseline(r.id, g.key)">
               <span class="chev sm" :class="{ open: isBaselineOpen(r.id, g.key) }" />
               <span class="bl-name">{{ g.label }}</span>
               <span class="bl-total">{{ g.total }} 项</span>
               <span class="bl-track"><i :style="{ width: g.progress + '%', background: g.barColor }" /></span>
+              <!-- 一组几十上百项、绝大多数是「通过」：一键填完未评估的那些 -->
+              <button v-if="canEvaluate(r) && g.stats.pending" class="bl-bulk"
+                      :disabled="bulkBusy === r.id + '-' + g.key"
+                      title="只填「未评估」的；已有结论（尤其「不通过」）不会被覆盖"
+                      @click.stop="bulkPass(r, g, r.id + '-' + g.key)">
+                全部通过 {{ g.stats.pending }}
+              </button>
               <span class="bl-counts">
                 <span class="c pass">通过 {{ g.stats.pass }}</span>
                 <span class="c fail">不通过 {{ g.stats.fail }}</span>
@@ -229,25 +264,37 @@
                 <el-table :data="cat.items" size="small" :row-class-name="rowClass" class="item-table">
                   <!-- 与模板库同一处理：检查项定宽，「要求」独占剩余宽度（这段是被逐条评估时最需要读全的） -->
                   <el-table-column prop="item_name" label="检查项" width="196" show-overflow-tooltip />
-                  <el-table-column prop="item_description" label="要求" min-width="300" show-overflow-tooltip />
-                  <el-table-column label="检查方式" width="86">
-                    <template #default="{ row }">{{ row.check_method === 'automated' ? '自动' : '人工' }}</template>
-                  </el-table-column>
-                  <el-table-column label="评估结果" width="196">
+                  <el-table-column prop="item_description" label="要求" min-width="300"
+                                   show-overflow-tooltip class-name="cell-wrap2" />
+                  <!-- 「检查方式」列去掉了：全库只有"人工"一个值，"自动"没有任何代码在读
+                       （后端已显式拒绝该选项）→ 留着反而像"漏配了自动项" -->
+                  <el-table-column label="评估结果" width="224">
                     <template #default="{ row }">
                       <div v-if="canEvaluate(r)" class="seg">
                         <button v-for="o in RESULT_OPTS" :key="o.value" :class="[o.value, { on: row.status === o.value }]"
                                 @click="saveItem(r, row, o.value)">{{ o.label }}</button>
+                        <!-- 撤销：只在这条已有结论时出现，且悬停该行才显形（平时不抢视线）——
+                             手滑点错不该只能被另一个结论顶替 -->
+                        <button v-if="row.status !== 'pending'" class="seg-undo"
+                                title="重置为未评估（结论与说明一并清空）"
+                                @click="resetItem(r, row)">撤销</button>
                       </div>
                       <span v-else class="pill" :class="resultPillClass(row.status)">{{ resultName[row.status] }}</span>
+                      <!-- 存量数据里"不通过却没写说明"的，红字标出来（新提交已被后端拦住） -->
+                      <span v-if="missingWhy(row)" class="miss"
+                            title="「不通过」必须写明整改要求 / 判定依据 / 证据链接">缺说明</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="证据 / 备注" min-width="190">
                     <template #default="{ row }">
                       <el-input v-if="canEvaluate(r)" v-model="row.evidence" size="small"
-                                :placeholder="row.status === 'pending' ? '先选评估结果' : '补充证据或说明'"
+                                :class="{ 'need-why': missingWhy(row) }"
+                                :placeholder="row.status === 'pending' ? '先选评估结果'
+                                  : (missingWhy(row) ? '不通过必须写依据' : '补充证据或说明')"
                                 :disabled="row.status === 'pending'" @blur="saveEvidence(r, row)" />
-                      <span v-else class="muted">{{ row.evidence || '—' }}</span>
+                      <span v-else class="muted">
+                        <b v-if="missingWhy(row)" class="miss">缺说明</b>{{ row.evidence || '—' }}
+                      </span>
                     </template>
                   </el-table-column>
                 </el-table>
@@ -256,6 +303,18 @@
           </div>
         </div>
       </article>
+
+      <!-- 一屏 4 条，其余翻页：与「漏洞提交」页的分页条同一套（右对齐 + 可跳页） -->
+      <div v-if="sortedRequirements.length > REQ_PAGE_SIZE" class="req-pager">
+        <el-pagination
+          v-model:current-page="reqPage"
+          :page-size="REQ_PAGE_SIZE"
+          :total="sortedRequirements.length"
+          :pager-count="7"
+          layout="total, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </section>
 
     <!-- ===== 新增 / 编辑需求 ===== -->
@@ -327,25 +386,28 @@
         </div>
         <div class="lib-tools">
           <el-input v-model="libSearch" placeholder="搜索检查项 / 要求" clearable style="width: 220px" />
+          <!-- 控制模块维护：模块名是给人看的，建错了总得能改（删除有检查项时会被拦住） -->
+          <el-button v-if="canManage" plain @click="openCatManage">控制模块</el-button>
           <el-button v-if="canManage" type="primary" plain @click="openItemDialog">新增检查项</el-button>
         </div>
       </div>
 
-      <el-table :data="filteredLibItems" v-loading="libLoading" size="small" :row-class-name="alwaysPlain" class="item-table">
+      <el-table :data="filteredLibItems" v-loading="libLoading" size="small"
+                :row-class-name="alwaysPlain" :span-method="libSpan" class="item-table">
         <!-- 前两列定宽 + 「要求」独占剩余宽度：
              要求是这一屏最该读全的内容（长句多），此前它和「检查项」平分弹性宽度，
              结果整段被截成"...",还得逐行 hover 看 tooltip。定宽前两列后，要求列左移约 120px 且更宽。 -->
         <el-table-column prop="category_name" label="控制模块" width="128" />
         <el-table-column prop="name" label="检查项" width="200" show-overflow-tooltip />
-        <el-table-column prop="description" label="要求" min-width="320" show-overflow-tooltip />
-        <el-table-column label="检查方式" width="86">
-          <template #default="{ row }">{{ row.check_method === 'automated' ? '自动' : '人工' }}</template>
-        </el-table-column>
-        <el-table-column label="必填" width="66">
-          <template #default="{ row }">{{ row.is_required ? '是' : '否' }}</template>
-        </el-table-column>
-        <el-table-column v-if="canManage" label="操作" width="72">
+        <el-table-column prop="description" label="要求" min-width="320"
+                         show-overflow-tooltip class-name="cell-wrap2" />
+        <!-- 「检查方式」列去掉了：全库只有"人工"一个值，"自动"没有任何代码在读
+             （后端已显式拒绝该选项）→ 留着反而像"漏配了自动项" -->
+        <!-- 「必填」列去掉了：全库只有"是"一个值（is_required 没有任何业务逻辑在读） -->
+        <el-table-column v-if="canManage" label="操作" width="112">
           <template #default="{ row }">
+            <!-- 编辑不影响已有评估结论；删除会（确认弹窗里有提示）→ 能改就别删 -->
+            <el-button link type="primary" @click="openItemEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="removeItem(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -355,7 +417,7 @@
         需求绑定某个基线后，该基线下全部检查项就是这次要评的条目。
       </div>
 
-      <el-dialog v-model="itemVisible" title="新增检查项" width="480px" append-to-body @open="onItemDialogOpen">
+      <el-dialog v-model="itemVisible" :title="itemForm.id ? '编辑检查项' : '新增检查项'" width="480px" append-to-body @open="onItemDialogOpen">
         <el-form :model="itemForm" label-width="90px">
           <el-form-item label="基线类型">
             <el-select v-model="itemForm.baseline_type" style="width: 100%" @change="loadDialogCategories">
@@ -369,24 +431,47 @@
           </el-form-item>
           <el-form-item label="检查项"><el-input v-model="itemForm.name" /></el-form-item>
           <el-form-item label="要求"><el-input v-model="itemForm.description" type="textarea" :rows="2" /></el-form-item>
-          <el-form-item label="检查方式">
-            <el-radio-group v-model="itemForm.check_method">
-              <el-radio-button value="manual">人工</el-radio-button>
-              <el-radio-button value="automated">自动</el-radio-button>
-            </el-radio-group>
-          </el-form-item>
+          <!-- 「检查方式」表单项去掉了：只有"人工"一个值可选，选了也没有代码去执行自动扫描
+               （后端已显式拒绝 automated）→ 留着等于对着界面承诺一个不存在的自动化 -->
         </el-form>
         <template #footer>
           <el-button @click="itemVisible = false">取消</el-button>
           <el-button type="primary" @click="saveItemMaster">保存</el-button>
         </template>
       </el-dialog>
+
+      <!-- 控制模块维护：改名 / 删除（模块名是给人看的，写错必须能修）。
+           删除只在模块下**没有检查项**时允许 —— 删条目会连带删掉各系统的评估结论，
+           所以这里也会先把数量摆出来，让人自己决定这些条目去哪。 -->
+      <el-dialog v-model="catVisible" title="控制模块" width="560px" append-to-body>
+        <div class="cat-tools">
+          <el-input v-model="newCatName" placeholder="新模块名称，如「接口安全」" clearable
+                    style="width: 240px" @keyup.enter="addCategory" />
+          <el-button type="primary" plain :disabled="!newCatName.trim()" @click="addCategory">新增</el-button>
+          <span class="muted">当前基线：{{ labelOf(libType) }}</span>
+        </div>
+        <el-table :data="libCategories" v-loading="catLoading" size="small"
+                  :row-class-name="alwaysPlain" class="item-table">
+          <el-table-column prop="name" label="名称" min-width="180" />
+          <el-table-column label="检查项" width="80">
+            <template #default="{ row }">
+              <span :class="{ muted: !catItemCount(row.id) }">{{ catItemCount(row.id) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="130">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="renameCategory(row)">改名</el-button>
+              <el-button link type="danger" @click="removeCategory(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-dialog>
     </el-drawer>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi, baselineApi, systemApi } from '../api'
 import { useUserStore } from '../store/user'
@@ -404,21 +489,22 @@ const overview = reactive({ requirement_count: 0, system_count: 0, done_count: 0
 
 const assessedTotal = computed(() => overview.pass_count + overview.fail_count + overview.na_count)
 
+// 只留 3 个盒子：原来的「待评估」「不通过」与下方「范围内条目构成」那条分段条**完全重复**
+// （同一个数同屏报两次，只会让人多看两眼）；构成条里各自项数已经写明了。
 const kpis = computed(() => ([
   { label: '基线需求', value: overview.requirement_count, hint: `${overview.done_count} 个已完成` },
   { label: '覆盖系统', value: overview.system_count, hint: '已纳入基线评估' },
   { label: '评估进度', value: `${overview.progress}%`, hint: `${assessedTotal.value}/${overview.bound_items} 已评估` },
-  { label: '待评估', value: overview.pending_count, hint: '尚未给出结论' },
-  { label: '不通过', value: overview.fail_count, hint: '需要整改', danger: overview.fail_count > 0 },
 ]))
 
-// 条目构成条（分母 = 应评条目；合规率的分母还要再减掉"不适用"）
+// 条目构成条（分母 = 应评条目；合规率的分母也是它 —— 「不适用」同样计入）
 const stackSegments = computed(() => {
   const total = Math.max(1, overview.bound_items)
   const raw = [
     { key: 'pass', label: '通过', value: overview.pass_count, color: RATE_COLORS.good },
     { key: 'fail', label: '不通过', value: overview.fail_count, color: RATE_COLORS.bad },
-    { key: 'na', label: '不适用', value: overview.na_count, color: RATE_COLORS.mid },
+    // 「不适用」用中性灰：它是「这条不适用」，不是「接近目标」（原来借用 mid 的橙色会读错）
+    { key: 'na', label: '不适用', value: overview.na_count, color: '#94a3b8' },
     { key: 'pending', label: '未评估', value: overview.pending_count, color: RATE_COLORS.none },
   ]
   return raw.map((s) => ({ ...s, pct: (s.value / total) * 100 }))
@@ -439,18 +525,8 @@ const ringDrawn = computed(() => {
 const ringOffset = computed(() => RING_C * (1 - ringDrawn.value / 100))
 const ringColor = computed(() => rateColor(overview.compliance))
 
-/** 环下的状态词：把百分比翻译成结论，避免"2.2% 是好还是坏"全靠猜。
-    档位来自共享口径（rateLevel），所以这里的文案与颜色永远和首页一致。 */
-const complianceState = computed(() => {
-  if (!overview.bound_items) return '尚未纳入评估'
-  switch (rateLevel(overview.compliance)) {
-    case 'good': return '已达标'
-    case 'mid': return '接近目标'
-    case 'none': return '尚未开始'
-    default: return '需重点整改'
-  }
-})
-
+// 环下原本还有一行状态词（需重点整改 / 接近目标 / 已达标…）：按反馈去掉 ——
+// 同一件事下面那行「目标 80% · 还差 59.8pt」已经说清，再加一个形容词只是重复。
 /** 基线名的短写（列表里 5 条基线要排得下，明细放 tooltip）。 */
 function shortLabel(label) {
   return String(label || '').replace(/安全基线$/, '').replace(/基线$/, '')
@@ -477,6 +553,54 @@ function barColor(b) {
   return '#2563eb'
 }
 
+const bulkBusy = ref('')          // 正在批量处理的那一组（禁用按钮 + 防重复点）
+const pendingCursor = reactive({})  // 需求 id → 上次跳到哪条基线（轮流跳，不是永远第一组）
+
+/** 「全部通过」：后端默认只填未评估的（已有结论不覆盖），这里只做确认 + 刷新。 */
+async function bulkPass(r, g, key) {
+  const n = g.stats.pending
+  if (!n) return
+  try {
+    await ElMessageBox.confirm(
+      `把「${g.label}」里 ${n} 个「未评估」的检查项全部标记为「通过」？` +
+      '\n\n已有结论的（尤其「不通过」）不会被覆盖，之后仍可逐条修改。',
+      '批量评估', { type: 'warning', confirmButtonText: '全部标记通过', cancelButtonText: '取消' })
+  } catch { return }
+  bulkBusy.value = key
+  try {
+    const { data } = await baselineApi.bulkResult(r.id, { baseline_type: g.key, status: 'pass' })
+    ElMessage.success(`已标记 ${data.changed} 项通过` +
+      (data.skipped ? `，跳过已有结论 ${data.skipped} 项` : ''))
+    // 必须与单条评估走同一条刷新路径：行上的合规率 / 已评估数来自 /requirements 列表，
+    // 只刷明细和概览的话，那两个数字会一直是旧的（用户反馈"更新之后没有实时刷新"）。
+    await refreshAfterChange(r.id, true)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '批量评估失败')
+  } finally { bulkBusy.value = '' }
+}
+
+/** 跳到"下一组未评估"：展开明细 → 只看未评估 → 展开下一组基线并滚动过去。 */
+async function jumpNextPending(r) {
+  if (!isOpen(r.id)) toggleExpand(r)
+  await ensureDetail(r.id)
+  const pend = (detailItems[r.id] || []).filter((i) => i.status === 'pending')
+  if (!pend.length) {
+    ElMessage.success('这条需求已经没有未评估的条目了')
+    return
+  }
+  const keys = [...new Set(pend.map((i) => i.baseline_type))]
+  const cur = pendingCursor[r.id]
+  const next = keys[(Math.max(0, keys.indexOf(cur)) + (cur ? 1 : 0)) % keys.length]
+  pendingCursor[r.id] = next
+  filters[r.id] = 'pending'
+  openBaselines[r.id] = [next]
+  await nextTick()
+  document.querySelector(`.bl-panel[data-key="${r.id}-${next}"]`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+// （曾有一版把「已完成且无问题」的基线折成 +N 小标签，按反馈去掉了 —— 全部平铺更直观。）
+
 // ============ 类型目录 ============
 const baselineTypes = ref([])
 async function loadTypes() {
@@ -487,13 +611,16 @@ function labelOf(key) { return baselineTypes.value.find((t) => t.key === key)?.l
 // ============ 需求列表 ============
 const requirements = ref([])
 const loadingReqs = ref(false)
+// 列表分页：一屏固定 4 条 —— 需求只会越建越多，一页堆十几个会把「哪条有问题」淹掉
+const REQ_PAGE_SIZE = 4
+const reqPage = ref(1)
+
 const systems = ref([])
 const expanded = ref([])
 const detailItems = reactive({})
 const detailLoading = reactive({})
 const filters = reactive({})
 const openBaselines = reactive({})
-const autoOpened = {}
 let usersLoaded = false
 const usersLoading = ref(false)
 const picks = ref([])
@@ -538,7 +665,20 @@ async function loadRequirements() {
   finally { loadingReqs.value = false }
 }
 
+/** 当前页渲染的需求。分页只影响渲染 —— 筛选计数、概览统计仍基于全量。 */
+const pagedRequirements = computed(() => {
+  const start = (reqPage.value - 1) * REQ_PAGE_SIZE
+  return sortedRequirements.value.slice(start, start + REQ_PAGE_SIZE)
+})
+// 换筛选/搜索就回到第 1 页；数据变少（删需求/改完成状态）时把页码收回来，别停在空白页
+watch([() => reqFilter.value, () => reqSearch.value], () => { reqPage.value = 1 })
+watch(() => sortedRequirements.value.length, () => {
+  const maxPage = Math.max(1, Math.ceil(sortedRequirements.value.length / REQ_PAGE_SIZE))
+  if (reqPage.value > maxPage) reqPage.value = maxPage
+})
+
 function isOpen(rid) { return expanded.value.includes(rid) }
+
 
 /** 展开 = 只用一次点击展开第一条基线；不重置用户手动收起的面板（见 ensureDetail）。 */
 function toggleExpand(r) {
@@ -555,11 +695,12 @@ async function ensureDetail(rid, force = false) {
   try {
     detailItems[rid] = (await baselineApi.requirementItems(rid)).data
     if (filters[rid] === undefined) filters[rid] = 'all'
-    if (!autoOpened[rid]) {
-      autoOpened[rid] = true
-      const first = groupOf(detailItems[rid])[0]
-      openBaselines[rid] = first ? [first.key] : []
-    }
+    // 展开需求时**只列基线面板，不自动展开其中任何一条**：一上来就把几十上百个条目铺开，
+    // 会盖掉"这条需求一共绑了几条基线、各自进度/不通过多少"这个更该先看到的信息；
+    // 谁先做、按什么顺序做，让评估的人自己点开（「跳到下一个未评估」也会按需展开它要去的那组）。
+    // 顺带修掉一个竞争：下面 jumpNextPending 会先设好 openBaselines = [目标组]，
+    // 若这里再"自动展开第一条"，异步回来时会把用户正要跳过去的那组覆盖掉。
+    if (openBaselines[rid] === undefined) openBaselines[rid] = []
   } catch { detailItems[rid] = detailItems[rid] || [] }
   finally { detailLoading[rid] = false }
 }
@@ -595,7 +736,8 @@ function visibleGroups(rid) {
   const all = detailItems[rid] || []
   if (!all.length) return []
   const shown = f === 'all' ? all
-    : all.filter((i) => (f === 'pending' ? i.status === 'pending' : i.status === f))
+    : all.filter((i) => (f === 'pending' ? i.status === 'pending'
+      : f === 'nofix' ? missingWhy(i) : i.status === f))
   if (!shown.length) return []
   const keep = new Set(shown.map((i) => i.item_id))
   return groupOf(all)
@@ -609,6 +751,8 @@ const FILTERS = [
   { key: 'all', value: 'all', label: '全部' },
   { key: 'pending', value: 'pending', label: '未评估' },
   { key: 'fail', value: 'fail', label: '不通过' },
+  // 「不通过却没写说明」单独可筛：存量数据里这是最该先收拾的一批
+  { key: 'nofix', value: 'nofix', label: '缺说明' },
 ]
 function curFilter(rid) { return filters[rid] || 'all' }
 function countOf(rid) {
@@ -617,6 +761,7 @@ function countOf(rid) {
     all: all.length,
     pending: all.filter((i) => i.status === 'pending').length,
     fail: all.filter((i) => i.status === 'fail').length,
+    nofix: all.filter(missingWhy).length,
   }
 }
 function detailEmptyTip(rid) {
@@ -647,8 +792,13 @@ const RESULT_OPTS = [
   { value: 'fail', label: '不通过' },
   { value: 'na', label: '不适用' },
 ]
+/** 「不通过」却没写说明 = 只有判定、没有依据。新提交已被后端拦住，这个判定是给存量数据用的。 */
+function missingWhy(row) {
+  return row.status === 'fail' && !(row.evidence || '').trim()
+}
 const rowClass = ({ row }) => `st-${row.status}`
 const alwaysPlain = () => 'st-plain'
+
 
 function canEvaluate(r) {
   return canManage.value || (r.owner_id && r.owner_id === store.userId)
@@ -657,14 +807,48 @@ function canEvaluate(r) {
 async function saveItem(r, row, status) {
   if (row.status === status) return                 // 点当前项不重复提交
   const prev = row.status
+  let evidence = row.evidence
+  // 「不通过」必须带依据（后端同样会拦）：干脆在这一刻把依据要到手 ——
+  // 与其事后在一张长表里追着补，不如点下去的时候就问清楚。用户取消 = 什么都不改。
+  if (status === 'fail' && !(evidence || '').trim()) {
+    try {
+      const { value } = await ElMessageBox.prompt(
+        '写明整改要求、判定依据或证据链接（会出现在导出的台账里）',
+        '「不通过」需说明依据',
+        { confirmButtonText: '保存', cancelButtonText: '取消',
+          inputPlaceholder: '如：接口未鉴权，可越权读取他人数据；要求 9/30 前完成整改',
+          inputValidator: (v) => (v && v.trim() ? true : '说明不能为空') })
+      evidence = value.trim()
+    } catch { return }                              // 取消 → 状态与说明都不动
+  }
   row.status = status
+  row.evidence = evidence
   try {
-    await baselineApi.updateRequirementItem(r.id, row.item_id, { status, evidence: row.evidence })
+    await baselineApi.updateRequirementItem(r.id, row.item_id, { status, evidence })
     ElMessage.success('已保存')
     await refreshAfterChange(r.id)
   } catch (e) {
     row.status = prev
     ElMessage.error(e.response?.data?.detail || '保存失败')
+  }
+}
+
+/** 撤销结论（回到未评估）：后端会把说明 / 评估人 / 评估时间一并清空。 */
+async function resetItem(r, row) {
+  try {
+    await ElMessageBox.confirm('重置为未评估？该条的结论与说明会一并清空。', '撤销评估结果',
+      { confirmButtonText: '重置', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  const prev = { status: row.status, evidence: row.evidence }
+  row.status = 'pending'
+  row.evidence = ''
+  try {
+    await baselineApi.updateRequirementItem(r.id, row.item_id, { status: 'pending' })
+    ElMessage.success('已重置为未评估')
+    await refreshAfterChange(r.id)
+  } catch (e) {
+    Object.assign(row, prev)
+    ElMessage.error(e.response?.data?.detail || '重置失败')
   }
 }
 
@@ -677,6 +861,29 @@ async function saveEvidence(r, row) {
   } catch (e) { ElMessage.error(e.response?.data?.detail || '保存失败') }
 }
 
+/** 导出本需求的评估明细（CSV）。后端生成 + 带 BOM，这里只负责把 blob 存成文件。 */
+async function exportDetail(r) {
+  try {
+    const res = await baselineApi.exportRequirement(r.id)
+    const blob = new Blob([res.data], { type: res.data.type || 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+    // 文件名带上系统名便于辨认（去掉不能进文件名的字符；中文名浏览器自己能处理）
+    const who = String(r.system_name || 'system').replace(/[\\/:*?"<>|]/g, '')
+    a.download = `baseline-${who}-${r.id}-${ts}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    ElMessage.success('已导出评估明细 CSV')
+  } catch (e) {
+    // 出错时后端返回的是 JSON 而不是文件流，blob 里读不出 detail → 给通用提示
+    ElMessage.error(e.response?.data?.detail || '导出失败')
+  }
+}
+
 /** 评估后刷新：行上的进度/合规率 + 概览 + 该需求的条目统计（不动展开状态）。 */
 async function refreshAfterChange(rid, reloadItems = true) {
   await Promise.all([
@@ -684,6 +891,27 @@ async function refreshAfterChange(rid, reloadItems = true) {
     loadOverview(),
     reloadItems ? ensureDetail(rid, true) : Promise.resolve(),
   ])
+}
+
+// ============ 到期提醒（手动补发）============
+const dueBusy = ref(false)
+/** 手动跑一轮到期提醒。系统每天 9:00 也会自动发（同一个去重口径：每人每天最多一条）。 */
+async function notifyDue() {
+  dueBusy.value = true
+  try {
+    const { data } = await baselineApi.notifyDue({})
+    if (!data.due) return ElMessage.success('没有即将到期或已逾期的需求，无需提醒')
+    if (data.sent) {
+      return ElMessage.success(`已提醒 ${data.sent} 位负责人（待提醒 ${data.due} 条，跳过 ${data.skipped} 条）`)
+    }
+    // 一条都没发出去：把第一个原因说出来（最常见的是"飞书未启用"或"负责人是手工账号"）
+    const why = (data.details || []).find((d) => d.skip)
+    ElMessage.warning(`没有发出提醒：${why ? why.skip : '暂无可发送对象'}`)
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '触发失败')
+  } finally {
+    dueBusy.value = false
+  }
 }
 
 // ============ 需求增删改 ============
@@ -820,13 +1048,78 @@ async function loadLibItems() {
   finally { libLoading.value = false }
 }
 
+// ============ 控制模块维护（改名 / 删除）============
+const catVisible = ref(false)
+const catLoading = ref(false)
+const libCategories = ref([])
+const newCatName = ref('')
+
+async function openCatManage() {
+  catVisible.value = true
+  newCatName.value = ''
+  await loadLibCategories()
+}
+async function loadLibCategories() {
+  catLoading.value = true
+  try { libCategories.value = (await baselineApi.categories(libType.value)).data }
+  catch { libCategories.value = [] }
+  finally { catLoading.value = false }
+}
+/** 某模块下有多少检查项（用未过滤的全量算，搜索时也要数对） */
+function catItemCount(catId) {
+  return (libItems.value || []).filter((i) => i.category_id === catId).length
+}
+async function addCategory() {
+  const name = newCatName.value.trim()
+  if (!name) return
+  try {
+    await baselineApi.createCategory({ name, baseline_type: libType.value })
+    newCatName.value = ''
+    ElMessage.success('已新增控制模块')
+    await refreshCategoryViews()
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '新增失败') }
+}
+async function renameCategory(row) {
+  try {
+    const res = await ElMessageBox.prompt('新的模块名称', '改名控制模块', {
+      inputValue: row.name,
+      inputValidator: (v) => (v && v.trim() ? true : '名称不能为空'),
+    })
+    await baselineApi.updateCategory(row.id, { name: res.value.trim() })
+    ElMessage.success('已改名')
+    await refreshCategoryViews()
+  } catch (e) {
+    // 取消弹窗不是错误（它没有 response）；只有接口报错才提示
+    if (e && e.response) ElMessage.error(e.response.data?.detail || '改名失败')
+  }
+}
+async function removeCategory(row) {
+  const n = catItemCount(row.id)
+  if (n) return ElMessage.warning(`「${row.name}」下还有 ${n} 个检查项：请先删除或移到其它控制模块`)
+  try {
+    await ElMessageBox.confirm(`删除控制模块「${row.name}」？`, '删除控制模块',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  try {
+    await baselineApi.removeCategory(row.id)
+    ElMessage.success('已删除')
+    await refreshCategoryViews()
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '删除失败') }
+}
+/** 模块变了 → 模块清单 / 检查项表格 / 类型计数 / 新增弹窗的下拉一起刷新（别留旧名字） */
+async function refreshCategoryViews() {
+  await Promise.all([loadLibCategories(), loadLibItems(), loadTypes()])
+  if (itemVisible.value) await loadDialogCategories()
+}
+
 const itemVisible = ref(false)
 const dialogCategories = ref([])
 // 不含 severity：界面上不出现「等级」（基线表没有等级依据，团队口径是只看合规率）
-const itemForm = reactive({ baseline_type: 'security_requirement', category_id: null, name: '',
-  description: '', check_method: 'manual' })
+const itemForm = reactive({ id: null, baseline_type: 'security_requirement', category_id: null,
+  name: '', description: '', check_method: 'manual' })
 
 function onItemDialogOpen() {
+  itemForm.id = null
   itemForm.baseline_type = libType.value
   itemForm.category_id = null
   itemForm.name = ''
@@ -840,14 +1133,51 @@ async function loadDialogCategories() {
 }
 function openItemDialog() { itemVisible.value = true; onItemDialogOpen() }
 
+/** 编辑检查项：复用同一个弹窗（先等模块选项就绪再回填，避免短暂显示成 id）。 */
+/**
+ * 模板库「控制模块」合并单元格：同一模块的**连续行只显示一次**。
+ * 原样逐行重复（"接口安全 / 接口安全 / 接口安全…"）会让整列看起来像数据重复出错，
+ * 而它其实只是分组信息 —— 合并后一眼能看出"这一屏属于哪几个模块、各多少条"。
+ * 只在当前筛选结果内合并（搜索后同一模块的几行仍然挨在一起，合并依旧成立）。
+ */
+function libSpan({ rowIndex, columnIndex }) {
+  if (columnIndex !== 0) return
+  const rows = filteredLibItems.value || []
+  const cur = rows[rowIndex]
+  if (!cur) return
+  if (rowIndex > 0 && rows[rowIndex - 1].category_name === cur.category_name) {
+    return { rowspan: 0, colspan: 0 }        // 与上一行同模块 → 被上面的合并吃掉
+  }
+  let span = 1
+  while (rowIndex + span < rows.length
+    && rows[rowIndex + span].category_name === cur.category_name) span += 1
+  return { rowspan: span, colspan: 1 }
+}
+
+async function openItemEdit(row) {
+  itemVisible.value = true
+  onItemDialogOpen()
+  await loadDialogCategories()
+  Object.assign(itemForm, {
+    id: row.id, category_id: row.category_id, name: row.name,
+    description: row.description, check_method: row.check_method || 'manual',
+  })
+}
+
+
 async function saveItemMaster() {
   if (!itemForm.category_id) return ElMessage.warning('请选择控制模块')
   if (!itemForm.name || itemForm.name.trim().length < 2) return ElMessage.warning('检查项名称至少 2 个字')
   try {
-    await baselineApi.createItem({ ...itemForm })
-    ElMessage.success('已添加')
+    const { id, ...payload } = itemForm          // id 不能进 payload（新增接口不认它）
+    if (id) await baselineApi.updateItem(id, payload)
+    else await baselineApi.createItem(payload)
+    ElMessage.success(id ? '已保存' : '已添加')
     itemVisible.value = false
-    await Promise.all([loadLibItems(), loadTypes()])
+    // 检查项/绑定范围一变，列表行与概览的口径都跟着变 → 一起刷新（别留旧数字）
+    await Promise.all([loadLibItems(), loadTypes(), loadRequirements(), loadOverview()])
+    // 名称/要求也显示在已展开的需求明细里 → 一并重拉，免得还挂着旧文案
+    await Promise.all(expanded.value.map((rid) => ensureDetail(rid, true)))
   } catch (e) { ElMessage.error(e.response?.data?.detail || '保存失败') }
 }
 
@@ -1048,6 +1378,10 @@ onMounted(async () => {
 .pill-fail { background: #fef2f2; color: var(--c-fail); border-color: #fbdcdc; }
 .pill-na { background: #fff8ec; color: #b45309; border-color: #fbeacb; }
 .pill-pending { background: #f4f6f9; color: #64748b; border-color: #e8edf5; }
+/* 计数为 0 的筛选项淡显；当前选中的保持实心（它是"现在看到的这一屏"） */
+.seg-filter button.zero:not(.on) { opacity: .45; }
+/* 控制模块维护弹窗：输入行与表格留白 */
+.cat-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 
 /* 单基线 chip：短名 + 百分比 + 不通过数；进度做成 chip 底部 2px 细线，省下横向空间 */
 .bchip {
@@ -1062,6 +1396,19 @@ onMounted(async () => {
 .bchip-pct.zero { color: var(--c-muted); font-weight: 400; }
 .bchip-fail { color: var(--c-fail); }
 .bchip-line { position: absolute; left: 0; bottom: 0; height: 2px; transition: width .4s ease; }
+/* 「全部通过」：一组几十项、绝大多数是通过时最省力的入口 */
+.bl-bulk { flex-shrink: 0; font-size: 11px; color: #2563eb; background: #eff6ff;
+  border: 1px solid #bfdbfe; border-radius: 999px; padding: 1px 9px; cursor: pointer; }
+.bl-bulk:hover { background: #dbeafe; }
+.bl-bulk:disabled { opacity: .5; cursor: default; }
+/* 「跳到下一个未评估」：安静的中性按钮，别与筛选 pill 抢视线 */
+.detail-jump { font-size: 11px; color: #475569; background: #f1f5f9;
+  border: 1px solid #e2e8f0; border-radius: 999px; padding: 1px 9px; cursor: pointer; }
+.detail-jump:hover { background: #e2e8f0; }
+/* 分页条：贴着列表下方、右对齐（与「漏洞提交」页的 .vuln-pager 同一套观感） */
+.req-pager { display: flex; justify-content: flex-end; padding: 10px 4px 2px; }
+
+
 
 .metric { width: 86px; flex-shrink: 0; text-align: right; }
 .metric-num { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
@@ -1136,12 +1483,26 @@ onMounted(async () => {
 .seg button.on.pass { background: #eafaf0; border-color: #86efac; color: #15803d; font-weight: 600; }
 .seg button.on.fail { background: #fef2f2; border-color: #fca5a5; color: var(--c-fail); font-weight: 600; }
 .seg button.on.na { background: #fff8ec; border-color: #fcd34d; color: #b45309; font-weight: 600; }
+/* 撤销入口：平时隐身，悬停该行才显形（次级操作不该和"通过/不通过"抢点击区） */
+.seg .seg-undo { padding: 2px 7px; font-size: 11px; color: #94a3b8; opacity: 0; }
+.item-table :deep(.el-table__row:hover) .seg-undo { opacity: 1; }
+.seg .seg-undo:hover { border-color: #fca5a5; color: var(--c-fail); }
+/* 「不通过」却没写说明：红字标出 + 输入框描红，直接把"该补依据"指出来 */
+.miss { margin-left: 6px; font-size: 11px; color: var(--c-fail); }
+.muted .miss { margin-right: 4px; }
+.need-why :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px #fca5a5 inset; }
 
 /* 表格：紧凑、行首状态色条、表头浅底 */
 .item-table :deep(.el-table__header th) {
   background: var(--c-bg-soft); color: #64748b; font-weight: 600; font-size: 12px;
 }
 .item-table :deep(.el-table__cell) { padding: 6px 0; font-size: 13px; }
+/* 「要求」折 2 行：长句是这一屏最该读全的内容，单行截成"..."等于把关键信息藏起来
+   （hover 仍有完整 tooltip；折 2 行也保证了行高一致） */
+.item-table :deep(.cell-wrap2 .cell) {
+  white-space: normal; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5;
+}
 .item-table :deep(.el-table__row.st-pass td:first-child) { box-shadow: inset 3px 0 0 var(--c-pass); }
 .item-table :deep(.el-table__row.st-fail td:first-child) { box-shadow: inset 3px 0 0 var(--c-fail); }
 .item-table :deep(.el-table__row.st-na td:first-child) { box-shadow: inset 3px 0 0 var(--c-na); }

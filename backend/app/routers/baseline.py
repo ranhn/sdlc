@@ -17,12 +17,15 @@
 ## 统计口径（两处容易搞错，都在测试里钉住了）
 
 1. **分母 = 绑定范围内的条目**，不是全库条目；
-2. **「不适用」不计入合规率分母**：`合规率 = 通过 ÷ (应评 − 不适用)`。老口径把 na 也算在
-   分母里 —— 老老实实标了"不适用"反而拉低合规率，会逼人虚报"通过"。
-   同时另给 `进度 = 已评估 ÷ 应评`，把"合规率"与"完成度"分开（老口径把未评估也算分母，
-   两个概念混在一个数里）。
+2. **「不适用」也计入合规率分母**：`合规率 = 通过 ÷ 应评`（需求方口径）。
+   中间有一版曾把"不适用"从分母剔除（担心标了 na 反而拉低数字、逼人虚报通过），
+   现按业务要求改回"应评即分母" —— 标了"不适用"的条目同样没通过，不该从分母里消失。
+   另给 `进度 = 已评估 ÷ 应评`，把"合规率"与"完成度"分开（不然未评估会被算进合规率）。
 """
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -32,6 +35,7 @@ from ..baseline_catalog import (
     dump_types,
     label_of,
     normalize_types,
+    parse_types,
 )
 from ..database import get_db
 from ..models import (
@@ -43,10 +47,13 @@ from ..models import (
     User,
 )
 from ..schemas import (
+    BaselineBulkResultIn,
     BaselineCategoryCreate,
     BaselineCategoryOut,
+    BaselineCategoryUpdate,
     BaselineItemCreate,
     BaselineItemOut,
+    BaselineItemUpdate,
     BaselineRequirementBaselineOut,
     BaselineRequirementCreate,
     BaselineRequirementItemOut,
@@ -59,6 +66,9 @@ from ..schemas import (
 from ..security import get_current_user, write_operation_log
 
 from app.utils import network_clock as nc
+from app.utils.baseline_csv import render_baseline_csv
+
+
 router = APIRouter(prefix="/api/baseline", tags=["安全基线"])
 
 # 可写基线评估的角色（与模板维护同一口径）
@@ -87,15 +97,75 @@ def list_categories(baseline_type: str = None, db: Session = Depends(get_db),
 @router.post("/categories", response_model=BaselineCategoryOut, status_code=201)
 def create_category(data: BaselineCategoryCreate, db: Session = Depends(get_db),
                     current: User = Depends(get_current_user)):
+    """新增控制模块。
+
+    重名只在**同一基线内**算冲突（DB 的唯一约束就是 (baseline_type, name)）。
+    旧代码查的是全局重名，于是"后端开发基线里能叫『日志审计』，安全需求基线里就不能叫"——
+    两个不同基线的模块名本来就该允许重名。
+    """
     _require_secops(current)
-    if db.query(BaselineCategory).filter(BaselineCategory.name == data.name).first():
-        raise HTTPException(status_code=400, detail="分类名称已存在")
-    cat = BaselineCategory(**data.model_dump())
+    dup = (db.query(BaselineCategory)
+           .filter(BaselineCategory.baseline_type == data.baseline_type,
+                   BaselineCategory.name == data.name).first())
+    if dup:
+        raise HTTPException(status_code=400, detail=f"「{data.name}」在该基线里已存在")
+    payload = data.model_dump()
+    if not (payload.get("code") or "").strip():
+        payload["code"] = f"cat_{uuid4().hex[:8]}"      # 内部编码，页面不展示
+    cat = BaselineCategory(**payload)
     db.add(cat)
     db.commit()
     db.refresh(cat)
     write_operation_log(db, current, "create_baseline_category", "baseline", f"新增基线分类: {cat.name}")
     return cat
+
+
+@router.put("/categories/{category_id}", response_model=BaselineCategoryOut)
+def update_category(category_id: int, data: BaselineCategoryUpdate,
+                    db: Session = Depends(get_db),
+                    current: User = Depends(get_current_user)):
+    """编辑控制模块（改名 / 改描述 / 调顺序），只改传了的字段。"""
+    _require_secops(current)
+    cat = _get_category(db, category_id)
+    if data.name is not None and data.name != cat.name:
+        dup = (db.query(BaselineCategory)
+               .filter(BaselineCategory.baseline_type == cat.baseline_type,
+                       BaselineCategory.name == data.name,
+                       BaselineCategory.id != cat.id).first())
+        if dup:
+            raise HTTPException(status_code=400, detail=f"该基线里已有「{data.name}」")
+    for field in ("name", "description", "sort"):
+        val = getattr(data, field, None)
+        if val is not None:
+            setattr(cat, field, val)
+    db.commit()
+    db.refresh(cat)
+    write_operation_log(db, current, "update_baseline_category", "baseline",
+                        f"编辑控制模块#{cat.id} {cat.name}")
+    return cat
+
+
+@router.delete("/categories/{category_id}", status_code=204)
+def delete_category(category_id: int, db: Session = Depends(get_db),
+                    current: User = Depends(get_current_user)):
+    """删除控制模块。
+
+    **下面还有检查项时一律拒绝**：删条目会连带删掉各系统在这些条目上的评估结论
+    （结论挂在 item_id 上），那是不可逆的取证数据；该由使用者自己决定这些条目
+    去哪（删掉还是挪到别的模块），而不是替他一起抹掉。
+    """
+    _require_secops(current)
+    cat = _get_category(db, category_id)
+    left = db.query(BaselineItem).filter(BaselineItem.category_id == category_id).count()
+    if left:
+        raise HTTPException(status_code=400,
+                            detail=f"「{cat.name}」下还有 {left} 个检查项：请先把它们删除或移到其它控制模块")
+    name = cat.name
+    db.delete(cat)
+    db.commit()
+    write_operation_log(db, current, "delete_baseline_category", "baseline",
+                        f"删除控制模块: {name}")
+    return None
 
 
 # ============ 基线类型目录 ============
@@ -154,6 +224,7 @@ def list_items(category_id: int | None = None, baseline_type: str | None = None,
 def create_item(data: BaselineItemCreate, db: Session = Depends(get_db),
                 current: User = Depends(get_current_user)):
     _require_secops(current)
+    _check_method_ok(data.check_method)
     if not db.query(BaselineCategory).filter(BaselineCategory.id == data.category_id).first():
         raise HTTPException(status_code=400, detail="分类不存在")
     item = BaselineItem(**data.model_dump())
@@ -163,6 +234,39 @@ def create_item(data: BaselineItemCreate, db: Session = Depends(get_db),
     out = BaselineItemOut.model_validate(item)
     out.category_name = item.category.name if item.category else None
     write_operation_log(db, current, "create_baseline_item", "baseline", f"新增检查项: {item.name}")
+    return out
+
+
+@router.put("/items/{item_id}", response_model=BaselineItemOut)
+def update_item(item_id: int, data: BaselineItemUpdate, db: Session = Depends(get_db),
+                current: User = Depends(get_current_user)):
+    """编辑检查项（模板维护，权限与新增/删除同一道闸）。
+
+    为什么要有它：此前只有"新增 + 删除"，**改个错别字只能删了重建** —— 而删除会连带删掉
+    所有系统在该检查项上的评估结论（前端确认弹窗里就是这么写的）。改名/改要求/挪模块都是
+    零风险操作，不该逼用户走那条路。
+
+    改动不影响已有结论：`baseline_result` 挂的是 `item_id`，与名称/描述无关。
+    """
+    _require_secops(current)
+    _check_method_ok(data.check_method)
+    item = db.query(BaselineItem).filter(BaselineItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="检查项不存在")
+    if data.category_id is not None and not db.query(BaselineCategory).filter(
+            BaselineCategory.id == data.category_id).first():
+        raise HTTPException(status_code=400, detail="控制模块不存在")
+    for field in ("category_id", "name", "description", "check_method", "severity",
+                  "is_required", "sort"):
+        val = getattr(data, field, None)
+        if val is not None:
+            setattr(item, field, val)
+    db.commit()
+    db.refresh(item)
+    write_operation_log(db, current, "update_baseline_item", "baseline",
+                        f"编辑检查项#{item.id} {item.name}")
+    out = BaselineItemOut.model_validate(item)
+    out.category_name = item.category.name if item.category else None
     return out
 
 
@@ -204,12 +308,46 @@ def _save_result(db: Session, system_id: int, item: BaselineItem,
         result = BaselineResult(system_id=system_id, item_id=item.id)
         db.add(result)
     result.status = data.status
-    result.evidence = data.evidence
-    result.checker_id = current.id
-    result.checked_at = nc.utcnow()
+    if data.status == "pending":
+        # 「重置为未评估」：说明、评估人、评估时间一并清空。留着一个 status=pending
+        # 却挂着上次结论说明与评估人的行，读起来像"评过但没填"，而不是"还没评"。
+        result.evidence = None
+        result.checker_id = None
+        result.checked_at = None
+    else:
+        result.evidence = data.evidence
+        result.checker_id = current.id
+        result.checked_at = nc.utcnow()
     db.commit()
     db.refresh(result)
     return result
+
+
+def _validate_result_in(data: BaselineResultUpdate) -> None:
+    """结论校验（单条评估的两个入口共用，口径只能有一份）。
+
+    两条规则，都是"合规"这个场景的实质要求：
+    1. 状态合法：pass / fail / na / **pending**（pending = 重置为未评估）；
+    2. **「不通过」必须留说明**：整改要求、判定依据或证据链接。一条"不通过"没有依据，
+       研发不知道要改什么，审计也问不出所以然 —— 结论可以下，但必须带着理由下。
+    """
+    if data.status not in ("pass", "fail", "na", "pending"):
+        raise HTTPException(status_code=400, detail="状态必须为 pass/fail/na/pending")
+    if data.status == "fail" and not (data.evidence or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="「不通过」必须填写说明：整改要求、判定依据或证据链接")
+
+
+def _check_method_ok(value: str | None) -> None:
+    """检查方式只支持「人工」。
+
+    库里曾有「自动」选项，但**没有任何代码在读 check_method** —— 挂了"自动"的检查项
+    照样要人工点结论（模板库那列也因此常年只有"人工"一个值）。与其留一个名不副实的
+    选项，不如显式拒绝：等真接上扫描器再开。
+    """
+    if value not in (None, "manual"):
+        raise HTTPException(status_code=400,
+                            detail="检查方式目前只支持「人工」（自动扫描尚未接入）")
 
 
 def _owner_name(db: Session, owner_id: int | None) -> str | None:
@@ -275,14 +413,15 @@ def _counts(item_ids, status_map: dict[int, str]) -> dict:
 def _rates(bound: int, cnt: dict) -> dict:
     """合规率 / 进度 / 未评估数（口径见模块 docstring）。"""
     assessed = cnt["pass"] + cnt["fail"] + cnt["na"]
-    applicable = bound - cnt["na"]
     return {
         "bound_items": bound,
         "pass_count": cnt["pass"],
         "fail_count": cnt["fail"],
         "na_count": cnt["na"],
         "pending_count": max(0, bound - assessed),
-        "compliance": round(cnt["pass"] / applicable * 100, 1) if applicable > 0 else 0.0,
+        # 分母 = 应评，**含"不适用"**：标了不适用的条目同样没通过，不该从分母里消失。
+        # （旧口径是 通过 ÷ (应评 − 不适用)；按需求方要求改成"应评即分母"。）
+        "compliance": round(cnt["pass"] / bound * 100, 1) if bound else 0.0,
         "progress": round(assessed / bound * 100, 1) if bound else 0.0,
     }
 
@@ -323,6 +462,40 @@ def _requirement_out(req: BaselineRequirement, system_name: str | None,
         baselines=rows,
         **_rates(bound, total),
     )
+
+
+def _autoclose_if_done(db: Session, req: BaselineRequirement,
+                       current: User | None) -> bool:
+    """评估写完后收口：**绑定范围内全部条目都有结论** → 需求自动置为「已完成」。
+
+    为什么自动：进度 100% 却还挂着"进行中"，看的人根本不知道这条到底算不算完。此前是
+    在行上再加一个「已评完 · 标记完成」的提示 —— 那是**第二个入口**，和操作区里本来就有的
+    「标记完成」重复（页面上于是出现两个标记完成）。现在由系统收口，行上只留一个状态词。
+
+    三条边界：
+      · **只单向收口**：不回退、不自动重开 —— 「重新开启」是人的决定，系统不抢；
+      · 一条基线都没绑（应评 0）不算做完，免得建完需求就自封完成；
+      · 幂等：已经是 done 直接返回，不重复写日志。
+    """
+    if (req.status or "in_progress") == "done":
+        return False
+    bound = _bound_items(db, req.type_keys, {})
+    if not bound:
+        return False
+    if _counts(bound, _system_status(db, req.system_id, {}))["pending"] > 0:
+        return False
+    req.status = "done"
+    db.commit()
+    write_operation_log(db, current, "baseline_requirement_autodone", "baseline",
+                        f"需求#{req.id}「{req.name}」全部评估完成，自动标记为已完成")
+    return True
+
+
+def _get_category(db: Session, category_id: int) -> BaselineCategory:
+    cat = db.query(BaselineCategory).filter(BaselineCategory.id == category_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="控制模块不存在")
+    return cat
 
 
 def _get_requirement(db: Session, requirement_id: int) -> BaselineRequirement:
@@ -611,8 +784,7 @@ def update_requirement_item(requirement_id: int, item_id: int, data: BaselineRes
     req = _get_requirement(db, requirement_id)
     if _role_code(current) not in _WRITE_ROLES and req.owner_id != current.id:
         raise HTTPException(status_code=403, detail="仅管理员/安全专家或该需求负责人可评估")
-    if data.status not in ("pass", "fail", "na"):
-        raise HTTPException(status_code=400, detail="状态必须为 pass/fail/na")
+    _validate_result_in(data)
 
     item = db.query(BaselineItem).filter(BaselineItem.id == item_id).first()
     if not item:
@@ -621,9 +793,164 @@ def update_requirement_item(requirement_id: int, item_id: int, data: BaselineRes
         raise HTTPException(status_code=400, detail="该检查项不在本需求绑定的基线范围内")
 
     result = _save_result(db, req.system_id, item, data, current)
+    # 全部评完就自动收口（行上不再需要第二个"标记完成"入口）
+    _autoclose_if_done(db, req, current)
     write_operation_log(db, current, "check_baseline", "baseline",
                         f"需求#{req.id} 系统#{req.system_id} 检查项#{item_id} -> {data.status}")
     return _result_out(result)
+
+
+@router.post("/requirements/{requirement_id}/bulk-result")
+def bulk_update_requirement_items(requirement_id: int, data: BaselineBulkResultIn,
+                                  db: Session = Depends(get_db),
+                                  current: User = Depends(get_current_user)):
+    """把一个需求下**某条基线**的检查项批量置为同一结果（页面上的「全部通过」）。
+
+    为什么要有它：一条基线动辄几十上百项，而绝大多数结论是"通过" —— 逐条点按钮是这页
+    最费时间的操作（实测有需求挂着 215 项待评估）。
+
+    权限与单条评估**完全一致**（管理员/安全专家，或该需求负责人本人），并且和单条接口
+    一样把放宽的权限**锁在本需求绑定的范围内**：只处理"本需求绑定的基线 × 传入的基线类型"
+    的交集，拿到别人的 item_id 也动不了。
+
+    ⚠️ 默认 only_pending=True：只填"未评估"的。已有结论（尤其"不通过"）是有依据的判断，
+    批量操作绝不能顺手覆盖 —— 要整组重刷得显式传 only_pending=False。
+    """
+    req = _get_requirement(db, requirement_id)
+    if _role_code(current) not in _WRITE_ROLES and req.owner_id != current.id:
+        raise HTTPException(status_code=403, detail="仅管理员/安全专家或该需求负责人可评估")
+    # 批量只允许「通过」/「不适用」：「不通过」必须逐项写依据（见 _validate_result_in）。
+    # 一次给一整组塞同一句理由，等于把"依据"变成套话 —— 恰恰是合规检查最怕的东西。
+    if data.status not in ("pass", "na"):
+        raise HTTPException(status_code=400,
+                            detail="批量只能置为 pass/na；「不通过」需逐项填写说明")
+    if data.baseline_type not in TYPE_KEYS:
+        raise HTTPException(status_code=400, detail="基线类型不存在")
+    if data.baseline_type not in parse_types(req.type_keys):
+        raise HTTPException(status_code=400, detail="该基线不在本需求绑定范围内")
+
+    bound = set(_bound_items(db, [data.baseline_type], {}))
+    items = []
+    if bound:
+        items = (db.query(BaselineItem)
+                 .join(BaselineCategory, BaselineItem.category_id == BaselineCategory.id)
+                 .filter(BaselineCategory.baseline_type == data.baseline_type,
+                         BaselineItem.id.in_(bound))
+                 .order_by(BaselineItem.category_id, BaselineItem.sort).all())
+
+    changed = skipped = 0
+    for it in items:
+        r = db.query(BaselineResult).filter(BaselineResult.system_id == req.system_id,
+                                           BaselineResult.item_id == it.id).first()
+        if r is not None and data.only_pending and r.status != "pending":
+            skipped += 1      # 已有结论（尤其"不通过"）不是"顺手覆盖"的对象
+            continue
+        _save_result(db, req.system_id, it, BaselineResultUpdate(status=data.status), current)
+        changed += 1
+    auto_done = _autoclose_if_done(db, req, current)
+    write_operation_log(db, current, "check_baseline_bulk", "baseline",
+                        f"需求#{req.id} 基线 {data.baseline_type} 批量置为 {data.status}："
+                        f"改 {changed} 项 / 跳过 {skipped} 项")
+    return {"changed": changed, "skipped": skipped, "total": len(items),
+            "status": data.status, "auto_done": auto_done}
+
+
+def _export_rows(db: Session, req: BaselineRequirement) -> list[dict]:
+    """该需求绑定范围内的**全部条目** + 已有结论（导出 = 全量台账，不跟页面筛选走）。
+
+    为什么按"全部"而不是"当前筛选"：这份文件的用途是留档/送审，缺页的台账没有意义；
+    页面上筛来筛去是工作视角，两者目的不同。顺序与需求详情一致（基线目录序 + 分类 + sort）。
+    """
+    keys = req.type_keys
+    if not keys:
+        return []
+    items = (
+        db.query(BaselineItem)
+        .join(BaselineCategory, BaselineItem.category_id == BaselineCategory.id)
+        .filter(BaselineCategory.baseline_type.in_(keys))
+        .order_by(BaselineItem.category_id, BaselineItem.sort)
+        .all()
+    )
+    results = {
+        r.item_id: r
+        for r in db.query(BaselineResult).filter(BaselineResult.system_id == req.system_id).all()
+    }
+    checker_ids = {r.checker_id for r in results.values() if r.checker_id}
+    names: dict[int, str] = {}
+    if checker_ids:
+        names = {u.id: (u.full_name or u.username)
+                 for u in db.query(User).filter(User.id.in_(checker_ids)).all()}
+    rows: list[dict] = []
+    for it in items:
+        r = results.get(it.id)
+        rows.append({
+            "baseline": label_of(it.category.baseline_type) if it.category else "",
+            "category": it.category.name if it.category else "",
+            "item": it.name,
+            "description": it.description or "",
+            "status": r.status if r else "pending",
+            "evidence": (r.evidence if r else "") or "",
+            "checker": names.get(r.checker_id, "") if r and r.checker_id else "",
+            "checked_at": r.checked_at if r else None,
+        })
+    return rows
+
+
+@router.get("/requirements/{requirement_id}/export")
+def export_requirement(requirement_id: int, fmt: str = "csv",
+                       db: Session = Depends(get_db),
+                       current: User = Depends(get_current_user)):
+    """导出某需求的评估明细（CSV，留档/送审用）。
+
+    权限与评估**完全一致**（管理员/安全专家，或该需求负责人本人）：文件里逐条带着
+    "结论 + 依据"，负责人导出自己的需求天经地义；而无关的人连评估都做不了，
+    导出自然也不该放行（否则评估的权限闸就成了摆设）。
+
+    文件名用 ``baseline-req<需求ID>-<时间>.csv``：需求名可能含中文，塞进
+    Content-Disposition 需要 RFC 5987 编码、各种客户端支持不一，ID 最稳；
+    文件内前两列就是系统名与需求名，打开就知道是哪份。
+    """
+    if fmt != "csv":
+        raise HTTPException(status_code=400, detail="目前仅支持 csv")
+    req = _get_requirement(db, requirement_id)
+    if _role_code(current) not in _WRITE_ROLES and req.owner_id != current.id:
+        raise HTTPException(status_code=403, detail="仅管理员/安全专家或该需求负责人可导出")
+
+    system = db.query(AssetSystem).filter(AssetSystem.id == req.system_id).first()
+    data = render_baseline_csv(_export_rows(db, req),
+                               system_name=system.name if system else "",
+                               requirement_name=req.name or "")
+    stamp = nc.now().strftime("%Y%m%d-%H%M")
+    write_operation_log(db, current, "export_baseline", "baseline",
+                        f"导出需求#{req.id} 评估明细 CSV")
+    return StreamingResponse(
+        iter([data]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="baseline-req{req.id}-{stamp}.csv"'},
+    )
+
+
+@router.post("/requirements/notify-due")
+def notify_due_requirements(days: int | None = None, dry_run: bool = False,
+                            db: Session = Depends(get_db),
+                            current: User = Depends(get_current_user)):
+    """手动跑一轮「需求到期提醒」（补发 / 验证用）。
+
+    为什么要手动入口：定时任务只在每天固定时刻发一次，而"该发的人没收到""想提前提醒一下"
+    是常态需求 —— 有个按钮就能补发，也不用来回重启服务去验证。
+    去重是按天记的（操作日志），所以**手动发过的，当天定时任务不会再发一遍**。
+
+    dry_run=True：只列出"会发给谁、为什么跳过"，不发消息也不写日志 —— 上线前自检用。
+    """
+    _require_secops(current)
+    from ..baseline_reminder import tick
+
+    result = tick(db, days=days, dry_run=dry_run)
+    if not dry_run:
+        write_operation_log(db, current, "baseline_due_manual", "baseline",
+                            f"手动触发到期提醒：待发 {result['due']} 条 / 已发 {result['sent']} 条")
+    return result
 
 
 # ============ 系统合规检查（老接口，保留兼容）============
@@ -668,8 +995,7 @@ def update_system_item(system_id: int, item_id: int, data: BaselineResultUpdate,
                        db: Session = Depends(get_db),
                        current: User = Depends(get_current_user)):
     _require_secops(current)
-    if data.status not in ("pass", "fail", "na"):
-        raise HTTPException(status_code=400, detail="状态必须为 pass/fail/na")
+    _validate_result_in(data)
     item = db.query(BaselineItem).filter(BaselineItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="检查项不存在")

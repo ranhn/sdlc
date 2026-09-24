@@ -499,10 +499,24 @@ class QuizExamOut(BaseModel):
 # ============ 安全基线 ============
 class BaselineCategoryCreate(BaseModel):
     name: str
-    code: str
+    # code 是**内部编码**：只在"按 Excel 重新导入"时用来匹配已有分类
+    # （scripts/import_baseline.py）。页面上新增控制模块不该逼用户填一个内部字段
+    # → 不传就由后端自动生成。
+    code: Optional[str] = None
     description: Optional[str] = None
     sort: int = 0
     baseline_type: str = "security_requirement"
+
+
+class BaselineCategoryUpdate(BaseModel):
+    """编辑控制模块（改名 / 改描述 / 调顺序，只改传了的字段）。
+
+    为什么需要它：分类此前只有 GET + POST，**建错名字只能留着**（检查项能删能改，
+    分类却动不了）—— 模块名是要给人看的，写错了必须能修。
+    """
+    name: Optional[str] = None
+    description: Optional[str] = None
+    sort: Optional[int] = None
 
 
 class BaselineCategoryOut(BaseModel):
@@ -527,6 +541,21 @@ class BaselineItemCreate(BaseModel):
     sort: int = 0
 
 
+class BaselineItemUpdate(BaseModel):
+    """编辑检查项（只改传了的字段）。
+
+    为什么需要它：此前只有"新增 + 删除"两个口子，改个错别字只能**删了重建** —— 而删除会
+    连带删掉所有系统在该检查项上的评估结论。改名/改要求是零风险操作，不该走那条路。
+    """
+    category_id: Optional[int] = None      # 允许挪模块（结论挂在 item_id 上，不受影响）
+    name: Optional[str] = Field(None, min_length=2, max_length=200)
+    description: Optional[str] = None
+    check_method: Optional[str] = None
+    severity: Optional[str] = None
+    is_required: Optional[bool] = None
+    sort: Optional[int] = None
+
+
 class BaselineItemOut(BaseModel):
     id: int
     category_id: int
@@ -546,6 +575,13 @@ class BaselineItemOut(BaseModel):
 class BaselineResultUpdate(BaseModel):
     status: str = "pass"   # pass / fail / na
     evidence: Optional[str] = None
+
+
+class BaselineBulkResultIn(BaseModel):
+    """批量评估（页面上的「全部通过」）。"""
+    baseline_type: str              # 只处理这条基线的条目
+    status: str = "pass"            # pass / fail / na
+    only_pending: bool = True       # 默认只填未评估的：已有结论（尤其"不通过"）不覆盖
 
 
 class BaselineResultOut(BaseModel):

@@ -42,7 +42,7 @@ from sqlalchemy import text
 from .database import Base, SessionLocal, engine
 from .models import BaselineCategory, BaselineItem
 from .routers import admin, auth, baseline, dashboard, feishu, logs, scan, training, vulns
-from . import scheduler
+from . import baseline_reminder, scheduler
 from .vuln_taxonomy import TYPE_TO_CATEGORY
 
 # 创建数据表
@@ -220,18 +220,23 @@ def health():
 
 
 # ============ 定时任务 ============
-# 目前只有一个：每周一 08:00（北京时间）自动同步飞书通讯录，见 app/scheduler.py
+# 两个：① 每周一 08:00（北京时间）自动同步飞书通讯录（app/scheduler.py）；
+#       ② 每天 09:00 后提醒基线需求负责人（app/baseline_reminder.py）。
 #
 # 为什么挂在 startup 事件里、而不是模块级 asyncio.create_task()：
 #   import 阶段还没有事件循环，模块级 create_task 会直接抛 RuntimeError（服务起不来）。
 _scheduler_task: "asyncio.Task | None" = None
+_due_task: "asyncio.Task | None" = None
 
 
 @app.on_event("startup")
 async def _start_schedulers() -> None:
     """启动后台定时任务（幂等：已启动则不重复起）。"""
-    global _scheduler_task
+    global _scheduler_task, _due_task
     if _scheduler_task is None or _scheduler_task.done():
         # 必须存**强引用**：asyncio 只持弱引用，不存变量的话任务会被 GC 静默回收 ——
         # 表现是"服务正常、但定时任务某天开始一声不响地不跑了"，极难排查。
         _scheduler_task = asyncio.create_task(scheduler.weekly_feishu_sync_loop())
+    if _due_task is None or _due_task.done():
+        # 基线需求到期提醒：同一个需求每天最多一条（去重靠操作日志）
+        _due_task = asyncio.create_task(baseline_reminder.daily_due_loop())
