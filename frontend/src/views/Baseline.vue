@@ -15,8 +15,7 @@
     <!-- ===== 概览：合规率环 + 关键指标 + 条目构成 ===== -->
     <section class="hero">
       <!-- 口径说明从下方那行常驻文字挪到这里：需要时悬停可见，不需要时不占屏幕 -->
-      <div class="hero-ring"
-           title="合规率 = 通过 ÷ 应评（「不适用」也计入分母）；只统计各需求已绑定的基线，同一检查项在多条需求里只算一次">
+      <div class="hero-ring" :title="overviewRateTip">
 
         <div class="ring-wrap">
           <svg viewBox="0 0 120 120" class="ring">
@@ -169,7 +168,7 @@
             <!-- 两个百分比并排最容易混：这里把口径写进悬停说明 ——
                  合规率 = 做对了多少，进度 = 做了多少 -->
             <div class="metric-num" :class="r.compliance > 0 ? rateLevel(r.compliance) : 'zero'"
-                 title="合规率 = 通过 ÷ 应评（含「不适用」）—— 做对了多少">
+                 :title="rateTip(r)">
               {{ r.compliance }}<span class="pct">%</span>
             </div>
             <div class="metric-lbl">合规率</div>
@@ -485,7 +484,14 @@ const canManage = computed(() => ['admin', 'secops'].includes(store.role))
 
 // ============ 概览 ============
 const overview = reactive({ requirement_count: 0, system_count: 0, done_count: 0, bound_items: 0,
-  compliance: 0, progress: 0, pass_count: 0, fail_count: 0, na_count: 0, pending_count: 0 })
+  applicable: 0, compliance: 0, progress: 0, pass_count: 0, fail_count: 0, na_count: 0,
+  pending_count: 0 })
+
+/** 整体合规率的口径说明（同样带上数字）：分母是适用项 = 应评 − 不适用。 */
+const overviewRateTip = computed(() =>
+  `合规率 = 通过 ${overview.pass_count} ÷ 适用项 ${overview.applicable}` +
+  (overview.na_count ? `（应评 ${overview.bound_items} − 不适用 ${overview.na_count}）` : '') +
+  '；只统计各需求已绑定的基线，同一检查项在多条需求里只算一次')
 
 const assessedTotal = computed(() => overview.pass_count + overview.fail_count + overview.na_count)
 
@@ -497,7 +503,8 @@ const kpis = computed(() => ([
   { label: '评估进度', value: `${overview.progress}%`, hint: `${assessedTotal.value}/${overview.bound_items} 已评估` },
 ]))
 
-// 条目构成条（分母 = 应评条目；合规率的分母也是它 —— 「不适用」同样计入）
+// 条目构成条：四段之和 = **应评**条目（这是"工作量"的全貌）。
+// 注意合规率的分母不是它，而是**适用项**（应评 − 不适用）—— 不适用不加分也不扣分。
 const stackSegments = computed(() => {
   const total = Math.max(1, overview.bound_items)
   const raw = [
@@ -775,6 +782,17 @@ function toggleBaseline(rid, key) {
   openBaselines[rid] = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]
 }
 function assessed(r) { return r.pass_count + r.fail_count + r.na_count }
+
+/**
+ * 合规率的口径说明（**连当前数字一起写出来**，读者自己就能核对，不用去猜分母）：
+ * 分母是「适用项」= 应评 − 不适用 —— 标了"不适用"的条目既不加分也不扣分
+ * （它只是"这条对这套系统不成立"，不属于"没做到"）。
+ */
+function rateTip(r) {
+  const na = r.na_count || 0
+  return `合规率 = 通过 ${r.pass_count} ÷ 适用项 ${r.applicable}` +
+    (na ? `（应评 ${r.bound_items} − 不适用 ${na}）` : '') + ' —— 做对了多少'
+}
 
 function initial(name) { return (name || '?').trim().slice(0, 1) }
 const AVATAR_BG = ['#e0edff', '#e8f7ee', '#fdeee0', '#f2e8ff', '#e0f5f7']

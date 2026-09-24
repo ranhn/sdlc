@@ -132,7 +132,7 @@
         v-if="props.dfdAutofix && props.dfdAutofix.length"
         class="autofix-fab"
         type="button"
-        title="查看自���纠错明细"
+        title="查看自动纠错明细"
         @click="autofixOpen = !autofixOpen"
       >
         <svg viewBox="0 0 20 20" width="13" height="13" aria-hidden="true">
@@ -2123,7 +2123,7 @@ function addEdge(cell) {
   // ——因为 X6 的 distance/offset 是"沿边参数化"，与后端按弧长取点的口径
   // 存在细微差异，而绝对坐标能与导出图逐像素对上。
   //
-  // 与后�� PNG 完全同源：后端渲染时同样优先消费 labelX/labelY
+  // 与后端 PNG 完全同源：后端渲染时同样优先消费 labelX/labelY
   // （见 dfd_renderer 的标签绘制分支），因此页面上标签位置 = 导出图标签位置。
   const hasAbsLabel = !!(flowHint
     && typeof flowHint.labelX === 'number' && typeof flowHint.labelY === 'number')

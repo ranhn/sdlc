@@ -155,9 +155,9 @@ def init():
     )
     if not is_first_deploy:
         _safe_print("✅ 种子数据初始化完成")
-        _safe_print("   ℹ️  检测到已有业务数据（升级场���），跳过示例/演示数据 seed")
+        _safe_print("   ℹ️  检测到已有业务数据（升级场景），跳过示例/演示数据 seed")
         _safe_print("   管理员: admin / （请通过平台修改初始密码）")
-        _safe_print("   其他账��请在'人员管理'页面手动添加")
+        _safe_print("   其他账号请在'人员管理'页面手动添加")
         db.close()
         return
 

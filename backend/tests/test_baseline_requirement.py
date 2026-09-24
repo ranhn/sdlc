@@ -160,11 +160,12 @@ def test_denominator_is_bound_scope_only():
     assert r2.json()["baseline_types"] == ["security_requirement", "backend_dev"], r2.json()
 
 
-def test_na_counts_in_compliance_denominator():
-    """1 通过 / 1 不通过 / 1 不适用 → 合规率 33.3（**不适用也算分母**），进度 100。
+def test_na_excluded_from_compliance():
+    """合规率只看**适用项**：`合规率 = 通过 ÷ (应评 − 不适用)`，进度仍按应评算。
 
-    口径变更（需求方要求）：`合规率 = 通过 ÷ 应评`。旧版把"不适用"从分母剔除以避免
-    "标了 na 反而拉低数字"，现在按"应评即分母" —— 标了不适用的条目同样没通过。
+    为什么改（用户反馈的真实反例）：12 通过 + 0 不通过 + 6 不适用，旧口径 12/18 = 66.7% ——
+    一条不通过都没有，界面却在说"只合规了三分之二"；这还会逼着人把"不适用"改成"通过"来凑数
+    （数据从此失真）。不适用 = "这条对这套系统不成立"，不是"没做到"。
     """
     db, client = _setup()
     CURRENT["user"] = _users(db)["admin"]
@@ -180,10 +181,40 @@ def test_na_counts_in_compliance_denominator():
     row = client.get("/api/baseline/requirements").json()[0]
     assert (row["pass_count"], row["fail_count"], row["na_count"]) == (1, 1, 1), row
     assert row["pending_count"] == 0, row
+    assert row["progress"] == 100.0, row          # 进度：不适用也算"已评估"
+    assert row["applicable"] == 2, row            # 适用项 = 应评 3 − 不适用 1
+    assert row["compliance"] == 50.0, row         # 1 ÷ 2
+    assert row["compliance"] != 33.3, "「不适用」不该被算成没通过"
+
+
+def test_na_does_not_count_as_failure():
+    """用户举的那类账：**有通过、有不适用、没有不通过 → 100%**。
+
+    测试数据里两条基线共 5 项 → 用同一形状验证：2 通过 + 3 不适用 = 100%（旧口径 2/5 = 40%）。
+    同时钉住"全不适用"的边界：适用项为 0 时合规率给 0.0（而不是 100% —— 否则
+    "全标不适用"就成了刷分手段）。
+    """
+    db, client = _setup()
+    CURRENT["user"] = _users(db)["admin"]
+    req = _create(db, client, types=["backend_dev", "security_requirement"]).json()
+    items = client.get(f"/api/baseline/requirements/{req['id']}/items").json()
+    assert len(items) == 5, items
+
+    for i, item in enumerate(items):
+        status = "pass" if i < 2 else "na"
+        assert client.put(f"/api/baseline/requirements/{req['id']}/items/{item['item_id']}",
+                          json={"status": status}).status_code == 200
+    row = client.get("/api/baseline/requirements").json()[0]
+    assert row["applicable"] == 2 and row["compliance"] == 100.0, row
     assert row["progress"] == 100.0, row
-    # 分母 = 应评 3 → 1/3 = 33.3（旧口径 1/2 = 50.0，这里明确把它排除掉）
-    assert row["compliance"] == 33.3, row
-    assert row["compliance"] != 50.0, "「不适用」要计入合规率分母（现行口径）"
+
+    # 全标不适用：适用项 0 → 0.0（不给"刷满"的口子）
+    for item in items:
+        assert client.put(f"/api/baseline/requirements/{req['id']}/items/{item['item_id']}",
+                          json={"status": "na"}).status_code == 200
+    row = client.get("/api/baseline/requirements").json()[0]
+    assert row["applicable"] == 0 and row["compliance"] == 0.0, row
+    assert row["na_count"] == 5, row
 
 
 def test_empty_baseline_does_not_break_rates():

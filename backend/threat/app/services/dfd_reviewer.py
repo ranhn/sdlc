@@ -212,7 +212,7 @@ class DFDReviewer:
              "log": [<自校验日志条目 str>], "stats": <计数信息 dict>}
             ``stats`` 供前端实时指标卡使用：
               - findings：AI 报告的结构问题条数
-              - fixed   ：实际采纳并落地的修正动作���
+              - fixed   ：实际采纳并落地的修正动作数
               - skipped ：被执行条件拦下（未采纳）的条数
             任何异常都返回原始 components/flows 与一条错误日志（不抛出）。
         """

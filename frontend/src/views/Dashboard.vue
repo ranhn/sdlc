@@ -88,7 +88,7 @@
             <div class="base-systems">
               <div v-if="baseSystems.length" class="bsys-caption">按系统合规率（低 → 高）</div>
               <div v-for="s in baseSystems" :key="s.system_id" class="bsys"
-                   :title="`${s.system_name}：应评 ${s.bound_items} 项 · 通过 ${s.pass_count} / 不通过 ${s.fail_count} / 未评估 ${s.pending_count}`">
+                   :title="`${s.system_name}：应评 ${s.bound_items} 项 · 通过 ${s.pass_count} / 不通过 ${s.fail_count} / 不适用 ${s.na_count} / 未评估 ${s.pending_count}；合规率 = 通过 ÷ 适用项 ${s.applicable}`">
                 <span class="bsys-name">{{ s.system_name }}</span>
                 <span class="bsys-track"><i :style="{ width: s.barWidth + '%', background: s.color }" /></span>
                 <span class="bsys-pct" :style="{ color: s.color }">{{ s.compliance }}%</span>

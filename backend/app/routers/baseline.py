@@ -17,10 +17,12 @@
 ## 统计口径（两处容易搞错，都在测试里钉住了）
 
 1. **分母 = 绑定范围内的条目**，不是全库条目；
-2. **「不适用」也计入合规率分母**：`合规率 = 通过 ÷ 应评`（需求方口径）。
-   中间有一版曾把"不适用"从分母剔除（担心标了 na 反而拉低数字、逼人虚报通过），
-   现按业务要求改回"应评即分母" —— 标了"不适用"的条目同样没通过，不该从分母里消失。
-   另给 `进度 = 已评估 ÷ 应评`，把"合规率"与"完成度"分开（不然未评估会被算进合规率）。
+2. **合规率只看适用项**：`合规率 = 通过 ÷ (应评 − 不适用)` —— **「不适用」既不进分子也不进分母**。
+   它的语义是"这条对这套系统不成立"，不是"没做到"；把它算作不达标，等于让标了不适用的系统
+   永远到不了 100%，还会逼人把"不适用"改成"通过"来凑数（数据变得更假）。
+   （曾经两版口径反复：先剔除 na、后改成"应评即分母"；现按"不适用不加分也不扣分"定稿。
+   实测反例：12 通过 + 6 不适用 + 0 不通过，旧口径显示 66.7%。）
+   配套 `进度 = 已评估 ÷ 应评`（含不适用），把"做对多少"与"做了多少"分开。
 """
 from uuid import uuid4
 
@@ -413,15 +415,21 @@ def _counts(item_ids, status_map: dict[int, str]) -> dict:
 def _rates(bound: int, cnt: dict) -> dict:
     """合规率 / 进度 / 未评估数（口径见模块 docstring）。"""
     assessed = cnt["pass"] + cnt["fail"] + cnt["na"]
+    # 合规率的分母是**适用项**（应评 − 不适用）：标了"不适用"的条目既不进分子也不进分母，
+    # 它只是"这条对这套系统不成立"，不属于"没做到"。
+    # （旧口径把 na 留在分母里：12 通过 + 6 不适用 = 66.7%，明明一条不通过都没有，界面却在
+    #   说"只合规了三分之二" —— 而且会逼着人把"不适用"改成"通过"来凑数字，把数据搞脏。）
+    applicable = max(0, bound - cnt["na"])
     return {
         "bound_items": bound,
+        "applicable": applicable,
         "pass_count": cnt["pass"],
         "fail_count": cnt["fail"],
         "na_count": cnt["na"],
         "pending_count": max(0, bound - assessed),
-        # 分母 = 应评，**含"不适用"**：标了不适用的条目同样没通过，不该从分母里消失。
-        # （旧口径是 通过 ÷ (应评 − 不适用)；按需求方要求改成"应评即分母"。）
-        "compliance": round(cnt["pass"] / bound * 100, 1) if bound else 0.0,
+        # 有适用项时才谈合规率；**一条适用项都没有**（全标不适用）→ 0.0，且它在整体口径里
+        # 不贡献分子分母（pass / applicable 都是 0），不会把整体数字拉低。
+        "compliance": round(cnt["pass"] / applicable * 100, 1) if applicable else 0.0,
         "progress": round(assessed / bound * 100, 1) if bound else 0.0,
     }
 
@@ -443,6 +451,7 @@ def _requirement_out(req: BaselineRequirement, system_name: str | None,
         per = _rates(len(ids), cnt)
         rows.append(BaselineRequirementBaselineOut(
             type=key, label=label_of(key), total=len(ids),
+            applicable=per["applicable"],
             pass_count=cnt["pass"], fail_count=cnt["fail"], na_count=cnt["na"],
             pending_count=per["pending_count"],
             compliance=per["compliance"], progress=per["progress"],
@@ -545,8 +554,10 @@ def requirements_overview(db: Session = Depends(get_db),
             "system_id": sid,
             "system_name": sys_names.get(sid),
             "bound_items": per["bound_items"],
+            "applicable": per["applicable"],       # 合规率的分母（应评 − 不适用）
             "pass_count": per["pass_count"],
             "fail_count": per["fail_count"],
+            "na_count": per["na_count"],       # 首页按系统的那行也说明"不适用"有几项
             "pending_count": per["pending_count"],
             "compliance": per["compliance"],
             "progress": per["progress"],
@@ -559,6 +570,7 @@ def requirements_overview(db: Session = Depends(get_db),
         "system_count": len(per_system),
         "done_count": sum(1 for r in reqs if r.status == "done"),
         "bound_items": cited["bound_items"],
+        "applicable": cited["applicable"],       # 合规率的分母（应评 − 不适用）
         "compliance": cited["compliance"],
         "progress": cited["progress"],
         "pass_count": cited["pass_count"],

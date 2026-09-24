@@ -146,14 +146,25 @@
         <el-text>{{ current.description || '无' }}</el-text>
 
         <div class="sec-title">复现步骤</div>
-        <el-text><pre class="pre">{{ current.reproduce_steps || '无' }}</pre></el-text>
+        <!-- 一步一块：**截图就贴在这一步下面**，哪张图对应哪一步不用回头数步号。
+             原先截图统一堆在下面一块「截图证据」里，步号与图文对不上（已去掉那块）。
+             配对逻辑与「提交漏洞」详情共用 utils/reproduceSteps.js，两页不会各说各话。 -->
+        <template v-if="detailSteps.length">
+          <div v-for="s in detailSteps" :key="s.step_no" class="fx-step">
+            <div class="fx-step-no">{{ s.step_no }}</div>
+            <div class="fx-step-body">
+              <div class="fx-step-desc">{{ s.desc }}</div>
+              <div v-if="s.imgs.length" class="fx-step-shots">
+                <el-image v-for="(im, i) in s.imgs" :key="i" :src="im" :preview-src-list="s.imgs"
+                          :initial-index="i" fit="cover" class="shot" hide-on-click-modal />
+              </div>
+            </div>
+          </div>
+        </template>
+        <el-text v-else>无</el-text>
 
         <div class="sec-title">影响范围</div>
         <el-text>{{ current.impact || '无' }}</el-text>
-
-        <div v-if="current.screenshots && current.screenshots.length" class="sec-title">截图证据</div>
-        <el-image v-for="(img, i) in current.screenshots" :key="i" :src="img" :preview-src-list="current.screenshots"
-          fit="cover" class="shot" />
 
         <!-- 状态操作 -->
         <!-- 修复人（该漏洞负责人）在这里就能走完整条链路：拿到漏洞先「确认」成立或
@@ -237,6 +248,8 @@ import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 import { fmtDateTime } from '../utils/time'
 import { userLabel } from '../utils/userLabel'
+// 复现步骤 × 截图的配对（与「提交漏洞」详情共用同一份解析）
+import { stepsWithShots } from '../utils/reproduceSteps'
 
 const store = useUserStore()
 const route = useRoute()
@@ -329,6 +342,9 @@ const current = ref(null)
 const comments = ref([])
 const newComment = ref('')
 const flowActive = computed(() => (current.value ? flowMap[current.value.status] || 0 : 0))
+// 复现步骤 + **每一步自己的截图**（配对见 utils/reproduceSteps.js）。
+// 原先这里只平铺两步文字、截图另起一块「截图证据」，读者得自己数步号去对齐图文。
+const detailSteps = computed(() => stepsWithShots(current.value))
 
 // 指派 / 驳回弹窗状态（与「提交漏洞」页同形态）
 const assignVisible = ref(false)
@@ -534,6 +550,13 @@ onMounted(async () => {
 .sec-title { font-weight: 600; margin: 16px 0 8px; color: #0f172a; }
 .pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
 .shot { width: 90px; height: 90px; margin: 4px; border-radius: 6px; }
+/* 复现步骤：一步一块，截图贴在该步下面（与「提交漏洞」详情同一版式） */
+.fx-step { display: flex; gap: 8px; padding: 8px; margin-bottom: 6px; background: #f8fafc; border-radius: 8px; }
+.fx-step-no { width: 24px; height: 24px; line-height: 24px; text-align: center; flex-shrink: 0; background: #3b82f6; color: #fff; border-radius: 50%; font-size: 12px; }
+.fx-step-body { flex: 1; min-width: 0; }
+.fx-step-desc { white-space: pre-wrap; color: #0f172a; }
+.fx-step-shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.fx-step-shots .shot { margin: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 /* 驳回原因：贴在顶部信息区下面，红底一眼可见（与「提交漏洞」页同一样式） */
 .reject-banner {

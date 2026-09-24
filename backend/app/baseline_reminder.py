@@ -131,7 +131,7 @@ def build_card(*, system_name: str, req_name: str, due_text: str, left: int,
             f"**需求**：{req_name}",
             f"**截止**：{due_text}",
             f"**已评估**：{assessed}/{bound}",          # 「做了多少」
-            f"**合规率**：{compliance}%（通过 ÷ 应评）",  # 「做对多少」——两者口径写清楚，别混
+            f"**合规率**：{compliance}%（通过 ÷ 适用项）",  # 「做对多少」——两者口径写清楚，别混
             f"**不通过**：{fail_count} 项",
             f"**{'已逾期' if overdue else '进行中'}**：" + ("请尽快推进并补上依据" if fail_count else "按计划推进即可"),
         ),

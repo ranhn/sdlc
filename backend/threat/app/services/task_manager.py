@@ -6,7 +6,7 @@
 - **同时落盘一份 JSON**：后端重启（部署、崩溃、容器重建）后，进行中的任务
   原本会「凭空消失」，前端只能拿到 404 并提示用户重做，体验很差。
   落盘后重启可恢复任务历史，并把重启前处于 pending/running 的任务标记为
-  中断（interrupted），前端据此给出明确提示而非「找不到任务」���
+  中断（interrupted），前端据此给出明确提示而非「找不到任务」。
 - 任务生命周期：pending -> running -> success | error | cancelled | interrupted。
 - 结果在任务完成后保留一段时间（TTL），到期自动清理，避免内存膨胀。
 - 若未来需要多 worker / 多机，可替换为 Redis + Celery，但 API 契约保持不变。

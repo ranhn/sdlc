@@ -1536,7 +1536,7 @@ def format_report(name: str, m: dict[str, Any]) -> str:
         for it in items[:5]:
             lines.append(f"       - {it}")
         if len(items) > 5:
-            lines.append(f"       ... ���有 {len(items) - 5} 项")
+            lines.append(f"       ... 还有 {len(items) - 5} 项")
     lines.append(f"  span_ratio={m['span_ratio']:.2f} (参考<=3.0)  "
                  f"fill_ratio={m['fill_ratio']:.1%} (目标>=75%)  "
                  f"aspect={m['canvas_aspect']:.2f} (目标<=2.6)")

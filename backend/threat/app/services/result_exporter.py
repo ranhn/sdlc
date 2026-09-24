@@ -1379,7 +1379,7 @@ def render_result_docx(record: dict[str, Any]) -> bytes:
 
     # ---------- 章节编排（条件渲染，目录与实际章节共用同一份清单） ----------
     # P1：系统说明（建模对象）——由分析阶段产出的 systemProfile 驱动，
-    # 缺失时��章省略（不占位、不写“无数据”）。
+    # 缺失时该章省略（不占位、不写“无数据”）。
     system_profile = stats.get("systemProfile") or {}
     has_profile = bool(system_profile)
 

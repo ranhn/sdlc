@@ -340,7 +340,7 @@ CROSS_MARKER_FILL = "#dc2626"
 # 位置不一致，密集图尤其明显（前端截图里中部标签成灾）。
 #
 # 现在改为：**布局期（model_builder）用本模块的纯函数算一次最终落点**，
-# 结果写进 diagram.layoutHints[flowId].labelX/labelY（模���坐标），
+# 结果写进 diagram.layoutHints[flowId].labelX/labelY（模型坐标），
 # 前端直接把标签钉在该坐标上，不再自行避让；后端 PNG 也优先消费同一
 # 结果，只有拿不到时才回退到自己的运行时避让。
 #
@@ -371,7 +371,7 @@ def point_on_polyline(
 
     这是边标签锚点的唯一实现：后端 PNG 与布局期标签避让都调用它，
     语义与前端 X6 的 `labels.position {distance, offset}` 对齐
-    （distance 沿边归一化弧长、offset ���法向）。
+    （distance 沿边归一化弧长、offset 沿法向）。
 
     历史问题：本函数曾在 dfd_renderer 里有一份私有实现，布局期又需要
     同一口径，于是被提升到 dfd_spec 成为共享纯函数——避免再次出现
@@ -412,7 +412,7 @@ def point_on_polyline(
 def estimate_text_width(text: str, font_size: float = LABEL_FONT_SIZE) -> float:
     """估算一段文字在给定字号下的渲染宽度（px）。
 
-    ���径与前端 `avoidEdgeLabels` 原有的估算一致：CJK/全角按 1em，
+    口径与前端 `avoidEdgeLabels` 原有的估算一致：CJK/全角按 1em，
     其余按 0.5em。这保证「换成后端直供坐标」不会让标签视觉跳变。
     """
     w = 0.0

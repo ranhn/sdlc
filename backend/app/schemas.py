@@ -646,11 +646,12 @@ class BaselineRequirementBaselineOut(BaseModel):
     type: str
     label: str
     total: int = 0
+    applicable: int = 0         # 适用项 = 应评 − 不适用（合规率的分母就是它）
     pass_count: int = 0
     fail_count: int = 0
     na_count: int = 0
     pending_count: int = 0
-    compliance: float = 0.0
+    compliance: float = 0.0     # 合规率 = 通过 ÷ 适用项（不适用不加分也不扣分）
     progress: float = 0.0
 
 
@@ -669,12 +670,13 @@ class BaselineRequirementOut(BaseModel):
     baselines: list[BaselineRequirementBaselineOut] = Field(default_factory=list)
     # ---- 统计：分母只算**本需求绑定范围**内的条目 ----
     bound_items: int = 0        # 应评条目数（= 绑定基线下的全部条目）
+    applicable: int = 0         # 适用项 = 应评 − 不适用（合规率的分母）
     pass_count: int = 0
     fail_count: int = 0
     na_count: int = 0
     pending_count: int = 0
-    compliance: float = 0.0     # 合规率 = 通过 ÷ (应评 − 不适用)
-    progress: float = 0.0       # 进度 = 已评估 ÷ 应评
+    compliance: float = 0.0     # 合规率 = 通过 ÷ 适用项（不适用既不进分子也不进分母）
+    progress: float = 0.0       # 进度 = 已评估 ÷ 应评（含「不适用」）
 
 
 class BaselineRequirementItemOut(BaselineResultOut):

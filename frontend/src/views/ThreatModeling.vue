@@ -2473,8 +2473,8 @@ onUnmounted(() => {
   flex: 1;
   min-height: 120px;
   overflow-y: auto;
-  /* 日志列表：深色终端风格背景���用户偏好）。
-     深蓝���底 + 浅色文本 + 细边框，让分类色（绿/红/蓝/黄）的图标更跳。 */
+  /* 日志列表：深色终端风格背景（用户偏好）。
+     深蓝打底 + 浅色文本 + 细边框，让分类色（绿/红/蓝/黄）的图标更跳。 */
   padding: 8px 10px;
   font-size: 12.5px;
   scrollbar-width: thin;

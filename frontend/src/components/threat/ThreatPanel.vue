@@ -166,7 +166,7 @@
                 <span class="t-num">#{{ t.number }}</span>
                 <span class="threat-title-text">{{ t.title }}</span>
               </span>
-              <!-- 定位到画布：点这个按钮立即让父组���设置 selectedCellId → 画布高亮对应 cell。
+              <!-- 定位到画布：点这个按钮立即让父组件设置 selectedCellId → 画布高亮对应 cell。
                    @click.stop 避免触发外层 toggleExpand。
                    选中态（绑定到 props.selectedCellId）由 ThreatModeling.vue 控制。
                    v-if="t._cellId" 排除没有 _cellId 的条目（如手工新增时 elementId 输入的不是真实 cell id）。 -->

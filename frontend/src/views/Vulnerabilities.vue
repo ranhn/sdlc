@@ -434,6 +434,8 @@ import { vulnApi, systemApi, adminApi } from '../api'
 import { useUserStore } from '../store/user'
 import { fmtDateTime } from '../utils/time'
 import { userLabel } from '../utils/userLabel'
+// 复现步骤的存取与"步骤↔截图"配对：与「漏洞修复」页共用同一份实现（格式解析只能有一份）
+import { parseStepsText, stepsToText, stepsWithShots } from '../utils/reproduceSteps'
 
 const store = useUserStore()
 const route = useRoute()
@@ -613,7 +615,8 @@ const createForm = reactive({
   is_external: false, external_source: '',
   api_endpoint: '',
   fix_suggestion: '',
-  steps: [{ id: 's1', desc: '', img: null }],
+  // 初始占位步骤：字段名必须是 imgs（复数）—— 曾写成 img，模板里读 s.imgs.length 会炸
+  steps: [{ id: 's1', desc: '', imgs: [] }],
 })
 const createRules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
@@ -627,44 +630,8 @@ function newStep() { return { id: 's' + (++_stepSeq), desc: '', imgs: [] } }
 /** 每步最多几张截图 */
 const MAX_STEP_IMGS = 3
 
-/* —— 复现步骤的存取格式 ——
-   后端只有 reproduce_steps 一个文本字段，历史格式是「一行一步」，于是**步骤内部
-   换行会被当成新步骤**（用户反馈：在步骤 1 的框里敲回车接着写，展示出来就变成步骤 2）。
-   现在存成「编号块」：
-
-     1. 打开登录页
-        输入用户名密码
-     2. 点击提交
-
-   即每步以 `1. ` 开头（行首），步骤内部的换行原样保留、续行缩进两格。
-   解析时只看行首的编号行来切块 —— 于是用户在步骤里自己写「1. xxx」也不会被切开。
-   老数据（没有任何编号行）仍按「一行一步」解析，历史记录不受影响。 */
-const STEP_HEAD_RE = /^\d+\s*[.、)）]\s*/
-/** 步骤数组 → 存档文本（见上方格式说明） */
-function stepsToText(steps) {
-  return steps
-    .map((s, i) => {
-      const body = String(s.desc || '').trim() || `步骤 ${i + 1}`
-      return `${i + 1}. ` + body.replace(/\n/g, '\n  ')
-    })
-    .join('\n')
-}
-/** 存档文本 → 步骤文案数组（新格式按编号块，老格式一行一步） */
-function parseStepsText(text) {
-  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n')
-  const heads = []
-  lines.forEach((l, i) => { if (STEP_HEAD_RE.test(l)) heads.push(i) })
-  if (!heads.length) return lines.map((l) => l.trim()).filter(Boolean)
-  return heads
-    .map((start, k) => {
-      const end = k + 1 < heads.length ? heads[k + 1] : lines.length
-      const body = [lines[start].replace(STEP_HEAD_RE, ''), ...lines.slice(start + 1, end)]
-        // 去掉续行的 2 格缩进；首行本身没缩进，替换无副作用
-        .map((l) => l.replace(/^ {1,2}/, ''))
-      return body.join('\n').trim()
-    })
-    .filter(Boolean)
-}
+/* 复现步骤的存取格式（编号块）与解析，已收敛到 utils/reproduceSteps.js ——
+   「漏洞修复」页要按同一格式把截图配到各步下面，两页各写一份必然错位。 */
 function addStep() {
   if (createForm.steps.length >= 6) return ElMessage.warning('最多 6 步')
   createForm.steps.push(newStep())
@@ -844,24 +811,8 @@ const rejectReason = ref('')
 const failVisible = ref(false)
 const failReason = ref('')
 const flowActive = computed(() => (current.value ? flowMap[current.value.status] || 0 : 0))
-function renderSteps(v) {
-  if (!v) return []
-  // 改: 之前只遍历 v.step_screenshots,导致没截图的步骤直接丢失(用户反馈步骤 3 文字在但截图没有时就整步消失)。
-  // 现在按 parseStepsText 解出的步骤逐条渲染，按序号匹配 step_screenshots 里的截图（一步可多张，
-  // 同一个 step_no 会有多条）；没有截图的步骤也保留，imgs 为空数组即可。
-  // 注意：**不能按行拆**了 —— 步骤内部的换行属于同一步（见 stepsToText/parseStepsText）。
-  const descs = parseStepsText(v.reproduce_steps)
-  const shotsByNo = {}
-  ;(v.step_screenshots || []).forEach((ss) => {
-    if (!ss || !ss.data_url) return
-    ;(shotsByNo[ss.step_no] = shotsByNo[ss.step_no] || []).push(ss.data_url)
-  })
-  return descs.map((desc, i) => ({
-    step_no: i + 1,
-    desc,
-    imgs: shotsByNo[i + 1] || [],
-  }))
-}
+// 详情展示：步骤 + **该步自己的**截图（解析与配对在 utils/reproduceSteps.js，勿在本页另写一份）
+const renderSteps = stepsWithShots
 
 async function openDetail(row) {
   const res = await vulnApi.detail(row.id)
@@ -1151,10 +1102,16 @@ onMounted(async () => {
 .flow-head b { color: #0f172a; }
 .flow-comment { margin-top: 4px; font-size: 13px; color: #0f172a; white-space: pre-wrap; word-break: break-word; }
 .steps-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }
-.step-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+/* flex-wrap：窄的时候让截图行整体落到下一行，而不是去挤文字框 */
+.step-row { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
 .step-no { width: 26px; height: 26px; line-height: 26px; text-align: center; background: #3b82f6; color: #fff; border-radius: 50%; flex-shrink: 0; font-size: 13px; }
-.step-desc { flex: 1; }
-/* 每步最多 3 张截图：横向排开、放不下就换行（不再是一�.step-thumb-wrap { width: 90px; height: 90px; position: relative; flex-shrink: 0; }
+/* 文字框给一个**下限**：加了截图之后它不许被挤成一条缝
+   （用户报的"写完字再传图，文字就看不见了"就是被挤没了 —— 数据没丢，是看不见） */
+.step-desc { flex: 1 1 220px; min-width: 200px; }
+/* 每步最多 3 张截图：横向排开、放不下就换行；缩略图固定 90x90 且不许被压缩
+   （否则大图会按原始尺寸撑开，把左边的文字框挤到看不见 —— 踩过） */
+.step-shots { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.step-thumb-wrap { width: 90px; height: 90px; position: relative; flex-shrink: 0; }
 .step-thumb { width: 90px; height: 90px; border-radius: 6px; border: 1px solid #e2e8f0; }
 .step-shot-del { position: absolute; bottom: -6px; right: -6px; background: #fff; border-radius: 10px; padding: 0 6px; }
 .step-row :deep(.el-upload--picture-card) { width: 90px; height: 90px; }
