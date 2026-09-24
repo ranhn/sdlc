@@ -8,7 +8,7 @@
           <el-card shadow="hover" class="stat-card" :class="{ clickable: !!s.to }" @click="drill(s)">
             <div class="stat-inner">
               <div class="stat-icon" :style="{ background: s.bg, color: s.color }">
-                <el-icon :size="22"><component :is="s.icon" /></el-icon>
+                <el-icon :size="19"><component :is="s.icon" /></el-icon>
               </div>
               <div class="stat-info">
                 <div class="stat-value">{{ s.value }}</div>
@@ -30,11 +30,9 @@
           <template #header>
             <div style="display:flex;align-items:center;justify-content:space-between">
               <span class="card-title">漏洞趋势</span>
-              <!-- 数据截至：这页的数字是"某一刻的快照"，要能看出是什么时候的 -->
-              <span class="dash-updated" style="flex:1;text-align:right">截至 {{ updatedAt || '—' }}</span>
-              <el-button size="small" text :loading="loading" title="刷新整页数据" @click="reload">
-                <el-icon><component is="Refresh" /></el-icon>
-              </el-button>
+              <!-- 卡头只留标题与区间选择：原来还有「刷新」按钮和「截至 HH:MM」——
+                   进本页就会重新加载，两者都在重复告诉用户"数据是新的"，还把卡头挤满。
+                   区间选择是真实交互（换区间要重拉趋势数据），留着。 -->
               <el-select v-model="trendRange" size="small" style="width:100px" @change="reloadTrend">
                 <el-option label="近一个月" :value="30" />
                 <el-option label="近半年" :value="180" />
@@ -58,14 +56,31 @@
     <el-row :gutter="16" class="chart-row">
       <el-col :span="8">
         <el-card shadow="hover">
-          <!-- 口径仍是「未修复」（各扇区之和 = 「未修复」卡，不是漏洞总数）；标题按反馈不再写口径。 -->          <template #header><span class="card-title">漏洞等级分布</span></template>
-          <div ref="sevRef" class="chart-sm"></div>
+          <!-- 口径仍是「未修复」（各扇区之和 = 「未修复」卡，不是漏洞总数）；标题按反馈不再写口径。 -->
+          <template #header><span class="card-title">漏洞等级分布</span></template>
+          <div class="chart-wrap">
+            <div ref="sevRef" class="chart-sm"></div>
+            <!-- 翻页器跟在图例同一行（原来 ECharts 原生翻页器就在那儿）：
+                 图例居中但宽度里让出了右边这 64px，两者不会压在一起 -->
+            <span v-if="sevPages > 1" class="lg-pager">
+              <button :disabled="sevPage === 0" title="上一页" @click="setSevPage(sevPage - 1)">‹</button>
+              <b>{{ sevPage + 1 }}/{{ sevPages }}</b>
+              <button :disabled="sevPage >= sevPages - 1" title="下一页" @click="setSevPage(sevPage + 1)">›</button>
+            </span>
+          </div>
         </el-card>
       </el-col>
       <el-col :span="8">
         <el-card shadow="hover">
           <template #header><span class="card-title">漏洞类型分布</span></template>
-          <div ref="typeRef" class="chart-sm"></div>
+          <div class="chart-wrap">
+            <div ref="typeRef" class="chart-sm"></div>
+            <span v-if="typePages > 1" class="lg-pager">
+              <button :disabled="typePage === 0" title="上一页" @click="setTypePage(typePage - 1)">‹</button>
+              <b>{{ typePage + 1 }}/{{ typePages }}</b>
+              <button :disabled="typePage >= typePages - 1" title="下一页" @click="setTypePage(typePage + 1)">›</button>
+            </span>
+          </div>
         </el-card>
       </el-col>
       <el-col :span="8">
@@ -74,11 +89,11 @@
               之前把"（2 个系统已纳入 · 待评估 259 项）"写成了 gauge 的 name，那串文字画在
                canvas 里、和中间的大数字挤在一起（看着像重影），而且卡片窄时还被裁掉。
                现在图里只留数字，说明用 HTML 放在头部右侧，自然就不会重叠。 -->
+          <!-- 卡头只留标题：原来右侧写着「N 个系统已纳入」，但下面"按系统"那几行本身就是清单
+               （超过 5 个还会有「还有 N 个系统未显示」），空数据时正文也写着「尚未创建基线需求」
+               —— 两个状态下它都是重复信息，已去掉。 -->
           <template #header>
-            <div class="card-head-row">
-              <span class="card-title">安全基线整体合规率</span>
-              <span class="card-sub">{{ baselineNote }}</span>
-            </div>
+            <span class="card-title">安全基线整体合规率</span>
           </template>
           <!-- 小环 + 按系统的合规率（最差的在最上面）：
                整体一个数字看不出问题在谁身上 —— 这张卡要能直接指出"哪个系统欠账"。
@@ -111,7 +126,6 @@ import { dashboardApi, baselineApi } from '../api'
 import { BASELINE_TARGET, rateColor } from '../utils/baseline'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../store/user'
-import { fmtDateTime } from '../utils/time'
 
 const trendRef = ref()
 const topRef = ref()
@@ -129,9 +143,6 @@ const UNFIXED = 'pending,confirmed,fixing'
 const REPAIRED = 'retest,fixed,closed,rejected,ignored'
 
 const trendRange = ref(30)
-const loading = ref(false)
-const updatedAt = ref('')             // 数据截至 HH:MM（这页是"某一刻的快照"，必须写出来）
-const baselineNote = ref('')          // 基线卡头部的补充说明（原本塞在图表里，会和大数字重叠）
 // 基线卡的"按系统"行（后端已按合规率升序返回：最差的在最前）
 const baseSystemsAll = ref([])
 const baseShown = 5                      // 卡片最多显示几个系统
@@ -172,9 +183,10 @@ const statCards = reactive([
   },
   {
     key: 'severity',
-    label: '高危', value: 0, icon: 'BellFilled', bg: '#fee2e2', color: '#ef4444',
-    // 这张卡取的是"严重 + 高危"两个等级之和，标签只写「高危」容易误解，用短 tip 点明
-    tip: '严重 + 高危',
+    // 标签直接写全「严重/高危」：这张卡取的是**两个等级之和**，只写"高危"时，
+    // 想单独看"严重有几个"的人在页面上找不到（要靠悬停 tip 才知道，等于没标）。
+    label: '严重/高危', value: 0, icon: 'BellFilled', bg: '#fee2e2', color: '#ef4444',
+    tip: '未修复里的严重 + 高危',
     to: { status: UNFIXED, severity: 'critical,high' },
     sub: { text: '', tone: '' },
   },
@@ -200,16 +212,29 @@ const statCards = reactive([
   },
 ])
 
-/** 环比文案：统一"较上月"（周环比在数据量小时噪声太大，±1 更像抖动） */
+/** 环比文案：写全"较上月 +5"（读者不必去悬停才知道这个小字是什么）。
+ *
+ * 代价是这一行会**折成两行**：第 4 张卡叫「严重/高危」+ "较上月 持平" 需要约 108px，
+ * 而这行的可用宽度只有约 81px（卡宽 150 − 内边距 20 − 图标 40 − 间距 10）。
+ * 所以 .stat-label 开了 flex-wrap（不再用 ellipsis 把标签截成"严重/高…"），
+ * 并用 min-height 固定成两行高 —— 6 张卡仍然是等高的。
+ * 不用周环比：这个数据量下 ±1 更像抖动，读起来像趋势其实是噪声。
+ */
 function fmtDelta(n) {
   return n ? `较上月 ${n > 0 ? '+' : ''}${n}` : '较上月 持平'
 }
 
 const severityColor = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6' }
+/** 等级由重到轻的次序：图例与扇区都按它排（未知名称给 99，沉到最后）。 */
+const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 }
 
 /**
  * 给 6 张卡各写第二行小字（标签右边、同一行 —— 卡片高度不变）。
- * **六张统一按月**：计数卡 = "当前值 − 上月同一口径"；已修复率 = 与上月的百分比涨跌。
+ * **六张统一按月、且统一量纲**：都是"当前值 − 上月的同一口径"（已修复率给的是**百分点**差，
+ * 不是相对涨跌 —— 上月 90%、本月 95% 读作 +5%，而不是 +5.6%）。
+ * 六张卡都写全「较上月 …」（见 fmtDelta 里为什么宁可折成两行）。
+ * 这里的"上月"是**自然月**：基数 = 上月末收盘（本月 1 号 00:00）那一刻，由后端算好
+ * （`snapshot_prev_month`）；以前取"now − 30 天"，与"上月"这个词并不是一回事。
  * 不用周环比：这个数据量下 ±1 更像抖动，读起来像趋势其实是噪声。
  */
 function applyCardSubs(o) {
@@ -220,9 +245,9 @@ function applyCardSubs(o) {
     card.sub.tone = tone
   }
 
-  // ⚠️ 快照缺失时**不要默认成 0**：那会把"当前值"当成环比显示（曾出现「高危 +5」，
+  // ⚠️ 基数缺失时**不要默认成 0**：那会把"当前值"当成环比显示（曾出现「高危 +5」，
   // 其实是 5−0；真实是 +1）。宁可这行空着，也不要一个静默错误的数字。
-  const snap = o.snapshot_30d
+  const snap = o.snapshot_prev_month
   const toneOf = (num, upIsGood) => (!num ? 'flat' : (num > 0) === upIsGood ? 'good' : 'bad')
   // 计数卡统一用法：与"上月同一口径"作差（upIsGood 决定涨是绿还是红）
   const diff = (key, now, prev, upIsGood) => {
@@ -233,18 +258,18 @@ function applyCardSubs(o) {
   if (snap) {
     diff('total', o.total, snap.total, false)                      // 漏洞变多 → 不是好事
     diff('unfixed', o.unfixed, snap.unfixed, false)                // 未修复变多 → 欠债在涨
-    diff('severity', o.critical + o.high, snap.severity, false)    // 高危变多 → 坏
+    diff('severity', o.critical + o.high, snap.severity, false)    // 严重/高危变多 → 坏
     diff('pending', o.pending ?? 0, snap.pending, false)           // 卡点变多 → 坏
     diff('fixed', o.fixed_total ?? 0, snap.repaired, true)         // 已修复变多 → 好
 
-    // 已修复率：**较上月的百分比涨跌**（相对变化）—— 上月为 0 时分母为 0，给横线
-    const base = snap.rate
-    if (base > 0) {
-      const pct = Math.round(((o.fix_rate - base) / base) * 1000) / 10
-      set('rate', `较上月 ${pct > 0 ? '+' : ''}${pct}%`, toneOf(pct, true))
-    } else {
-      set('rate', '较上月 —')
-    }
+    // 已修复率：与上月的**绝对差（百分点）**—— 上月 90%、本月 95% → 「较上月 +5%」。
+    // 不用"相对涨跌"：25% → 64.7% 的相对涨幅是 +159%，读起来像"翻了一倍半"，
+    // 实际只涨了 39.7 个百分点；卡片正面写的就是百分数，小字给同一量纲的差才读得通。
+    // 顺带没有了"基数为 0 就没意义"的分支：0% → 64.7% 就是 +65%。
+    // 取整到 1%：折行后小字独占一行（约 81px），"+14.7%" 也只是刚好挤下，取整更稳。
+    const gap = Math.round(o.fix_rate - snap.rate)
+    set('rate', gap === 0 ? '较上月 持平'
+      : `较上月 ${gap > 0 ? '+' : ''}${gap}%`, toneOf(gap, true))
   }
 }
 
@@ -268,16 +293,13 @@ function renderCharts() {
   let top = echarts.init(topRef.value)
   charts.push(top)
   // 三个分布饼图
-  let sev = echarts.init(sevRef.value)
-  let ty = echarts.init(typeRef.value)
-  let base = echarts.init(baseRef.value)
+  const sev = echarts.init(sevRef.value)
+  const ty = echarts.init(typeRef.value)
+  const base = echarts.init(baseRef.value)
+  sevChart = sev            // 图例翻页时只做局部 setOption，不必整图重建
+  typeChart = ty
   charts.push(sev, ty, base)
   loadAndRender(t, top, sev, ty, base)
-}
-
-/** 手动刷新（趋势卡头部那个按钮）：重建图表实例 + 重拉数据。 */
-function reload() {
-  renderCharts()
 }
 
 function renderTrend(chart, data) {
@@ -315,7 +337,6 @@ function disposeAll() {
 }
 
 async function loadAndRender(t, top, sev, ty, base) {
-  loading.value = true
   try {
     // 每个请求各自兜底：**一个接口挂掉不该让整页变 0**。
     // 曾出现 /top 报 500 → Promise.all 整体 reject → 6 张卡全 0、所有图空白，
@@ -342,7 +363,7 @@ async function loadAndRender(t, top, sev, ty, base) {
       card.severity.value = o.critical + o.high
       card.rate.value = o.fix_rate + '%'
       card.pending.value = o.pending ?? 0
-      // 6 张卡的第二行小字（统一"较上月"，基数来自后端 /overview 的 snapshot_30d）
+      // 6 张卡的第二行小字（统一"较上月"，基数来自后端 /overview 的 snapshot_prev_month）
       applyCardSubs(o)
     }
 
@@ -378,8 +399,17 @@ async function loadAndRender(t, top, sev, ty, base) {
       }],
     })
 
-    const sevData = ((dist && dist.data && dist.data.by_severity) || []).map((i) => ({ name: i.name, value: i.value, itemStyle: { color: severityColor[i.name] || '#94a3b8' } }))
-    sev.setOption(pieOption(sevData, '等级'))
+    // 等级分布按**严重程度**排（严重 → 高危 → 中危 → 低危）：这是看安全数据默认的读法。
+    // 后端按"条数从多到少"返回（那是排行的口径），直接拿来用会出现 medium 排第一、
+    // critical 排第三 —— 同一条环上"中危排在严重前面"读起来就是错的。
+    // 排序同时作用于**图例与扇区**：这样从图例到环形图的顺序是一致的，不用来回找。
+    const sevData = ((dist && dist.data && dist.data.by_severity) || [])
+      .map((i) => ({ name: i.name, value: i.value, itemStyle: { color: severityColor[i.name] || '#94a3b8' } }))
+      .sort((a, b) => (SEVERITY_RANK[a.name] ?? 99) - (SEVERITY_RANK[b.name] ?? 99))
+    // 图例分页：数据一变回到第 1 页，并记下图例名列表（页数由它算）
+    sevLegend.value = sevData.map((d) => d.name)
+    if (sevPage.value >= sevPages.value) sevPage.value = 0
+    sev.setOption(pieOption(sevData, '等级', sevPage.value, sev.getWidth()))
     // 漏洞类型分布：按一级大类统计（10 类固定，无需聚合兜底）
     // 注意：不能再用 TOP5+「其他」聚合 —— 分类体系里已存在真实的「其他」大类，会与之撞名导致扇区重复
     const sortedCats = [...((dist && dist.data && dist.data.by_category) || [])].sort((a, b) => b.value - a.value)
@@ -388,17 +418,16 @@ async function loadAndRender(t, top, sev, ty, base) {
       value: i.value,
       itemStyle: { color: i.name === '其他' ? '#94a3b8' : palette[idx % palette.length] },
     }))
-    ty.setOption(pieOption(typeData, '大类'))
+    typeLegend.value = typeData.map((d) => d.name)
+    if (typePage.value >= typePages.value) typePage.value = 0
+    ty.setOption(pieOption(typeData, '大类', typePage.value, ty.getWidth()))
     // 安全基线整体合规率（仪表盘）
     // 口径与「安全基线」页保持一致：只统计**需求已绑定的基线范围**，且同一检查项在多条
     // 需求里只算一次。之前用的是 baselineApi.stats()（分母 = 系统数 × 全库全部条目数）——
     // 没做过基线的系统也在拉低这个数字，首页和基线页会互相打架。
     const blData = (bl && bl.data) || {}
     const overall = blData.compliance ?? 0
-    const sysCount = blData.system_count ?? 0
     const pendingItems = blData.pending_count ?? 0
-    // 头部只写"纳入了多少系统"（目标值已经画在环里了，不重复）
-    baselineNote.value = sysCount ? `${sysCount} 个系统已纳入` : '尚未创建基线需求'
     baseSystemsAll.value = blData.systems || []
     // 小环（卡片左侧 ~128px）：去掉刻度与轴标签，只留"底环 + 进度弧 + 中心数字"
     // —— 与「安全基线」页的合规率环同一套视觉；卡片右侧让给"按系统"列表。
@@ -432,21 +461,54 @@ async function loadAndRender(t, top, sev, ty, base) {
       }],
     })
 
-    // 数据截至：页面所有数字都是这一刻的快照，写出来免得把旧数据当实时
-    updatedAt.value = fmtDateTime(new Date().toISOString()).slice(11)   // HH:MM
   } catch (e) {
     console.error(e)
-  } finally {
-    loading.value = false
   }
 }
 
 const palette = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16']
 
-function pieOption(data, name) {
+/** 图例每页几条：恒定 4（分页由我们控制，理由见 pieOption 里的说明） */
+const LEGEND_PER_PAGE = 4
+const sevPage = ref(0)
+const typePage = ref(0)
+const sevLegend = ref([])          // 图例名列表（用于切片与算页数）
+const typeLegend = ref([])
+let sevChart = null
+let typeChart = null
+const sevPages = computed(() => Math.max(1, Math.ceil(sevLegend.value.length / LEGEND_PER_PAGE)))
+const typePages = computed(() => Math.max(1, Math.ceil(typeLegend.value.length / LEGEND_PER_PAGE)))
+
+const legendSlice = (names, page) =>
+  names.slice(page * LEGEND_PER_PAGE, (page + 1) * LEGEND_PER_PAGE)
+
+function setSevPage(p) {
+  sevPage.value = p
+  if (sevChart) sevChart.setOption({ legend: { data: legendSlice(sevLegend.value, p) } })
+}
+
+function setTypePage(p) {
+  typePage.value = p
+  if (typeChart) typeChart.setOption({ legend: { data: legendSlice(typeLegend.value, p) } })
+}
+
+function pieOption(data, name, page = 0, boxWidth = 0) {
   return {
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, type: 'scroll' },
+    // 图例**只喂当前页的 4 条**，翻页由我们自己控制（图例右边的 ‹ 1/2 ›）。
+    //
+    // 为什么不交给 ECharts 的 scroll 图例按宽度自己分页（试过两个版本，结论是别这么干）：
+    //   · 它按卡片宽度决定一页几个 → 宽屏挤进 5 个、窄屏只剩 3 个，"几个一组"总在变；
+    //   · 更麻烦的是它会把**放不下的下一个画出半截**（图例右侧多出一个小色块的残影）。
+    // 自己控制后，一页恒定 4 条，与卡片宽度无关，也不会出现残影。
+    legend: {
+      bottom: 0, type: 'scroll',
+      itemWidth: 12, itemHeight: 8, itemGap: 10, textStyle: { fontSize: 11 },
+      // 右边留 64px 给翻页器（它画在卡片右下角、与图例同一行）→ 两者不会压在一起。
+      // 这个宽度**只影响图例居中**，不参与分页（分页由 legendSlice 决定），差几像素无所谓。
+      ...(boxWidth ? { width: Math.max(200, Math.floor(boxWidth) - 64) } : {}),
+      data: legendSlice(data.map((d) => d.name), page),
+    },
     series: [{
       name, type: 'pie', radius: ['40%', '68%'], center: ['50%', '45%'],
       data, label: { show: true, formatter: '{b}\n{d}%' },
@@ -467,16 +529,26 @@ onBeforeUnmount(disposeAll)
 .dashboard :deep(.el-card__body) { padding: 10px; }
 .dashboard :deep(.el-card__header) { padding: 8px 12px; }
 .stat-row { margin-bottom: 10px; flex-shrink: 0; }
-.stat-card .stat-inner { display: flex; align-items: center; gap: 10px; }
+/* 图标在左，右列两行：数值在上、「标签 + 环比」在下（对齐生产环境版式）。
+   折行不在这里做：宽度不够时由 .stat-label 自己把环比折到下一行，图标和数值始终并排。 */
+.stat-card .stat-inner { display: flex; align-items: center; gap: 8px; }
 /* 可点的卡片给出鼠标手型（否则"能点"只存在于实现里） */
 .stat-card.clickable { cursor: pointer; }
+/* 右列（数值 / 标签）可收缩：省不下时先压标签并出省略号，环比小字始终保留 */
 .stat-info { min-width: 0; }
-.stat-icon { width: 40px; height: 40px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* 卡片撑满列高 + 内容居中：万一某张卡的标签折了行，整块仍垂直居中、图标不跑偏 */
+.stat-card { height: 100%; }
+.stat-card :deep(.el-card__body) { height: 100%; display: flex; flex-direction: column; justify-content: center; }
+/* 尺寸：34px —— 比生产图的 30 略大一点，但仍明显小于文字块（数值+标签 ≈39px），
+   图标不会把右列挤窄（右列仍有约 121px，标签 + 环比 115px 放得下）。 */
+.stat-icon { width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .stat-value { font-size: 20px; font-weight: 700; color: #0f172a; line-height: 1.1; }
-/* 标签与第二行小字同一行：卡片高度不变（6 张卡等高，多一行会把整排撑高、错位） */
-.stat-label { display: flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 12px; color: #64748b; margin-top: 2px; }
+/* 标签 + 环比小字：与图标、数值**同一行**（对齐生产环境版式：图标 → 数值 → 标签 → 环比，同一条基线，卡片很矮）。
+   min-width: 0 + 首个 span 省略号：窄窗口里挤不下时先压标签（悬停有 tip），环比小字
+   始终保留 —— 它才是这张卡的信息量所在。flex-wrap 让它在极端窄的窗口里折行而不是被切掉。 */
+.stat-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; line-height: 1.25; min-width: 0; font-size: 12px; color: #64748b; margin-top: 2px; }
 .stat-label > span:first-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.stat-sub { flex-shrink: 0; font-size: 10px; white-space: nowrap; }
+.stat-sub { flex-shrink: 0; font-size: 11px; white-space: nowrap; }
 .stat-sub.good { color: #16a34a; }
 .stat-sub.bad { color: #dc2626; }
 .stat-sub.flat { color: #94a3b8; }
@@ -486,13 +558,23 @@ onBeforeUnmount(disposeAll)
 .chart-row .el-col .el-card :deep(.el-card__body) { flex: 1; min-height: 0; }
 .chart-lg, .chart-sm { height: 100%; }
 .card-title { font-weight: 600; color: #1e293b; font-size: 13px; }
-/* 卡片头部：标题左、补充说明右（说明用 HTML，不占图表画布） */
-.card-head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.dash-updated { font-size: 11px; color: #94a3b8; white-space: nowrap; }
-.card-sub {
-  font-size: 11px; color: #94a3b8; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+/* 图表区多套一层定位容器：翻页器绝对定位到右下角，与图例同一行（原来 ECharts 的位置） */
+.chart-wrap { position: relative; height: 100%; }
+/* bottom 留 4px：贴 0 会沉到卡片最底边，看起来比图例文字低一截（按钮比文字高，
+   要与图例的**文字**对齐而不是外框对齐），抬 4px 后两者的文字基线基本齐平 */
+.lg-pager {
+  position: absolute; right: 0; bottom: 4px;
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b;
 }
+.lg-pager button {
+  width: 18px; height: 18px; line-height: 1; cursor: pointer; padding: 0;
+  border: 1px solid #e2e8f0; background: #fff; border-radius: 4px; color: #475569;
+}
+.lg-pager button:hover:not(:disabled) { border-color: #c7d7f5; color: #2563eb; }
+.lg-pager button:disabled { opacity: .4; cursor: default; }
+.lg-pager b { font-weight: 600; }
+/* 卡片头部：各卡样式按需自定（此前有一组 .card-head-row/.card-sub 是给基线卡头部的
+   补充说明用的，那句说明已去掉，样式一并清掉，不留死规则） */
 /* 基线卡：左环 + 右"按系统"列表（整体数字之外的落点是"哪个系统欠账"）。
    环的宽度按"和旁边两张饼图视觉等大"来定：那两张饼图占满各自卡片宽度、
    直径由卡片高度决定(≈150px)，所以这里给 170px 宽的容器 → 环直径 ≈150px，三张卡看起来才是一套。 */

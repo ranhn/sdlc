@@ -77,8 +77,21 @@ REPAIRED_STATUSES = {"retest", "fixed"} | CLOSED_STATUSES
 UNFIXED_STATUSES = {"pending", "confirmed", "fixing"}
 
 
-def _snapshot(db: Session, vulns: list, days: int) -> dict:
-    """`days` 天前那一刻的口径快照（首页环比用）—— 只靠时间戳推算，不需要历史表。
+def _month_start(now: datetime | None = None) -> datetime:
+    """「上月末收盘」的那一刻 = 本月 1 号 00:00（六张卡环比基数的取点）。
+
+    为什么不用"往前数 30 天"：卡片上写的是「较上月」，而 9/24 往前 30 天是 8/25 ——
+    一个滚动窗口被叫作"上月"，读者按自然月理解出来的数（8/31 收盘）与页面能差一大截：
+    同一批真实数据下，30 天口径给「总数 +9 / 已修复率 +158.8%」，自然月口径给
+    「总数 +5 / +29.4%」。改成自然月边界后①"上月"字面成立、②基数是**稳定**的 ——
+    整个月内不会因为又过了几小时而偷偷位移（原来的 at = now − 30d 每小时都在变）。
+    """
+    now = now or nc.utcnow()
+    return datetime(now.year, now.month, 1)
+
+
+def _snapshot(db: Session, vulns: list, at: datetime) -> dict:
+    """`at` 那一刻的口径快照（首页环比用）—— 只靠时间戳推算，不需要历史表。
 
     口径与首页卡片一一对应（都是"修好 / 没修好"这套互补划分）：
       · unfixed  = 当时还没修好的（当时已创建，且修复时间晚于当时、或从未修复）；
@@ -87,10 +100,8 @@ def _snapshot(db: Session, vulns: list, days: int) -> dict:
       · rate     = 当时的已修复 ÷ 当时的总数。
 
     判定只看**时间戳**、不看当前状态 —— 否则"现在已闭环"的老漏洞会被误判成当时也已修复。
-    目前只有一个基数：30 天前（六张卡统一"较上月"）；将来要别的窗口加一行
-    _snapshot(db, vulns, 7) 即可。
-    """
-    at = nc.utcnow() - timedelta(days=days)
+    目前只有一个基数：`_month_start()`（六张卡统一"较上月"）；将来要别的窗口
+    （如近 7 天）传别的时间点即可。"""
     flow_ts: dict = {}
     for vid, ts in (db.query(VulnFlow.vuln_id, VulnFlow.created_at)
                     .filter(VulnFlow.to_status.in_(tuple(REPAIRED_STATUSES)))
@@ -114,7 +125,7 @@ def _snapshot(db: Session, vulns: list, days: int) -> dict:
     total = unfixed = repaired = severe = pending = 0
     for v in vulns:
         if not v.created_at or v.created_at > at:
-            continue          # N 天前还不存在的漏洞，不该出现在"N 天前"的口径里
+            continue          # 基数那一刻还不存在的漏洞，不该出现在那一刻的口径里
         total += 1
         # 修复时间：fixed_at（研发点完成）→ closed_at → 流转记录里进入"已修复/待复测"的时间；
         # 兜底用 created_at —— 处于已修复状态却没有任何时间列（脏数据）时，按"创建当天就修好"
@@ -221,10 +232,11 @@ def overview(db: Session = Depends(get_db), current: User = Depends(get_current_
         "avg_fix_hours": avg_fix_hours,
         "month_new": month_new,
         # 环比基数（口径在后端算好，前端只做减法/除法）：
-        #   6 张卡统一用"较上月"= 30 天前那一刻的同一套口径。
+        #   6 张卡统一用「较上月」= **上月末收盘**（本月 1 号 00:00）那一刻的同一套口径。
+        #   以前取的是"now − 30 天"：卡片写着"较上月"、基数却是 30 天前的滚动窗口，
+        #   读者按自然月理解出来的数跟页面对不上（见 _month_start 的注释）。
         #   为什么不做"周环比"：这个数据量下周环比噪声太大（±1 更像抖动）。
-        #   将来若要别的窗口（如 7 天），加一行 _snapshot(db, vulns, 7) 即可。
-        "snapshot_30d": _snapshot(db, vulns, 30),
+        "snapshot_prev_month": _snapshot(db, vulns, _month_start(now)),
     }
 
 

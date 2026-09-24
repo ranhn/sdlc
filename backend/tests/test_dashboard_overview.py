@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -58,17 +58,33 @@ def _setup():
 
 
 def _vuln(db, user, status, *, days_ago=10, fixed_days_ago=None, closed_days_ago=None,
-          severity="high"):
+          severity="high", created_at=None, fixed_at=None, closed_at=None):
+    """建一条漏洞。时间既能给"相对今天几天前"，也能给**绝对时刻** ——
+    环比基数改成自然月边界后，"3 天前"这种相对值在月初会落进上个月、月末落进本月，
+    测试会随运行日期飘；凡是被基数判定用到的行一律用绝对取点（见 _prev_month）。"""
     now = nc.utcnow()
     v = Vuln(
         title=f"漏洞 {status}", severity=severity, status=status, reporter_id=user.id,
-        created_at=now - timedelta(days=days_ago),
-        fixed_at=now - timedelta(days=fixed_days_ago) if fixed_days_ago is not None else None,
-        closed_at=now - timedelta(days=closed_days_ago) if closed_days_ago is not None else None,
+        created_at=created_at or (now - timedelta(days=days_ago)),
+        fixed_at=fixed_at or (now - timedelta(days=fixed_days_ago)
+                              if fixed_days_ago is not None else None),
+        closed_at=closed_at or (now - timedelta(days=closed_days_ago)
+                                if closed_days_ago is not None else None),
     )
     db.add(v)
     db.commit()
     return v
+
+
+def _month_start() -> datetime:
+    """本月 1 号 00:00 —— 环比基数的取点（「上月末收盘」那一刻）。"""
+    now = nc.utcnow()
+    return datetime(now.year, now.month, 1)
+
+
+def _prev_month(offset_days: int = 10) -> datetime:
+    """本月 1 号往前 offset_days 天 —— 必定落在**上个月**里（与"今天是几号"无关）。"""
+    return _month_start() - timedelta(days=offset_days)
 
 
 def test_pending_card_counts_first_step_backlog():
@@ -118,66 +134,98 @@ def test_avg_fix_hours_is_zero_without_closed_vulns():
     assert o["pending"] == 1, o
 
 
-def test_snapshot_30d_is_the_month_base_for_all_cards():
-    """首页六张卡的"较上月"基数：都来自 /overview 的 snapshot_30d（前端只做减法/除法）。
+def test_snapshot_prev_month_is_the_base_for_all_cards():
+    """首页六张卡的"较上月"基数 = **上月末收盘**：/overview 的 snapshot_prev_month。
 
-    三个坑：① "30 天前还不存在"的漏洞不能算进去；② 当时还没关闭的不算已闭环；
+    三个坑：① 基数那一刻还不存在的漏洞不能算进去；② 当时还没修好的不算已修复；
     ③ 「待确认」要看"当时有没有离开第一步"——离开时间取自确认/驳回那次流转记录。
     """
     db, user, client = _setup()
-    v1 = _vuln(db, user, "pending", days_ago=40, severity="high")       # 一直是待确认
-    v2 = _vuln(db, user, "confirmed", days_ago=40, severity="critical")  # 10 天前才确认 → 当时仍待确认
-    v3 = _vuln(db, user, "confirmed", days_ago=40, severity="low")       # 35 天前已确认 → 当时已离开
+    v1 = _vuln(db, user, "pending", created_at=_prev_month(20), severity="high")      # 一直是待确认
+    v2 = _vuln(db, user, "confirmed", created_at=_prev_month(20), severity="critical")  # 本月才确认 → 当时仍待确认
+    v3 = _vuln(db, user, "confirmed", created_at=_prev_month(20), severity="low")       # 上月已确认 → 当时已离开
     # v2/v3 的"离开第一步"时间靠流转记录（与线上一致：确认时写 from_status=pending）
     db.add(VulnFlow(vuln_id=v2.id, from_status="pending", to_status="confirmed",
-                    operator_name="x", comment="确认",
-                    created_at=nc.utcnow() - timedelta(days=10)))
+                    operator_name="x", comment="确认", created_at=nc.utcnow()))
     db.add(VulnFlow(vuln_id=v3.id, from_status="pending", to_status="confirmed",
-                    operator_name="x", comment="确认",
-                    created_at=nc.utcnow() - timedelta(days=35)))
+                    operator_name="x", comment="确认", created_at=_prev_month(15)))
     db.commit()
-    _vuln(db, user, "pending", days_ago=3, severity="critical")         # 30 天前还不存在
+    _vuln(db, user, "pending", created_at=nc.utcnow(), severity="critical")   # 本月才创建
     # 老数据（种子/导入）只有一条 from_status=None 的流转：不能因此把它永远算成"待确认"
-    v4 = _vuln(db, user, "confirmed", days_ago=40, severity="low")
+    v4 = _vuln(db, user, "confirmed", created_at=_prev_month(20), severity="low")
     db.add(VulnFlow(vuln_id=v4.id, from_status=None, to_status="confirmed",
-                    operator_name="x", comment="种子导入",
-                    created_at=nc.utcnow() - timedelta(days=38)))
+                    operator_name="x", comment="种子导入", created_at=_prev_month(12)))
     db.commit()
 
     o = client.get("/api/dashboard/overview").json()
-    snap = o["snapshot_30d"]
-    assert snap["total"] == 4, snap           # 排除"3 天前才创建"那条
+    snap = o["snapshot_prev_month"]
+    assert snap["total"] == 4, snap           # 排除"本月才创建"那条
     assert snap["unfixed"] == 4, snap         # 一条都还没修好
     assert snap["repaired"] == 0, snap
     assert snap["severity"] == 2, snap        # 当时未修复里的严重/高危：high + critical
     assert snap["pending"] == 2, snap         # v1 一直待确认 + v2 当时还没确认（v3 已离开）
-    assert snap["rate"] == 0.0, snap          # 当月基数为 0 → 前端对「已修复率」显示破折号
+    assert snap["rate"] == 0.0, snap          # 基数为 0 → 前端对「已修复率」显示破折号
 
     # 前端就是这么算的（六张卡统一"较上月"）
     assert o["total"] - snap["total"] == 1, o
     assert o["unfixed"] - snap["unfixed"] == 1, o
     assert (o["critical"] + o["high"]) - snap["severity"] == 1, o
-    # 现在的待确认只有 2 条（v1 + 3 天前那条；v2/v3 已确认）→ 与上月基数持平
+    # 现在的待确认只有 2 条（v1 + 本月那条；v2/v3 已确认）→ 与上月基数持平
     assert (o["pending"] or 0) - snap["pending"] == 0, o
 
 
-def test_snapshot_30d_feeds_month_over_month_rate_change():
-    """闭环率卡的第二行是"较上月的百分比涨跌"（**相对变化**，不是百分点）。
+def test_snapshot_prev_month_feeds_rate_gap_in_points():
+    """已修复率卡的第二行 = 与上月的**绝对差（百分点）**，不是相对涨跌。
 
-    必须用相对变化时，分母为 0 就没有意义 —— 这种情形由前端显示破折号（见 Dashboard.vue）。
+    用户口径：上月 90%、本月 95% → 「+5%」（而不是把 +5.6% 的相对涨幅写上去）。
+    这条特意用 90% → 95%：相对算法给 +5.6、绝对差给 +5 —— 两个数不同，
+    测试才钉得住（用 100% → 50% 那种用例两种算法都会得到 −50，等于没测）。
     """
     db, user, client = _setup()
-    # 40 天前创建、35 天前闭环 → 30 天前它已经闭环（当时的闭环率 = 100%）
-    _vuln(db, user, "closed", days_ago=40, closed_days_ago=35, severity="low")
-    _vuln(db, user, "pending", days_ago=3, severity="high")     # 本月新增、未闭环
+    # 上月收盘：10 条里 9 条已修好 → 90%
+    for i in range(10):
+        closed = i < 9
+        _vuln(db, user, "closed" if closed else "pending", created_at=_prev_month(30),
+              closed_at=_prev_month(20) if closed else None, severity="low")
+    # 本月新增 10 条并全部修好 → 现在 19 / 20 = 95%
+    for _ in range(10):
+        _vuln(db, user, "fixed", created_at=nc.utcnow(), fixed_at=nc.utcnow(), severity="low")
 
     o = client.get("/api/dashboard/overview").json()
-    s30 = o["snapshot_30d"]
-    assert s30["total"] == 1, s30
-    assert s30["rate"] == 100.0, s30
-    # 现在 1/2 = 50.0%，相对上月 100% → −50%
-    assert o["fix_rate"] == 50.0, o
-    assert round((o["fix_rate"] - s30["rate"]) / s30["rate"] * 100, 1) == -50.0, o
+    s = o["snapshot_prev_month"]
+    assert s["total"] == 10 and s["repaired"] == 9, s
+    assert s["rate"] == 90.0, s
+    assert o["total"] == 20 and o["fixed_total"] == 19, o
+    assert o["fix_rate"] == 95.0, o
+    # 前端算的是绝对差：95 − 90 = +5（相对涨跌会得到 +5.6，是另一个数）
+    assert o["fix_rate"] - s["rate"] == 5.0, o
+
+
+def test_month_base_boundary_is_month_start():
+    """基数边界 = **本月 1 号 00:00**（上月末收盘）：上月发生的事算上月，本月发生的事算本月。
+
+    回归点：这个基数以前是"now − 30 天"—— 一个每小时都在漂的滚动窗口，卡片上却写着
+    「较上月」。真实数据下两种口径能差一倍（+9 对 +5、+158.8% 对 +29.4%）。
+    这条把边界钉死：上月最后一天修好的要计入、本月 1 号当天修好的不计入、
+    本月 1 号当天创建的漏洞也不能出现在基数里。
+    """
+    db, user, client = _setup()
+    start = _month_start()
+    # ① 上月最后一天修好 → 基数里算"已修复"
+    _vuln(db, user, "fixed", created_at=start - timedelta(days=20),
+          fixed_at=start - timedelta(days=1), severity="low")
+    # ② 本月 1 号当天才修好 → 基数里仍算"未修复"（那一刻之前它是欠着的）
+    _vuln(db, user, "fixed", created_at=start - timedelta(days=20),
+          fixed_at=start + timedelta(minutes=1), severity="high")
+    # ③ 本月 1 号当天创建 → 基数里根本不该存在
+    _vuln(db, user, "pending", created_at=start + timedelta(minutes=1), severity="critical")
+
+    snap = client.get("/api/dashboard/overview").json()["snapshot_prev_month"]
+    assert snap["total"] == 2, snap          # ① + ②（③ 那一刻还不存在）
+    assert snap["repaired"] == 1, snap       # 只有 ①
+    assert snap["unfixed"] == 1, snap        # ② 当时还没修好
+    assert snap["severity"] == 1, snap       # ② 当时未修复里唯一的高危
+    assert snap["rate"] == 50.0, snap        # 1 / 2
 
 
 def test_cards_are_complementary_so_they_add_up():
