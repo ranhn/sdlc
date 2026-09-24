@@ -142,6 +142,45 @@ def test_category_combines_with_other_filters():
                       params={"vuln_category": "注入类", "severity": "low"}).json()["items"] == []
 
 
+def test_multi_value_filters_for_dashboard_drill_down():
+    """首页 KPI 卡片钻取传的是**多值**：severity=critical,high、status=pending,confirmed,...
+
+    单值过滤做不到"严重 + 高危"这种组合；多值走 IN，而单值行为必须与以前完全一致
+    （前端等级下拉、历史调用方都还在用单值）。
+    """
+    _, client = _setup()
+    _seed(client)     # high×2（SQL 注入 / 越权查询）、low×1、medium×1，全部为 pending
+
+    assert _titles(client.get("/api/vulns", params={"severity": "high,low"})) == [
+        "SQL 注入", "信息泄露", "越权查询"]
+    # 单值行为不变
+    assert _titles(client.get("/api/vulns", params={"severity": "low"})) == ["信息泄露"]
+
+    # 多状态（首页「未闭环」那一串）× 多等级 = 取交集
+    assert _titles(client.get("/api/vulns", params={
+        "severity": "high,low",
+        "status": "pending,confirmed,fixing,retest,fixed"}) ) == [
+        "SQL 注入", "信息泄露", "越权查询"]
+    assert _titles(client.get("/api/vulns", params={
+        "severity": "high,low", "status": "closed,rejected"})) == []
+
+
+def test_multi_value_severity_applies_to_export_too():
+    """导出必须与列表同口径，否则钻取后点导出会得到 0 条（"critical,high" 被当成一个等级）。"""
+    _, client = _setup()
+    _seed(client)
+    exp = client.get("/api/vulns/export", params={"fmt": "csv", "severity": "high,low"})
+    assert _csv_titles(exp) == ["SQL 注入", "信息泄露", "越权查询"]
+
+
+def test_describe_scope_multi_severity_uses_chinese_names():
+    """报告封面要把多等级翻成中文，不能写成"等级：critical,high"（报告一旦外发就改不了）。"""
+    db, _ = _setup()
+    text = _describe_scope(db, severity="critical,high")
+    assert "严重" in text and "高危" in text, text
+    assert "critical" not in text, text
+
+
 # ============ 导出接口 ============
 
 def test_export_honours_category_and_source():

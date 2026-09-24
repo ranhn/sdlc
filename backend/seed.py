@@ -200,7 +200,10 @@ def init():
             )
             db.add(v)
             db.flush()
-            db.add(VulnFlow(vuln_id=v.id, from_status="draft", to_status=status,
+            # from_status=None：与真实建单一致（创建即进入该状态）。写 "draft" 会凭空造出
+            # 一个平台并不存在的"草稿"步骤 —— 详情时间线里看着像存过草稿（详见 routers/vulns.py
+            # 建单处与 state_machine.py 里关于 draft 的说明）。
+            db.add(VulnFlow(vuln_id=v.id, from_status=None, to_status=status,
                             operator_id=reporter.id, operator_name=reporter.full_name,
                             comment="种子数据导入", created_at=now - timedelta(days=3)))
         db.commit()

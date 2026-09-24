@@ -432,6 +432,23 @@ def _apply_status_filter(query, status: str | None):
     return query.filter(Vuln.status.in_(codes))
 
 
+def _apply_severity_filter(query, severity: str | None):
+    """按等级过滤（支持逗号分隔的多等级，如 critical,high）。
+
+    与 _apply_status_filter 同一套约定：单值精确匹配（历史调用方行为完全不变）、
+    多值走 IN。首页「高危」卡片（严重 + 高危）的钻取要一次筛两个等级 ——
+    单值过滤做不到，只能筛成"高危"或"严重"其中之一 ✗。
+    """
+    if not severity:
+        return query
+    codes = [s.strip() for s in severity.split(",") if s.strip()]
+    if not codes:
+        return query
+    if len(codes) == 1:
+        return query.filter(Vuln.severity == codes[0])
+    return query.filter(Vuln.severity.in_(codes))
+
+
 def _describe_scope(
     db: Session,
     *,
@@ -460,7 +477,11 @@ def _describe_scope(
         if names:
             parts.append(f"状态：{names}")
     if severity:
-        parts.append(f"等级：{SEV_ZH.get(severity, severity)}")
+        # 支持多等级（首页「高危」钻取会传 critical,high）—— 逐个翻成中文，
+        # 否则报告封面会写成"等级：critical,high"
+        parts.append("等级：" + " / ".join(
+            SEV_ZH.get(s.strip(), s.strip()) for s in severity.split(",") if s.strip()
+        ))
     if system_id:
         row = db.query(AssetSystem).filter(AssetSystem.id == system_id).first()
         parts.append(f"所属系统：{row.name if row else system_id}")
@@ -499,8 +520,7 @@ def list_vulns(
     """
     query = db.query(Vuln)
     query = _apply_status_filter(query, status)
-    if severity:
-        query = query.filter(Vuln.severity == severity)
+    query = _apply_severity_filter(query, severity)
     if system_id:
         query = query.filter(Vuln.system_id == system_id)
     if vuln_category:
@@ -556,7 +576,9 @@ def export_vulns(
     # 与列表同一套状态过滤（含 ignored,rejected 这种"忽略组"），保证导出范围与列表所见一致
     query = _apply_status_filter(query, status)
     if severity:
-        query = query.filter(Vuln.severity == severity)
+        # 与列表同一套（支持 critical,high 这类多等级），否则首页钻取后点导出会得到
+        # 0 条 —— "严重 + 高危"被当成一个等级去精确匹配
+        query = _apply_severity_filter(query, severity)
     if system_id:
         query = query.filter(Vuln.system_id == system_id)
     # 漏洞大类 / 来源：页面筛选栏上有这两项，导出必须同样支持 ——
@@ -676,7 +698,12 @@ def create_vuln(request: Request, data: VulnCreate, db: Session = Depends(get_db
     db.add(v)
     db.commit()
     db.refresh(v)
-    _record_flow(db, v.id, "draft", "pending", current, "漏洞提交")
+    # from_status 传 None：这条记录表达的是"创建即提交"，时间线会显示「— → 待确认」。
+    # 历史上这里写的是 "draft"（渲染成「草稿 → 待确认」），但平台从来没有"存草稿"这个
+    # 状态 —— 提交弹窗只有「提交」一个出口，VulnCreate/VulnUpdate 里也没有 status 字段，
+    # 建出来就是 pending。那条"草稿"是凭空补的，会让看时间线的人以为存过草稿、以为有
+    # "保存草稿"入口（用户就是看到首页「未闭环（不含草稿）」这句来问的）。
+    _record_flow(db, v.id, None, "pending", current, "漏洞提交")
     # 提交表单里就填了「修复负责人」→ 一并通知他（prev=None 表示这是首次指派）
     if v.assignee_id is not None:
         _notify_assignee(db, v, None, current, request)

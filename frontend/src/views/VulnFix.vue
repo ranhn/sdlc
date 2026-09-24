@@ -9,6 +9,10 @@
       <el-form inline class="filter-form">
         <el-form-item label="状态">
           <el-select v-model="filters.status" clearable placeholder="全部" style="width: 112px" @change="load(true)">
+            <!-- 「未修复 / 已修复」是分组视图（与首页卡片同一套划分）：非管理员从首页点卡片会被
+                 守卫转发到本页，带的就是这两个值之一 —— 没有这两项，下拉会显示成原始英文串。 -->
+            <el-option label="未修复" value="pending,confirmed,fixing" />
+            <el-option label="已修复" value="retest,fixed,closed,rejected,ignored" />
             <el-option label="待确认" value="pending" />
             <el-option label="已确认" value="confirmed" />
             <el-option label="修复中" value="fixing" />
@@ -21,9 +25,11 @@
           </el-select>
         </el-form-item>
         <el-form-item label="等级">
-          <el-select v-model="filters.severity" clearable placeholder="全部" style="width: 88px" @change="load(true)">
+          <el-select v-model="filters.severity" clearable placeholder="全部" style="width: 116px" @change="load(true)">
             <el-option label="严重" value="critical" /><el-option label="高危" value="high" />
             <el-option label="中危" value="medium" /><el-option label="低危" value="low" />
+            <!-- 「严重 + 高危」= 首页「高危」卡片的钻取口径（value 逗号分隔走 IN 过滤） -->
+            <el-option label="严重 + 高危" value="critical,high" />
           </el-select>
         </el-form-item>
         <el-form-item label="系统">
@@ -485,7 +491,20 @@ async function load(resetPage = false) {
   } finally { loading.value = false }
 }
 
+/**
+ * 首页 KPI 卡片钻取：URL 上带 status / severity 时先落到筛选栏，再首次加载。
+ * 非管理员从首页点卡片会被路由守卫转发到本页（/submit 是 admin-only），
+ * 所以这页也必须支持 —— 否则开发点"未闭环"进来看到的还是一堆未筛选的漏洞。
+ */
+function applyQueryFilters() {
+  const st = route.query.status
+  const sv = route.query.severity
+  if (typeof st === 'string' && st) filters.status = st
+  if (typeof sv === 'string' && sv) filters.severity = sv
+}
+
 onMounted(async () => {
+  applyQueryFilters()
   load()
   try { systems.value = (await systemApi.list()).data } catch {}
   // 兼容 CSV 导出/通知里的深链：/vulnerabilities/fix?id=123 直接打开该漏洞详情。

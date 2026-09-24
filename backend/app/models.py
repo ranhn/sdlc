@@ -100,9 +100,13 @@ class AssetSystem(Base):
 
 class Vuln(Base):
     """漏洞。状态机：
-    draft(草稿) -> pending(待确认) -> confirmed(已确认) -> fixing(修复中)
+    pending(待确认) -> confirmed(已确认) -> fixing(修复中)
     -> retest(待复测) -> fixed(已修复) -> closed(已关闭)
     分支：rejected(已驳回) / ignored(已忽略)
+
+    注意：draft(草稿) 是初版设计的遗留 —— 提交即 pending，没有任何入口能把漏洞置为
+    draft（前端无"存草稿"，VulnCreate / VulnUpdate 也没有 status 字段），所以这里不再把它
+    画进主链路。常量与中文名保留，仅为渲染可能的历史数据（线上实测 0 条）。
     """
     __tablename__ = "vuln"
 

@@ -12,7 +12,8 @@
       · 换人          → 出现「变更负责人：X → Y」；
       · 编辑里改负责人 → 同样留痕，并注明"（编辑时变更）"；
       · 清空负责人     → 出现「取消指派：X → 未指派」；
-      · 没动负责人的编辑 → **不得**往时间线里刷记录。
+      · 没动负责人的编辑 → **不得**往时间线里刷记录；
+      · 建单           → 只有「漏洞提交」一条，且 from_status 为空（不伪造"草稿"）。
     另外锁定"from == to == 当前状态"这一约定：前端据此把这类条目渲染成
     单个状态 + 说明，而不是"待确认 → 待确认"这种没信息量的箭头。
 """
@@ -124,6 +125,25 @@ def test_assign_flow_keeps_status_unchanged() -> None:
                        json={"assignee_id": _user(db, "dev1").id}).status_code == 200
     last = _flows(client, vid)[-1]
     assert last["from_status"] == last["to_status"] == "pending", last
+
+
+def test_create_records_submit_without_fake_draft() -> None:
+    """建单的流转记录**不写** from_status='draft' —— 平台没有"存草稿"这个状态。
+
+    为什么钉它：这条记录以前写的是 "draft"，详情时间线第一条渲染成「草稿 → 待确认」，
+    看着像"曾经存过草稿"、也像有"保存草稿"入口（用户就是看到首页「未闭环（不含草稿）」
+    这句来问"我们有草稿状态吗"）。而实际上提交弹窗只有「提交」一个出口，VulnCreate /
+    VulnUpdate 里都没有 status 字段，建出来就是 pending。现在传 None，前端渲染成
+    「— → 待确认」（"创建即提交"，见 Vulnerabilities.vue 时间线模板）。
+    """
+    db, client = _setup()
+    CURRENT["user"] = _user(db, "admin")
+    vid = _new_vuln(client)
+    items = _flows(client, vid)
+    assert len(items) == 1, f"建单应只有 1 条流转记录，实际 {items}"
+    assert items[0]["from_status"] is None, f"不该伪造草稿流转：{items[0]}"
+    assert items[0]["to_status"] == "pending", items[0]
+    assert items[0]["comment"] == "漏洞提交", items[0]
 
 
 def test_assign_via_edit_is_recorded_but_plain_edit_is_not() -> None:
